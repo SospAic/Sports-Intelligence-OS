@@ -50,14 +50,14 @@ async def generation_exception_handler(request: Request, exc: Exception) -> Resp
 
 
 def service(request: Request, db: DatabaseSession) -> GenerationService:
-    return GenerationService(db, request.app.state.llm_providers)
+    return GenerationService(db, request.app.state.llm_providers, request.app.state.settings)
 
 
 @router.get("/llm/providers", response_model=list[ProviderDescriptor])
 async def list_llm_providers(
-    _: CurrentWorkspace, db: DatabaseSession, request: Request
+    workspace: CurrentWorkspace, db: DatabaseSession, request: Request
 ) -> list[ProviderDescriptor]:
-    return await service(request, db).provider_descriptors()
+    return await service(request, db).provider_descriptors(workspace.workspace_id)
 
 
 @router.get("/prompts", response_model=PromptCollectionPage)

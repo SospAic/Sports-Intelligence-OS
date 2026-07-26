@@ -42,6 +42,8 @@ import { LoginForm } from "./login/login-form";
 import { NotificationChannelsClient } from "./notification-channels/notification-channels-client";
 import { PromptEditor } from "./prompts/[id]/prompt-editor";
 import { RuleEditor } from "./rules/[ruleSetId]/edit/rule-editor";
+import { LLMSettingsPanel } from "./settings/llm-settings-panel";
+import { RuntimeSettingsPanel } from "./settings/runtime-settings-panel";
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -261,6 +263,13 @@ describe("生成和通知真实前端流程", () => {
       is_mock: true,
       supports_streaming: false,
       detail: "Only deterministic test output",
+      source: "builtin",
+      default_model: "mock-sports-writer-v1",
+      default_parameters: {
+        temperature: 0.2,
+        top_p: 1,
+        max_tokens: 2048,
+      },
     };
     const fetchMock = vi
       .fn()
@@ -295,6 +304,9 @@ describe("生成和通知真实前端流程", () => {
     const payload = JSON.parse(String(init.body));
     expect(payload.workflow_id).toBe("workflow-1");
     expect(payload.model_config).toMatchObject({
+      temperature: 0.4,
+      top_p: 1,
+      max_tokens: 4096,
       target_min_chars: 1200,
       target_max_chars: 1250,
       max_rewrites: 2,
@@ -345,5 +357,167 @@ describe("生成和通知真实前端流程", () => {
     );
     expect(window.confirm).toHaveBeenCalledWith("发送 Mock 测试通知？");
     expect(notifyMock).toHaveBeenCalledWith("测试通知已投递", "success");
+  });
+
+  it("prevents password managers from autofilling notification credentials", async () => {
+    apiRequestMock.mockImplementation(async (path: string) => {
+      if (path === "/notification-providers")
+        return [
+          {
+            key: "email",
+            name: "Email",
+            is_mock: false,
+            config_fields: [
+              {
+                key: "username",
+                label: "SMTP username",
+                value_type: "string",
+                required: false,
+                secret: false,
+                options: [],
+              },
+              {
+                key: "password",
+                label: "SMTP password",
+                value_type: "password",
+                required: false,
+                secret: true,
+                options: [],
+              },
+            ],
+          },
+        ];
+      if (path === "/notification-channels") return [];
+      if (path.startsWith("/notification-deliveries"))
+        return { items: [], page: 1, page_size: 50, total: 0 };
+      throw new Error(`Unexpected API path: ${path}`);
+    });
+    const user = userEvent.setup();
+    withQueryClient(<NotificationChannelsClient />);
+
+    await user.click(await screen.findByRole("button", { name: "添加渠道" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Provider" }),
+      "email",
+    );
+
+    expect(screen.getByLabelText("SMTP username")).toHaveAttribute(
+      "autocomplete",
+      "off",
+    );
+    expect(screen.getByLabelText("SMTP password")).toHaveAttribute(
+      "autocomplete",
+      "new-password",
+    );
+    expect(screen.getByLabelText("SMTP password")).toHaveAttribute(
+      "data-lpignore",
+      "true",
+    );
+  });
+
+  it("设置中心展示数据库细项并把工作区 LLM 参数加密提交到后端", async () => {
+    const llmSetting = {
+      id: null,
+      provider_key: "openai_compatible",
+      name: "OpenAI 兼容接口",
+      source: "unconfigured" as const,
+      base_url: "https://api.openai.com/v1",
+      api_key_configured: false,
+      config_masked: {},
+      default_model: "gpt-4.1-mini",
+      default_parameters: {
+        temperature: 0.4,
+        top_p: 1,
+        max_tokens: 4096,
+        timeout_seconds: 60,
+        max_attempts: 3,
+      },
+      input_cost_per_million: null,
+      output_cost_per_million: null,
+      enabled: true,
+      configured: false,
+      last_tested_at: null,
+      health_status: "unknown",
+      updated_at: null,
+      fields: [],
+    };
+    apiRequestMock.mockImplementation(
+      async (path: string, options?: RequestInit) => {
+        if (path === "/settings/runtime") {
+          return {
+            environment: "test",
+            apply_mode: "environment_restart",
+            warning: "重启后生效",
+            sections: [
+              {
+                key: "database",
+                title: "PostgreSQL / 数据库",
+                description: "脱敏连接",
+                fields: [
+                  {
+                    key: "database_pool_size",
+                    label: "连接池基础连接数",
+                    value: 10,
+                    value_type: "number",
+                    env_var: "SIO_DATABASE_POOL_SIZE",
+                    description: "每进程连接数",
+                    secret: false,
+                    restart_required: true,
+                    minimum: 1,
+                    maximum: 100,
+                  },
+                ],
+              },
+            ],
+          };
+        }
+        if (
+          path === "/settings/llm/openai-compatible" &&
+          options?.method === "PUT"
+        ) {
+          return { ...llmSetting, source: "database", configured: true };
+        }
+        if (path === "/settings/llm/openai-compatible") return llmSetting;
+        if (path === "/llm/providers") return [];
+        throw new Error(`Unexpected API path: ${path}`);
+      },
+    );
+
+    const runtimeView = withQueryClient(<RuntimeSettingsPanel />);
+    await screen.findByText("连接池基础连接数");
+    expect(screen.getByDisplayValue("10")).toHaveAttribute("min", "1");
+    runtimeView.unmount();
+
+    const user = userEvent.setup();
+    withQueryClient(<LLMSettingsPanel />);
+    const keyInput = await screen.findByLabelText(/^API Key/);
+    await user.type(keyInput, "sk-browser-secret");
+    const modelInput = screen.getByLabelText("默认模型");
+    await user.clear(modelInput);
+    await user.type(modelInput, "sports-model-v2");
+    await user.click(screen.getByRole("button", { name: "保存配置" }));
+
+    await waitFor(() =>
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        "/settings/llm/openai-compatible",
+        expect.objectContaining({
+          method: "PUT",
+          csrf: true,
+          workspaceId: "workspace-1",
+        }),
+      ),
+    );
+    const saveCall = apiRequestMock.mock.calls.find(
+      ([path, options]) =>
+        path === "/settings/llm/openai-compatible" && options?.method === "PUT",
+    );
+    const payload = JSON.parse(String(saveCall?.[1]?.body));
+    expect(payload).toMatchObject({
+      api_key: "sk-browser-secret",
+      default_model: "sports-model-v2",
+      temperature: 0.4,
+      top_p: 1,
+      max_tokens: 4096,
+    });
   });
 });

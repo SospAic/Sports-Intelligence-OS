@@ -78,6 +78,7 @@ def client(database_path: Path) -> Iterator[TestClient]:
         redis_url="redis://127.0.0.1:6399/15",
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
+        auth_login_max_attempts_per_identity=3,
         cors_origins=["http://testserver"],
     )
     app = create_app(settings)

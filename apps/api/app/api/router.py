@@ -8,6 +8,7 @@ from app.api.routes import (
     monitoring,
     news,
     operations,
+    settings,
     topics,
     users,
 )
@@ -22,3 +23,4 @@ api_router.include_router(generation.router)
 api_router.include_router(automation.router)
 api_router.include_router(topics.router)
 api_router.include_router(operations.router)
+api_router.include_router(settings.router)

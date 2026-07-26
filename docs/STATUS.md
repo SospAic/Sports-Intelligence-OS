@@ -158,17 +158,17 @@ Prompt 10 与 Prompt 11 已严格按顺序完成。最终审查没有增加产�
 | 验证项 | 结果 |
 | --- | --- |
 | 后端 Ruff | 通过，应用、测试及验证脚本无错误 |
-| 后端 Mypy strict | 通过，116 个源文件无错误 |
-| 后端 Pytest | 通过，45 项测试；另有 1 条上游 TestClient/httpx 弃用警告 |
-| 仓库与验收脚本测试 | 通过，27 项测试（含 4 项验收 URL 安全回归） |
+| 后端 Mypy strict | 通过，120 个源文件无错误 |
+| 后端 Pytest | 通过，51 项测试；另有 1 条上游 TestClient/httpx 弃用警告 |
+| 仓库与验收脚本测试 | 通过，35 项测试（含安装器、Compose 配置传播与 URL 安全回归） |
 | 前端 TypeScript | 通过，3 个工作区包完成检查 |
 | 前端 ESLint | 通过 |
-| 前端 Vitest | 通过，21 项测试 |
+| 前端 Vitest | 通过，23 项测试 |
 | Prettier | 通过 |
 | Next.js production build | 通过，静态页面生成 22/22，动态路由编译成功 |
 | 本地 HTTP 冒烟 | FastAPI 健康检查与 Next 登录页均返回 200 |
-| 浏览器可视化点击 | 当前 Windows 沙箱阻断浏览器控制运行时；未宣称通过 |
-| Alembic | 临时 SQLite 完成 0008 upgrade → current → downgrade 0007 → upgrade，并核对 38 张表；`alembic check` 无模型差异 |
+| 浏览器可视化点击 | 通过本地登录后的设置中心验收：部署参数、LLM 配置和 Email 动态字段均由真实 API 驱动 |
+| Alembic | 临时 SQLite 完成 0001 → 0010 升级，并核对 40 张表；模型与迁移契约通过 |
 | Compose 静态校验 | 通过，7 个服务、4 个健康检查、依赖门与数据卷符合约束 |
 | `docker compose config --quiet` | 本机未安装 Docker CLI，无法执行；CI 已配置为强制执行 |
 
@@ -189,7 +189,7 @@ YouTube 官方 Data API Adapter 已实现，但本机没有 API Key，真实调�
 - 自动化首期为 30 秒级近实时扫描，不是消息总线级实时；完整 Outbox 消费、每次网络尝试独立表和通知模板版本管理尚未实现。
 - 全局搜索首期只覆盖页面/功能入口；服务端保存列布局、跨域全文检索和大数据量专用仪表盘聚合尚未实现。
 - 已具备 SQLite 隔离的 API/领域测试、React 组件测试和完整 Mock 垂直链路；PostgreSQL/Redis 容器集成与浏览器实机验收因本机无 Docker 仍需在具备容器运行时的环境执行。
-- 会话清理和完整 Outbox 消费仍未实现；任务失联租约已实现，但独立死信表和每次外部尝试明细仍待第二阶段。
+- 完整 Outbox 消费仍未实现；任务失联租约和过期会话定时清理已实现，但独立死信表和每次外部尝试明细仍待第二阶段。
 
 ## 阶段结论
 
@@ -198,7 +198,7 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 ## 2026-07-26 本地运行与行业对标补充
 
 - 当前 Windows 主机仍未安装 Docker/Podman、PostgreSQL、Redis、Make 和 GitHub CLI；因此不能执行完整 Compose、Worker 或 Beat 实机验收。
-- 使用独立 SQLite 开发数据库完成 0001–0008 迁移，并初始化本地管理员、平台目录、显式 Demo/Mock 监控数据、停用的新闻源示例、完整 7.9 规则、默认 Prompt/工作流和停用的自动化示例。
+- 使用独立 SQLite 开发数据库完成 0001–0010 迁移，并初始化本地管理员、平台目录、显式 Demo/Mock 监控数据、停用的新闻源示例、完整 7.9 规则、默认 Prompt/工作流和停用的自动化示例。
 - FastAPI `/health/live`、Next `/login`、真实登录、`/api/v1/me`、Dashboard 和账号 API 均返回 200；账号响应保留 Mock 标记。Redis 缺失时 `/health/ready` 如实返回 503，未将降级开发模式描述为全栈就绪。
 - 行业官方产品资料对标与第二阶段建议见 `docs/INDUSTRY_BENCHMARK_AND_OPTIMIZATION.md`。优先级是表现归因闭环、趋势异常解释、跨语言事件与事实证据、人工审批，以及 Outbox/死信/重放可靠性。
 - 上传前全量检查通过：后端 45 项、前端 21 项、仓库与验收脚本 27 项测试通过；Ruff、Mypy、TypeScript、ESLint、Prettier 和 Compose 静态校验通过。验收脚本新增 HTTP(S) 同源限制，拒绝非 HTTP scheme、URL 明文凭证和跨源绝对路径。
@@ -211,3 +211,11 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 首次安装只在 `.env` 不存在时生成 PostgreSQL、会话签名和通知加密随机值；已有 `.env` 不覆盖、不自动轮换。管理员密码省略时随机生成，仅在安装成功后显示，不写入 Git 或 `.sio` 状态文件。
 - 安装闭环包括 Compose 配置校验、七服务构建启动、API readiness、Alembic 自动迁移、管理员、平台目录、完整 7.9 规则、Prompt/工作流、停用新闻源与停用自动化示例。Demo 监控数据保持显式 `--with-demo-data`/`-WithDemoData` opt-in，并标记为 Mock。
 - 新增 `docs/ONE_CLICK_INSTALL.md` 与安装器契约测试；PowerShell AST、Bash 语法、34 项仓库契约、45 项后端测试、21 项前端测试及生产构建均通过。脚本只在静态语法和无副作用契约层验证，当前 Windows 主机仍没有 Docker，因此没有把宿主机 Docker 安装、PostgreSQL/Redis 容器启动描述为已实机通过。
+
+## 2026-07-26 设置中心与安全收口
+
+- 设置中心已拆分为部署级参数和工作区级加密配置：数据库/Redis 展示脱敏拓扑、连接池、超时、重试、任务与会话参数，并只生成不含凭证的环境变量草稿，不允许 Web API 改写宿主机 `.env`。
+- 新增工作区 OpenAI 兼容 LLM 配置、默认模型与采样参数、成本、超时、重试、自定义请求头、真实连接测试和 SSRF 公网地址校验；API Key 与自定义头只在后端加密保存。手动生成、Worker 和自动化生成均读取同一生效配置。
+- Email、Generic Webhook、Telegram、Discord、飞书、钉钉和企业微信 Provider 均通过统一字段描述契约驱动前端，支持各自的超时、重试、签名、提及、解析模式等参数；编辑时空白 Secret 保留旧值，显式操作才能清除。
+- 登录失败限流改为数据库共享窗口，身份和客户端地址仅保存 HMAC；新增每小时会话/登录尝试清理任务。浏览器验收同时修复通知凭证表单被密码管理器误填的风险。
+- 当前全量结果：后端 51 项、前端 23 项、仓库契约 35 项测试通过；Ruff、Mypy strict（120 个源文件）、TypeScript、ESLint、Prettier、Next.js 生产构建和 Compose 静态校验通过；迁移 0001–0010 共 40 张表通过临时 SQLite 验证。

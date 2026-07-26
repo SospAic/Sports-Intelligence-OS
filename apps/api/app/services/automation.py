@@ -505,7 +505,7 @@ class AutomationService:
                 "model_config": config.get("model_config", {}),
             }
         )
-        generation_service = GenerationService(self.session, self.llm_providers)
+        generation_service = GenerationService(self.session, self.llm_providers, self.settings)
         run, _ = await generation_service.create_run(
             workspace_id,
             actor_id,
@@ -764,14 +764,22 @@ class AutomationService:
         channel = await self._channel(workspace_id, channel_id)
         if payload.config is not None:
             provider = self._notification_provider(channel.provider_key)
+            current_config = self.cipher.decrypt(channel.config_encrypted)
+            secret_keys = {field.key for field in provider.config_fields if field.secret}
+            updates = {
+                key: value
+                for key, value in payload.config.items()
+                if not (key in secret_keys and isinstance(value, str) and value in {"", "••••••••"})
+            }
+            merged_config = {**current_config, **updates}
             try:
-                await provider.validate_config(payload.config)
+                await provider.validate_config(merged_config)
             except (NotificationProviderError, ValueError) as exc:
                 raise AutomationError(
                     str(exc), code="notification_config_invalid", status_code=422
                 ) from exc
-            channel.config_encrypted = self.cipher.encrypt(payload.config)
-            channel.config_masked = mask_notification_config(payload.config)
+            channel.config_encrypted = self.cipher.encrypt(merged_config)
+            channel.config_masked = mask_notification_config(merged_config)
             channel.health_status = "unknown"
         if payload.name is not None:
             channel.name = payload.name

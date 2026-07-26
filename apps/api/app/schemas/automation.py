@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.settings import ConfigFieldDescriptor
+
 EntityType = Literal["content", "account", "news", "topic_event"]
 ActionType = Literal[
     "notification",
@@ -202,7 +204,7 @@ class NotificationProviderRead(BaseModel):
     key: str
     name: str
     is_mock: bool
-    config_fields: list[str]
+    config_fields: list[ConfigFieldDescriptor]
 
 
 class NotificationTestRequest(StrictModel):

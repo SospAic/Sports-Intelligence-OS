@@ -1,12 +1,13 @@
 "use client";
 import type {
+  ConfigFieldDescriptor,
   NotificationChannelRecord,
   NotificationDeliveryPage,
   NotificationProviderDescriptor,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
+import { Pencil, Plus, Send, ShieldCheck, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
@@ -23,32 +24,24 @@ import {
 } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
-import { normalizeNotificationConfig } from "@/lib/notification-config";
-const labels: Record<string, string> = {
-  host: "SMTP 主机",
-  port: "端口",
-  username: "用户名",
-  password: "密码",
-  from_email: "发件人",
-  to_emails: "收件人（逗号分隔）",
-  use_tls: "使用 STARTTLS",
-  use_ssl: "使用 SSL",
-  url: "Webhook URL",
-  headers: "附加请求头（JSON）",
-  signing_secret: "签名密钥",
-  bot_token: "Bot Token",
-  chat_id: "Chat ID",
-  webhook_url: "Webhook URL",
-  secret: "签名密钥",
-  simulate_error: "模拟错误",
-};
-export function NotificationChannelsClient() {
+import {
+  normalizeNotificationConfig,
+  notificationConfigDefaults,
+  type NotificationConfigInput,
+} from "@/lib/notification-config";
+
+export function NotificationChannelsClient({
+  embedded = false,
+}: {
+  embedded?: boolean;
+}) {
   const { workspaceId, role } = useWorkspace();
   const { notify } = useToast();
   const qc = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [providerKey, setProviderKey] = useState("");
-  const [config, setConfig] = useState<Record<string, string | boolean>>({});
+  const [config, setConfig] = useState<NotificationConfigInput>({});
   const [name, setName] = useState("");
   const providers = useQuery({
     queryKey: ["notification-providers"],
@@ -77,28 +70,69 @@ export function NotificationChannelsClient() {
   });
   const provider = providers.data?.find((item) => item.key === providerKey);
   const canAdmin = ["owner", "admin"].includes(role ?? "");
-  async function create() {
+  function resetEditor() {
+    setCreating(false);
+    setEditingId(null);
+    setProviderKey("");
+    setConfig({});
+    setName("");
+  }
+  function beginCreate() {
+    resetEditor();
+    setCreating(true);
+  }
+  function beginEdit(channel: NotificationChannelRecord) {
+    const descriptor = providers.data?.find(
+      (item) => item.key === channel.provider_key,
+    );
+    const values = notificationConfigDefaults(descriptor?.config_fields ?? []);
+    for (const field of descriptor?.config_fields ?? []) {
+      const masked = channel.config_masked[field.key];
+      if (field.secret) {
+        delete values[field.key];
+        continue;
+      }
+      if (masked === null || masked === undefined) continue;
+      values[field.key] = serializeFieldValue(field, masked);
+    }
+    setProviderKey(channel.provider_key);
+    setName(channel.name);
+    setConfig(values);
+    setEditingId(channel.id);
+    setCreating(true);
+  }
+  async function save() {
     if (!workspaceId) return;
     try {
-      const normalized = normalizeNotificationConfig(config);
-      await apiRequest("/notification-channels", {
-        method: "POST",
-        workspaceId,
-        csrf: true,
-        body: JSON.stringify({
-          provider_key: providerKey,
-          name,
-          config: normalized,
-          enabled: true,
-        }),
-      });
-      notify("通知渠道已加密保存；API 不会返回明文密钥。");
-      setCreating(false);
-      setConfig({});
-      setName("");
+      const normalized = normalizeNotificationConfig(
+        config,
+        provider?.config_fields,
+      );
+      await apiRequest(
+        editingId
+          ? `/notification-channels/${editingId}`
+          : "/notification-channels",
+        {
+          method: editingId ? "PATCH" : "POST",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({
+            ...(editingId ? {} : { provider_key: providerKey }),
+            name,
+            config: normalized,
+            ...(editingId ? {} : { enabled: true }),
+          }),
+        },
+      );
+      notify(
+        editingId
+          ? "渠道参数已更新；留空的敏感字段保持原值。"
+          : "通知渠道已加密保存；API 不会返回明文密钥。",
+      );
+      resetEditor();
       await qc.invalidateQueries({ queryKey: ["notification-channels"] });
     } catch (error) {
-      notify(error instanceof Error ? error.message : "创建失败", "error");
+      notify(error instanceof Error ? error.message : "保存失败", "error");
     }
   }
   async function toggle(channel: NotificationChannelRecord) {
@@ -207,35 +241,58 @@ export function NotificationChannelsClient() {
       ),
     },
   ];
-  return (
-    <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
-      <PageHeader
-        eyebrow="Notifications"
-        title="通知渠道"
-        description="渠道密钥只在后端加密保存；此页面仅展示脱敏配置，测试真实渠道前会再次确认。"
-        actions={
-          canAdmin && (
-            <button
-              className={buttonClass}
-              onClick={() => setCreating((v) => !v)}
-            >
-              <Plus size={15} />
-              添加渠道
-            </button>
-          )
-        }
-      />
+  const content = (
+    <>
+      {!embedded && (
+        <PageHeader
+          eyebrow="Notifications"
+          title="通知渠道"
+          description="渠道密钥只在后端加密保存；此页面仅展示脱敏配置，测试真实渠道前会再次确认。"
+          actions={
+            canAdmin && (
+              <button className={buttonClass} onClick={beginCreate}>
+                <Plus size={15} />
+                添加渠道
+              </button>
+            )
+          }
+        />
+      )}
+      {embedded && canAdmin && !creating && (
+        <div className="flex justify-end">
+          <button className={buttonClass} onClick={beginCreate}>
+            <Plus size={15} />
+            添加通知渠道
+          </button>
+        </div>
+      )}
       {creating && (
         <Panel className="space-y-4 p-5">
+          <div>
+            <h2 className="font-medium text-white">
+              {editingId ? "编辑通知渠道" : "添加通知渠道"}
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              {editingId
+                ? "敏感字段留空会保留原值；新值只在后端加密保存。"
+                : "根据 Provider 契约验证字段后加密保存。"}
+            </p>
+          </div>
           <div className="grid gap-3 md:grid-cols-2">
             <label className="grid gap-2 text-sm">
               Provider
               <select
                 className={inputClass}
                 value={providerKey}
+                disabled={Boolean(editingId)}
                 onChange={(e) => {
                   setProviderKey(e.target.value);
-                  setConfig({});
+                  const next = providers.data?.find(
+                    (item) => item.key === e.target.value,
+                  );
+                  setConfig(
+                    notificationConfigDefaults(next?.config_fields ?? []),
+                  );
                 }}
               >
                 <option value="">选择 Provider</option>
@@ -256,56 +313,92 @@ export function NotificationChannelsClient() {
               />
             </label>
             {provider?.config_fields.map((field) =>
-              field.startsWith("use_") || field === "simulate_error" ? (
+              field.value_type === "boolean" ? (
                 <label
                   className="flex items-center gap-2 pt-7 text-sm"
-                  key={field}
+                  key={field.key}
                 >
                   <input
                     type="checkbox"
-                    checked={Boolean(config[field])}
+                    checked={Boolean(config[field.key])}
                     onChange={(e) =>
                       setConfig((value) => ({
                         ...value,
-                        [field]: e.target.checked,
+                        [field.key]: e.target.checked,
                       }))
                     }
                   />
-                  {labels[field] ?? field}
+                  {field.label}
                 </label>
               ) : (
-                <label className="grid gap-2 text-sm" key={field}>
-                  {labels[field] ?? field}
-                  {field === "headers" ? (
+                <label className="grid gap-2 text-sm" key={field.key}>
+                  <span>
+                    {field.label}
+                    {field.required && !editingId ? " *" : ""}
+                  </span>
+                  {field.value_type === "json" ||
+                  field.value_type === "list" ? (
                     <textarea
                       className={`${inputClass} h-20 py-2 font-mono`}
-                      value={String(config[field] ?? "")}
+                      placeholder={field.placeholder ?? undefined}
+                      value={String(config[field.key] ?? "")}
                       onChange={(e) =>
                         setConfig((value) => ({
                           ...value,
-                          [field]: e.target.value,
+                          [field.key]: e.target.value,
                         }))
                       }
                     />
+                  ) : field.value_type === "select" ? (
+                    <select
+                      className={inputClass}
+                      value={String(config[field.key] ?? field.default ?? "")}
+                      onChange={(e) =>
+                        setConfig((value) => ({
+                          ...value,
+                          [field.key]: e.target.value,
+                        }))
+                      }
+                    >
+                      {field.options.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   ) : (
                     <input
                       className={inputClass}
+                      name={`notification-${providerKey}-${field.key}`}
                       type={
-                        /password|secret|token/.test(field)
+                        field.value_type === "password"
                           ? "password"
-                          : field === "port"
+                          : field.value_type === "number"
                             ? "number"
                             : "text"
                       }
-                      autoComplete="off"
-                      value={String(config[field] ?? "")}
+                      min={field.minimum ?? undefined}
+                      max={field.maximum ?? undefined}
+                      step={field.step ?? undefined}
+                      placeholder={field.placeholder ?? undefined}
+                      autoComplete={
+                        field.value_type === "password" ? "new-password" : "off"
+                      }
+                      data-1p-ignore
+                      data-lpignore="true"
+                      value={String(config[field.key] ?? "")}
                       onChange={(e) =>
                         setConfig((value) => ({
                           ...value,
-                          [field]: e.target.value,
+                          [field.key]: e.target.value,
                         }))
                       }
                     />
+                  )}
+                  {field.help_text && (
+                    <span className="text-xs text-slate-500">
+                      {field.help_text}
+                    </span>
                   )}
                 </label>
               ),
@@ -315,15 +408,12 @@ export function NotificationChannelsClient() {
             <button
               className={buttonClass}
               disabled={!providerKey || !name}
-              onClick={create}
+              onClick={save}
             >
               <ShieldCheck size={15} />
               验证并加密保存
             </button>
-            <button
-              className={secondaryButtonClass}
-              onClick={() => setCreating(false)}
-            >
+            <button className={secondaryButtonClass} onClick={resetEditor}>
               取消
             </button>
           </div>
@@ -378,6 +468,13 @@ export function NotificationChannelsClient() {
                   {channel.enabled ? "停用" : "启用"}
                 </button>
                 <button
+                  className={`${secondaryButtonClass} h-8 px-2`}
+                  onClick={() => beginEdit(channel)}
+                >
+                  <Pencil size={13} />
+                  编辑
+                </button>
+                <button
                   className="ml-auto text-rose-300"
                   onClick={() => remove(channel)}
                 >
@@ -411,6 +508,30 @@ export function NotificationChannelsClient() {
           />
         )}
       </div>
+    </>
+  );
+  if (embedded) return <section className="space-y-6">{content}</section>;
+  return (
+    <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+      {content}
     </main>
   );
+}
+
+function serializeFieldValue(
+  field: ConfigFieldDescriptor,
+  value: unknown,
+): string | number | boolean {
+  if (field.value_type === "json") return JSON.stringify(value, null, 2);
+  if (field.value_type === "list" && Array.isArray(value)) {
+    return value.join("\n");
+  }
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  return "";
 }

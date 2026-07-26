@@ -123,6 +123,9 @@ class ProviderDescriptor(BaseModel):
     is_mock: bool
     supports_streaming: bool
     detail: str
+    source: Literal["database", "environment", "builtin", "unconfigured"] = "builtin"
+    default_model: str | None = None
+    default_parameters: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationCreate(BaseModel):

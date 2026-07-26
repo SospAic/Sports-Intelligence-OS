@@ -15,6 +15,7 @@ from app.api.routes.generation import generation_exception_handler
 from app.api.routes.health import router as health_router
 from app.api.routes.monitoring import monitoring_exception_handler, sync_exception_handler
 from app.api.routes.news import news_exception_handler
+from app.api.routes.settings import settings_exception_handler
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
@@ -28,6 +29,7 @@ from app.services.editorial_rules import EditorialRuleError
 from app.services.generation import GenerationError
 from app.services.monitoring import MonitoringError
 from app.services.news import NewsError
+from app.services.settings import SettingsError
 from app.services.sync import SyncError
 
 
@@ -40,7 +42,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine, session_factory = create_engine_and_session(resolved_settings)
         app.state.engine = engine
         app.state.session_factory = session_factory
-        app.state.redis = Redis.from_url(resolved_settings.redis_url, decode_responses=True)
+        app.state.redis = Redis.from_url(
+            resolved_settings.redis_url,
+            decode_responses=True,
+            socket_connect_timeout=resolved_settings.redis_connect_timeout_seconds,
+            socket_timeout=resolved_settings.redis_socket_timeout_seconds,
+            max_connections=resolved_settings.redis_max_connections,
+            health_check_interval=resolved_settings.redis_health_check_interval_seconds,
+            retry_on_timeout=resolved_settings.redis_retry_on_timeout,
+        )
         app.state.platform_adapters = build_platform_adapter_registry(resolved_settings)
         app.state.news_providers = build_news_provider_registry(resolved_settings)
         app.state.llm_providers = build_llm_provider_registry(resolved_settings)
@@ -97,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(EditorialRuleError, editorial_rule_exception_handler)
     application.add_exception_handler(GenerationError, generation_exception_handler)
     application.add_exception_handler(AutomationError, automation_exception_handler)
+    application.add_exception_handler(SettingsError, settings_exception_handler)
     application.include_router(health_router)
     application.include_router(api_router)
     return application

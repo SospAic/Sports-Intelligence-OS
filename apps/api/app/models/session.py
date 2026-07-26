@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -32,3 +32,21 @@ class AuthSession(Base):
     user_agent_summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="sessions")
+
+
+class LoginAttempt(Base):
+    """Hashed login security signal; never stores the submitted email or raw IP."""
+
+    __tablename__ = "login_attempts"
+    __table_args__ = (
+        Index("ix_login_attempts_identity_time", "identity_hash", "attempted_at"),
+        Index("ix_login_attempts_ip_time", "ip_hash", "attempted_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ip_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

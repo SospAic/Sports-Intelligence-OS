@@ -1,11 +1,14 @@
 import asyncio
 import json
-from uuid import uuid4
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 from app.automations.conditions import (
     ConditionValidationError,
@@ -13,6 +16,7 @@ from app.automations.conditions import (
     validate_condition_tree,
 )
 from app.core.config import Settings
+from app.models.automation import NotificationChannel
 from app.providers.notifications.base import NotificationMessage
 from app.providers.notifications.crypto import NotificationConfigCipher, mask_notification_config
 from app.providers.notifications.http import (
@@ -200,6 +204,11 @@ def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestCl
         "dingtalk",
         "wecom",
     }
+    providers = {item["key"]: item for item in provider_response.json()}
+    email_fields = {item["key"] for item in providers["email"]["config_fields"]}
+    webhook_fields = {item["key"] for item in providers["generic_webhook"]["config_fields"]}
+    assert {"host", "port", "use_tls", "use_ssl", "timeout_seconds"} <= email_fields
+    assert {"url", "headers", "signing_secret", "max_attempts"} <= webhook_fields
 
     channel_response = client.post(
         "/api/v1/notification-channels",
@@ -311,6 +320,62 @@ def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestCl
     assert test_delivery.status_code == 200, test_delivery.text
     assert test_delivery.json()["status"] == "delivered"
     assert test_delivery.json()["provider_message_id"].startswith("mock-")
+
+
+def test_notification_channel_edit_preserves_blank_secrets(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    csrf = authenticate(client)
+    headers = {"X-CSRF-Token": csrf}
+    created = client.post(
+        "/api/v1/notification-channels",
+        headers=headers,
+        json={
+            "provider_key": "generic_webhook",
+            "name": "精细参数 Webhook",
+            "config": {
+                "url": "https://hooks.example.com/sports/private-token",
+                "headers": {"Authorization": "Bearer private-value"},
+                "signing_secret": "signing-secret-value",
+                "timeout_seconds": 10,
+                "max_attempts": 3,
+            },
+            "enabled": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    channel_id = created.json()["id"]
+    assert "private-token" not in created.text
+    assert "private-value" not in created.text
+    assert "signing-secret-value" not in created.text
+
+    updated = client.patch(
+        f"/api/v1/notification-channels/{channel_id}",
+        headers=headers,
+        json={
+            "name": "精细参数 Webhook（更新）",
+            "config": {"signing_secret": "", "timeout_seconds": 25, "max_attempts": 4},
+        },
+    )
+    assert updated.status_code == 200, updated.text
+
+    sync_engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        with Session(sync_engine) as session:
+            channel = session.scalar(
+                select(NotificationChannel).where(NotificationChannel.id == UUID(channel_id))
+            )
+            assert channel is not None
+            config = NotificationConfigCipher("test-only-secret-not-used-in-production").decrypt(
+                channel.config_encrypted
+            )
+            assert config["signing_secret"] == "signing-secret-value"  # noqa: S105
+            assert config["headers"]["Authorization"] == "Bearer private-value"
+            assert config["timeout_seconds"] == 25
+            assert config["max_attempts"] == 4
+    finally:
+        sync_engine.dispose()
 
 
 def test_automation_routes_require_authentication(client: TestClient) -> None:

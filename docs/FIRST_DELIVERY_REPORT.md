@@ -5,7 +5,7 @@
 
 ## 交付结论
 
-代码、迁移、测试、中文文档和单机 Docker Compose 编排已经形成完整首期交付包。后端 45 项测试、前端 17 项测试、仓库契约测试、Python/TypeScript 静态检查和 Next.js 生产构建通过。
+代码、迁移、测试、中文文档和单机 Docker Compose 编排已经形成完整首期交付包。后端 51 项测试、前端 23 项测试、仓库契约 35 项测试、Python/TypeScript 静态检查和 Next.js 生产构建通过。
 
 当前执行环境缺少 Docker，因此本报告不把 Compose 静态检查或 SQLite 测试冒充 PostgreSQL/Redis/Worker/Beat 实机成功。第一次部署仍需在有 Docker Compose v2 的机器上执行本文“目标环境验收”清单。
 
@@ -20,6 +20,8 @@
 - 版本化 Prompt、统一 LLM Provider、十步生成工作流、Mock LLM、OpenAI 兼容 Provider、QA 和有限重写。
 - 结构化条件树、冷却、去重、连续命中、动作链和执行历史。
 - Email、Generic Webhook、Telegram、Discord、飞书、钉钉和企业微信 Provider；通知配置加密保存。
+- 细颗粒度设置中心：数据库/Redis 脱敏拓扑与连接参数、工作区 LLM 加密配置、统一通知 Provider 字段契约和连接测试。
+- 数据库共享的登录失败限流、HMAC 身份/IP 审计以及过期会话和登录尝试定时清理。
 - 中文管理后台：仪表盘、账号、作品、新闻、事件、选题、生成、规则、Prompt、自动化、通知、任务和日志。
 - Docker Compose、Caddy、Alembic、Celery Worker/Beat、Makefile、CI 和中文运维文档。
 
@@ -38,10 +40,11 @@ Mock 结果固定包含 `source_kind=mock`、Provider 标识或 `MOCK TEST OUTPU
 
 | 检查 | 结果 |
 | --- | --- |
-| 后端 Pytest | 45 passed；1 个上游 Starlette TestClient/httpx 弃用警告 |
-| 前端 Vitest | 17 passed |
+| 后端 Pytest | 51 passed；1 个上游 Starlette TestClient/httpx 弃用警告 |
+| 仓库契约 Pytest | 35 passed |
+| 前端 Vitest | 23 passed |
 | Ruff | passed |
-| mypy | 116 个源文件通过 |
+| mypy | 120 个源文件通过 |
 | TypeScript | passed |
 | ESLint | passed |
 | Prettier | passed |
@@ -49,7 +52,8 @@ Mock 结果固定包含 `source_kind=mock`、Provider 标识或 `MOCK TEST OUTPU
 | Compose 静态解析脚本 | passed；7 个服务和依赖/健康检查契约有效 |
 | 本地 HTTP 冒烟 | FastAPI `/health/live` 200；Next `/login` 200 且存在密码表单 |
 | Docker Compose 实机 | 未执行：当前机器没有 Docker/Podman/nerdctl |
-| 浏览器可视化点击 | 未执行完成：浏览器控制运行时被当前 Windows 沙箱拒绝；组件交互测试已通过但不能替代实机 |
+| 浏览器可视化点击 | 本地设置中心通过：数据库/Redis、LLM API、通知 Provider 动态字段均由真实后端 API 驱动 |
+| Alembic | 0001–0010 在临时 SQLite 升级通过并核对 40 张表；PostgreSQL 实机仍待 Docker 环境验证 |
 
 测试没有通过删除、跳过或放宽既有断言换取成功。集成链路只使用显式 Mock、SQLite 隔离数据库和本地 `httpx.MockTransport`，没有访问外部平台。
 
@@ -91,7 +95,7 @@ make smoke
 ## 需要用户提供的配置
 
 - YouTube：`SIO_YOUTUBE_API_KEY`；只覆盖公开 Data API，Analytics OAuth 私有指标尚未实现。
-- LLM：`SIO_LLM_OPENAI_COMPATIBLE_BASE_URL`、`SIO_LLM_OPENAI_COMPATIBLE_API_KEY`、默认模型和可选费率。
+- LLM：可在设置中心按工作区加密保存 Base URL、API Key、默认模型/参数、超时、重试和费率；部署环境变量仍可作为回退配置。
 - RSS/Atom/JSON：用户确认可访问和可使用的公网来源 URL、字段映射及可靠度。
 - 通知：SMTP 或各平台 Webhook/Bot 配置；凭证只提交到后端加密配置。
 - 生产安全：强数据库密码、独立 32 字符以上 Secret、HTTPS 和安全 Cookie。
@@ -102,14 +106,14 @@ make smoke
 - 新闻聚类是标题相似度基础版，不支持跨语言向量聚类或通用联网研究。
 - OpenAI 兼容 Provider 首期不流式输出；Anthropic、Gemini、DeepSeek 专有协议未实现。
 - 自动化是 30 秒扫描级准实时，不是消息总线级实时；没有独立死信表和每个 HTTP 尝试的明细表。
-- 登录速率限制、Session 清理、跨主机高可用、服务端保存视图和完整浏览器 E2E 仍待实现。
+- 跨主机高可用、服务端保存视图和覆盖全部业务路径的持续浏览器 E2E 仍待实现。
 - 部分核心 Service 文件偏大，需要第二阶段拆分，但当前 Adapter/Provider/Repository 边界保持清晰。
 
 ## 第二阶段建议
 
 1. 在真实 Docker/PostgreSQL/Redis 环境补齐持续浏览器 E2E 和故障注入。
 2. 完成真实 YouTube 凭证验收及 Analytics OAuth，并严格区分公开和私有指标。
-3. 增加登录限流、Session 清理、死信/重放和每次外部尝试的审计记录。
+3. 增加事务 Outbox、死信/重放和每次外部尝试的独立审计记录。
 4. 按编排、验证、动作执行和持久化拆分大型 Service。
 5. 增加研究检索、跨语言事件聚类和人工事实审核队列。
 6. 扩展 LLM 与平台 Adapter，但继续遵守官方 API、来源追踪和不伪造数据约束。

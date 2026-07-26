@@ -37,6 +37,25 @@ def test_login_rejects_invalid_credentials_without_leaking_account_state(
     assert "missing@example.com" not in response.text
 
 
+def test_login_rate_limit_uses_hashed_identity_and_returns_retry_after(
+    client: TestClient,
+) -> None:
+    for _ in range(3):
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@example.com", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+    blocked = client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@example.com", "password": TEST_PASSWORD},
+    )
+    assert blocked.status_code == 429
+    assert blocked.json()["code"] == "login_rate_limited"
+    assert blocked.headers["retry-after"] == "900"
+    assert "admin@example.com" not in blocked.text
+
+
 def test_login_current_user_csrf_and_logout_flow(client: TestClient) -> None:
     auth = login(client)
     assert auth["user"]["email"] == "admin@example.com"

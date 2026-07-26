@@ -18,7 +18,7 @@ async def _execute(run_id: UUID) -> None:
     providers = build_llm_provider_registry(settings)
     try:
         async with session_factory() as session:
-            await GenerationService(session, providers).execute_run(run_id)
+            await GenerationService(session, providers, settings).execute_run(run_id)
     finally:
         for provider in providers.values():
             close = getattr(provider, "aclose", None)

@@ -7,6 +7,22 @@ from typing import Any, Literal
 
 
 @dataclass(frozen=True)
+class ProviderConfigField:
+    key: str
+    label: str
+    value_type: Literal["text", "password", "number", "boolean", "select", "json", "list"]
+    required: bool = False
+    secret: bool = False
+    default: Any = None
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+    options: tuple[tuple[str, str], ...] = ()
+    placeholder: str | None = None
+    help_text: str | None = None
+
+
+@dataclass(frozen=True)
 class NotificationMessage:
     title: str
     body: str
@@ -58,6 +74,7 @@ class NotificationProvider(ABC):
     key: str
     name: str
     is_mock: bool = False
+    config_fields: tuple[ProviderConfigField, ...] = ()
 
     @abstractmethod
     async def validate_config(self, config: Mapping[str, Any]) -> None: ...

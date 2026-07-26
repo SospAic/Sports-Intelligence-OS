@@ -20,6 +20,7 @@ from app.providers.llm.base import (
     LLMResponse,
     LLMUsage,
 )
+from app.providers.news.utils import ensure_public_endpoint, validate_source_url
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -34,12 +35,17 @@ class OpenAICompatibleProvider(LLMProvider):
         api_key: str | None,
         timeout_seconds: float,
         max_attempts: int,
+        organization: str | None = None,
+        project: str | None = None,
+        custom_headers: Mapping[str, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
         self._api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
-        self._client = httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False)
+        self.organization = organization
+        self.project = project
+        self.custom_headers = dict(custom_headers or {})
 
     @property
     def configured(self) -> bool:
@@ -50,8 +56,12 @@ class OpenAICompatibleProvider(LLMProvider):
             raise LLMProviderConfigurationError(
                 "OpenAI compatible provider requires backend base URL and API key"
             )
-        if not self.base_url or not self.base_url.startswith(("https://", "http://")):
-            raise LLMProviderConfigurationError("LLM base URL must use HTTP or HTTPS")
+        if not self.base_url:
+            raise LLMProviderConfigurationError("LLM base URL is required")
+        try:
+            validate_source_url(self.base_url, allow_secret_query=False)
+        except ValueError as exc:
+            raise LLMProviderConfigurationError(str(exc)) from exc
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         await self.validate_config(request.parameters)
@@ -68,41 +78,55 @@ class OpenAICompatibleProvider(LLMProvider):
         if request.response_schema is not None:
             payload["response_format"] = {"type": "json_object"}
         headers = {
+            **self.custom_headers,
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "Idempotency-Key": request.idempotency_key,
         }
+        if self.organization:
+            headers["OpenAI-Organization"] = self.organization
+        if self.project:
+            headers["OpenAI-Project"] = self.project
+        try:
+            await ensure_public_endpoint(str(self.base_url), allow_secret_query=False)
+        except ValueError as exc:
+            raise LLMProviderConfigurationError(str(exc)) from exc
+        except OSError as exc:
+            raise LLMProviderTransientError(str(exc)) from exc
         response: httpx.Response | None = None
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                response = await self._client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=request.timeout_seconds,
-                )
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
-                if attempt == self.max_attempts:
-                    raise LLMProviderTransientError("LLM request failed after retries") from exc
-                await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                continue
-            if response.status_code == 429:
-                if attempt == self.max_attempts:
-                    raise LLMProviderRateLimitError("LLM rate limit exceeded")
-                await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                continue
-            if response.status_code in {401, 403}:
-                raise LLMProviderAuthenticationError("LLM credentials were rejected")
-            if response.status_code >= 500:
-                if attempt == self.max_attempts:
-                    raise LLMProviderTransientError("LLM service is unavailable")
-                await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                continue
-            if response.status_code >= 400:
-                raise LLMProviderContractError(
-                    f"LLM request was rejected with status {response.status_code}"
-                )
-            break
+        async with httpx.AsyncClient(
+            timeout=self.timeout_seconds, follow_redirects=False
+        ) as client:
+            for attempt in range(1, self.max_attempts + 1):
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                        timeout=request.timeout_seconds,
+                    )
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    if attempt == self.max_attempts:
+                        raise LLMProviderTransientError("LLM request failed after retries") from exc
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                    continue
+                if response.status_code == 429:
+                    if attempt == self.max_attempts:
+                        raise LLMProviderRateLimitError("LLM rate limit exceeded")
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                    continue
+                if response.status_code in {401, 403}:
+                    raise LLMProviderAuthenticationError("LLM credentials were rejected")
+                if response.status_code >= 500:
+                    if attempt == self.max_attempts:
+                        raise LLMProviderTransientError("LLM service is unavailable")
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                    continue
+                if response.status_code >= 400:
+                    raise LLMProviderContractError(
+                        f"LLM request was rejected with status {response.status_code}"
+                    )
+                break
         if response is None:
             raise LLMProviderTransientError("LLM request did not return a response")
         try:
@@ -161,5 +185,36 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         return LLMHealth(status="ok", detail="Configuration is present; no billable call was made")
 
+    async def test_connection(self) -> LLMHealth:
+        await self.validate_config({})
+        assert self.base_url is not None
+        try:
+            await ensure_public_endpoint(self.base_url, allow_secret_query=False)
+        except ValueError as exc:
+            raise LLMProviderConfigurationError(str(exc)) from exc
+        except OSError as exc:
+            raise LLMProviderTransientError(str(exc)) from exc
+        headers = {**self.custom_headers, "Authorization": f"Bearer {self._api_key}"}
+        if self.organization:
+            headers["OpenAI-Organization"] = self.organization
+        if self.project:
+            headers["OpenAI-Project"] = self.project
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds, follow_redirects=False
+            ) as client:
+                response = await client.get(f"{self.base_url}/models", headers=headers)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise LLMProviderTransientError("LLM connection test failed") from exc
+        if response.status_code in {401, 403}:
+            raise LLMProviderAuthenticationError("LLM credentials were rejected")
+        if response.status_code >= 500:
+            raise LLMProviderTransientError("LLM service is unavailable")
+        if response.status_code >= 400:
+            raise LLMProviderContractError(
+                f"LLM connection test was rejected with status {response.status_code}"
+            )
+        return LLMHealth(status="ok", detail="Authentication and /models endpoint verified")
+
     async def aclose(self) -> None:
-        await self._client.aclose()
+        return None

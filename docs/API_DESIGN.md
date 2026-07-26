@@ -304,3 +304,14 @@ Prompt 08 已落地 `/automations`、`/automation-evaluations`、`/notification-
 ## 20. Prompt 09 落地说明
 
 Prompt 09 新增 `/topics`、`/topics/batch`、`/operations/tasks`、`/operations/events` 和 `/operations/audits`。选题写操作使用工作区角色与 CSRF 保护；批量来源必须存在且属于当前工作区。运营端点只返回安全摘要，不返回通知密文、IP 哈希或 Provider 原始响应。管理后台继续通过同源 `/api/v1` 代理调用后端，前端不直连外部平台。
+
+## 21. 设置中心增量
+
+| 方法 | 路径 | 权限与语义 |
+| --- | --- | --- |
+| GET | `/settings/runtime` | 已登录工作区成员；返回脱敏部署参数描述和环境变量名，不写宿主机配置 |
+| GET | `/settings/llm/openai-compatible` | 已登录工作区成员；只返回配置状态、脱敏摘要和默认参数 |
+| PUT | `/settings/llm/openai-compatible` | Owner/Admin + CSRF；加密保存工作区连接与模型参数 |
+| POST | `/settings/llm/openai-compatible/test` | Owner/Admin + CSRF；对已保存公网连接执行真实 `/models` 验证 |
+
+`GET /llm/providers` 现在按工作区解析 Provider 来源、默认模型和默认参数。`GET /notification-providers` 返回类型化 `config_fields`，供设置页和通知页生成相同的动态表单。所有读取接口均排除密文和明文 Secret。

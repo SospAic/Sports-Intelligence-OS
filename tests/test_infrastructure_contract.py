@@ -35,6 +35,21 @@ class InfrastructureContractTests(unittest.TestCase):
                 self.assertIn(f"  {service}:\n", compose)
         self.assertGreaterEqual(compose.count("healthcheck:"), 4)
 
+    def test_compose_propagates_configurable_runtime_parameters(self) -> None:
+        compose = self.read("docker-compose.yml")
+        for variable in (
+            "SIO_DATABASE_POOL_SIZE",
+            "SIO_REDIS_MAX_CONNECTIONS",
+            "SIO_YOUTUBE_API_KEY",
+            "SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS",
+            "SIO_SYNC_TASK_MAX_RETRIES",
+            "SIO_TASK_STALE_AFTER_SECONDS",
+            "SIO_AUTH_LOGIN_WINDOW_SECONDS",
+            "SIO_SESSION_CLEANUP_RETENTION_SECONDS",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(f"  {variable}: ${{{variable}:-", compose)
+
     def test_makefile_exposes_required_commands(self) -> None:
         makefile = self.read("Makefile")
         for target in (

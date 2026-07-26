@@ -31,31 +31,12 @@ from app.schemas.automation import (
     NotificationProviderRead,
     NotificationTestRequest,
 )
+from app.schemas.settings import ConfigFieldDescriptor
 from app.services.automation import AutomationError, AutomationService
 
 router = APIRouter(tags=["automation"])
 Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=200)]
-
-PROVIDER_FIELDS = {
-    "mock_notification": ["simulate_error"],
-    "email": [
-        "host",
-        "port",
-        "username",
-        "password",
-        "from_email",
-        "to_emails",
-        "use_tls",
-        "use_ssl",
-    ],
-    "generic_webhook": ["url", "headers", "signing_secret"],
-    "telegram": ["bot_token", "chat_id"],
-    "discord": ["webhook_url"],
-    "feishu": ["webhook_url", "secret"],
-    "dingtalk": ["webhook_url", "secret"],
-    "wecom": ["webhook_url"],
-}
 
 
 async def automation_exception_handler(request: Request, exc: Exception) -> Response:
@@ -227,7 +208,23 @@ async def list_notification_providers(
             key=provider.key,
             name=provider.name,
             is_mock=provider.is_mock,
-            config_fields=PROVIDER_FIELDS.get(provider.key, []),
+            config_fields=[
+                ConfigFieldDescriptor(
+                    key=field.key,
+                    label=field.label,
+                    value_type=field.value_type,
+                    required=field.required,
+                    secret=field.secret,
+                    default=field.default,
+                    minimum=field.minimum,
+                    maximum=field.maximum,
+                    step=field.step,
+                    options=[{"value": value, "label": label} for value, label in field.options],
+                    placeholder=field.placeholder,
+                    help_text=field.help_text,
+                )
+                for field in provider.config_fields
+            ],
         )
         for provider in request.app.state.notification_providers.values()
     ]

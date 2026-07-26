@@ -267,6 +267,62 @@ export interface LLMProviderDescriptor {
   is_mock: boolean;
   supports_streaming: boolean;
   detail: string;
+  source: "database" | "environment" | "builtin" | "unconfigured";
+  default_model: string | null;
+  default_parameters: Record<string, unknown>;
+}
+
+export interface RuntimeSettingField {
+  key: string;
+  label: string;
+  value: string | number | boolean | null;
+  value_type: "text" | "number" | "boolean";
+  env_var: string;
+  description: string;
+  secret: boolean;
+  restart_required: boolean;
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface RuntimeSettingSection {
+  key: string;
+  title: string;
+  description: string;
+  fields: RuntimeSettingField[];
+}
+
+export interface RuntimeSettingsRecord {
+  environment: string;
+  sections: RuntimeSettingSection[];
+  apply_mode: "environment_restart";
+  warning: string;
+}
+
+export interface LLMProviderSettingRecord {
+  id: string | null;
+  provider_key: string;
+  name: string;
+  source: "database" | "environment" | "unconfigured";
+  base_url: string | null;
+  api_key_configured: boolean;
+  config_masked: Record<string, unknown>;
+  default_model: string;
+  default_parameters: Record<string, unknown>;
+  input_cost_per_million: string | number | null;
+  output_cost_per_million: string | number | null;
+  enabled: boolean;
+  configured: boolean;
+  last_tested_at: string | null;
+  health_status: string;
+  updated_at: string | null;
+  fields: ConfigFieldDescriptor[];
+}
+
+export interface LLMProviderTestResult {
+  status: "ok" | "degraded" | "unavailable";
+  detail: string;
+  tested_at: string;
 }
 
 export interface GenerationStep {
@@ -647,7 +703,29 @@ export interface NotificationProviderDescriptor {
   key: NotificationProviderKey;
   name: string;
   is_mock: boolean;
-  config_fields: string[];
+  config_fields: ConfigFieldDescriptor[];
+}
+
+export interface ConfigFieldDescriptor {
+  key: string;
+  label: string;
+  value_type:
+    | "text"
+    | "password"
+    | "number"
+    | "boolean"
+    | "select"
+    | "json"
+    | "list";
+  required: boolean;
+  secret: boolean;
+  default: unknown;
+  minimum: number | null;
+  maximum: number | null;
+  step: number | null;
+  options: Array<{ value: string; label: string }>;
+  placeholder: string | null;
+  help_text: string | null;
 }
 
 export interface NotificationChannelRecord {

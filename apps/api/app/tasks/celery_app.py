@@ -31,6 +31,7 @@ celery_app.conf.update(
     task_default_queue="maintenance",
     task_routes={
         "app.tasks.system.heartbeat": {"queue": "maintenance"},
+        "app.tasks.system.cleanup_auth_records": {"queue": "maintenance"},
         "app.tasks.monitoring.*": {"queue": "monitoring"},
         "app.tasks.news.*": {"queue": "news"},
         "app.tasks.generation.recover_stale_generations": {"queue": "maintenance"},
@@ -43,6 +44,10 @@ celery_app.conf.update(
         "system-heartbeat": {
             "task": "app.tasks.system.heartbeat",
             "schedule": 60.0,
+        },
+        "cleanup-auth-records": {
+            "task": "app.tasks.system.cleanup_auth_records",
+            "schedule": 3600.0,
         },
         "sync-all-due-accounts": {
             "task": "app.tasks.monitoring.sync_all_due_accounts",

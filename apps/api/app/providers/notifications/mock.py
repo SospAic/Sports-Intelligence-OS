@@ -6,6 +6,7 @@ from app.providers.notifications.base import (
     NotificationMessage,
     NotificationProvider,
     NotificationReceipt,
+    ProviderConfigField,
 )
 
 
@@ -13,6 +14,15 @@ class MockNotificationProvider(NotificationProvider):
     key = "mock_notification"
     name = "Mock 通知（仅测试）"
     is_mock = True
+    config_fields = (
+        ProviderConfigField(
+            "simulate_error",
+            "模拟发送失败",
+            "boolean",
+            default=False,
+            help_text="只用于测试错误处理；不会发送真实通知。",
+        ),
+    )
 
     async def validate_config(self, config: Mapping[str, Any]) -> None:
         if config.get("simulate_error"):

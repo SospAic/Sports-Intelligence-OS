@@ -31,7 +31,8 @@ from app.models.news import (
     TopicEvent,
 )
 from app.models.operations import AuditEntry, OutboxEvent, SystemEvent, TaskRun
-from app.models.session import AuthSession
+from app.models.session import AuthSession, LoginAttempt
+from app.models.settings import LLMProviderSetting
 from app.models.sync import SyncRun
 from app.models.topics import SavedTopic
 from app.models.user import User
@@ -46,12 +47,14 @@ __all__ = [
     "Account",
     "AccountSnapshot",
     "AuthSession",
+    "LoginAttempt",
     "ContentItem",
     "ContentSnapshot",
     "DerivedMetric",
     "GenerationRun",
     "GenerationStep",
     "GenerationWorkflow",
+    "LLMProviderSetting",
     "Article",
     "EventArticle",
     "NewsScoringConfig",

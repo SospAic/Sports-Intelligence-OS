@@ -14,6 +14,7 @@ def problem_response(
     title: str,
     detail: str,
     errors: list[dict[str, Any]] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     payload: dict[str, Any] = {
         "type": f"https://sports-intelligence.local/problems/{code}",
@@ -26,7 +27,12 @@ def problem_response(
     }
     if errors:
         payload["errors"] = errors
-    return JSONResponse(status_code=status, content=payload, media_type="application/problem+json")
+    return JSONResponse(
+        status_code=status,
+        content=payload,
+        media_type="application/problem+json",
+        headers=headers,
+    )
 
 
 async def http_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -43,6 +49,7 @@ async def http_exception_handler(request: Request, exc: Exception) -> JSONRespon
         code=code,
         title="请求失败",
         detail=detail,
+        headers=dict(exc.headers) if exc.headers else None,
     )
 
 

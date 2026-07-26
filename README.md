@@ -67,8 +67,11 @@ docker compose up -d
 | `SIO_YOUTUBE_API_KEY` | YouTube Data API v3 | 真实 YouTube 同步必填 |
 | `SIO_LLM_OPENAI_COMPATIBLE_BASE_URL/API_KEY` | OpenAI 兼容 LLM | 真实模型调用必填 |
 | `SIO_TASK_STALE_AFTER_SECONDS` | Worker 失联执行租约 | 默认 2100，不应短于任务硬时限 |
+| `SIO_DATABASE_POOL_SIZE/MAX_OVERFLOW` | 每进程数据库连接池 | 按 API/Worker 副本数核算总连接数 |
+| `SIO_REDIS_MAX_CONNECTIONS` | 每个 API 进程的 Redis 连接池上限 | 默认 50 |
+| `SIO_AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTITY/IP` | 数据库共享登录限流 | 默认 10/100，身份与 IP 只存 HMAC 哈希 |
 
-完整说明与生产约束见 [.env.example](.env.example) 和 [安装指南](docs/INSTALLATION.md)。
+完整说明与生产约束见 [.env.example](.env.example)、[设置中心说明](docs/SETTINGS_CENTER.md) 和 [安装指南](docs/INSTALLATION.md)。
 
 ### 初始化首个管理员
 
@@ -136,7 +139,7 @@ SIO_LLM_OPENAI_COMPATIBLE_API_KEY=
 SIO_LLM_DEFAULT_MODEL=gpt-4.1-mini
 ```
 
-浏览器不会获得明文 Key，Prompt 预览也不会包含 Key。登录后使用 `/generate`、`/generations`、`/prompts` 和 `/workflows`。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
+浏览器不会获得明文 Key，Prompt 预览也不会包含 Key。Owner/Admin 也可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数；该配置会用于新的手动、Worker 与自动化生成任务。登录后使用 `/generate`、`/generations`、`/prompts` 和 `/workflows`。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
 
 通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md)。
 
@@ -146,7 +149,7 @@ SIO_LLM_DEFAULT_MODEL=gpt-4.1-mini
 
 ### 配置通知渠道
 
-进入“通知渠道”，选择 Email、Generic Webhook、Telegram、Discord、飞书、钉钉或企业微信。凭证提交到本系统后端并加密保存，前端只看到脱敏摘要。真实测试通知发送前会再次确认；未配置渠道或外部失败不会显示成功。扩展细节见 [通知 Provider 指南](docs/NOTIFICATION_PROVIDER_GUIDE.md)。
+进入“设置 → 通知 Provider”或“通知渠道”，选择 Email、Generic Webhook、Telegram、Discord、飞书、钉钉或企业微信。页面按 Provider 契约展示 SMTP/TLS、Header/HMAC、Parse Mode、@成员、超时和重试等专属细项；凭证提交到本系统后端并加密保存，前端只看到脱敏摘要。真实测试通知发送前会再次确认；未配置渠道或外部失败不会显示成功。扩展细节见 [通知 Provider 指南](docs/NOTIFICATION_PROVIDER_GUIDE.md)。
 
 ### 配置 YouTube 官方 API
 
@@ -303,4 +306,4 @@ Mock 默认被生产自动化阻止；仅测试模式或规则明确允许 Mock 
 
 ## 文档索引
 
-[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md) · [最终审查](docs/FINAL_CODE_REVIEW.md) · [第一次交付报告](docs/FIRST_DELIVERY_REPORT.md)
+[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md) · [最终审查](docs/FINAL_CODE_REVIEW.md) · [第一次交付报告](docs/FIRST_DELIVERY_REPORT.md)

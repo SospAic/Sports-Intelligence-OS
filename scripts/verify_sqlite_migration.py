@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "generation_runs",
     "generation_steps",
     "generation_workflows",
+    "llm_provider_settings",
+    "login_attempts",
     "news_scoring_configs",
     "news_sources",
     "news_sync_runs",

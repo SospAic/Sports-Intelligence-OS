@@ -50,6 +50,7 @@ flowchart LR
 - 使用 Argon2id，参数在部署基准测试后选择并版本化；哈希字符串包含参数和 salt。
 - 密码最低长度和常见泄露密码策略在 Prompt 02 明确；不采用阻碍密码管理器的复杂组合规则。
 - 登录错误使用统一响应，避免枚举邮箱；按 IP 摘要 + 账号维度限速。
+- 当前实现用数据库共享的 HMAC 身份/IP 摘要执行滚动窗口限流，返回 `429` 与 `Retry-After`；参数由 `SIO_AUTH_LOGIN_*` 配置。摘要使用应用 Secret 做 HMAC，不保存提交邮箱或原始 IP。
 - 密码重置首期如未实现，必须在 UI/README 明确，不提供假按钮；管理员受控恢复写审计。
 
 ### 3.2 会话
@@ -61,6 +62,7 @@ flowchart LR
 - 登录成功轮换 Session；权限提升、密码更改和可疑活动撤销相关 Session。
 - 绝对过期和空闲过期并存；`last_seen_at` 节流更新。
 - 退出使服务端 Session 失效，而非只删除浏览器 Cookie。
+- Celery Beat 每小时清理超过配置保留期的过期/撤销 Session 和登录尝试摘要。
 
 不把访问 Token 存入 localStorage。若未来开放第三方 API 客户端，另行设计 OAuth2/OIDC，不复用浏览器 Session。
 

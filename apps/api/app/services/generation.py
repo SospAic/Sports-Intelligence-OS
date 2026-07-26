@@ -4,13 +4,14 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
+from app.core.config import Settings
 from app.models.editorial_rules import Rule, RuleSetVersion
 from app.models.generation import (
     GenerationRun,
@@ -49,6 +50,7 @@ from app.schemas.generation import (
     ProviderDescriptor,
     WorkflowRead,
 )
+from app.services.settings import SettingsError, SettingsService
 from app.workflows.generation import (
     aggregate_usage,
     deterministic_qa,
@@ -79,10 +81,12 @@ class GenerationService:
         self,
         session: AsyncSession,
         providers: ProviderRegistry[LLMProvider],
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.providers = providers
         self.repo = GenerationRepository(session)
+        self.settings = settings
 
     async def list_prompts(
         self, workspace_id: UUID, *, page: int, page_size: int
@@ -275,10 +279,22 @@ class GenerationService:
         workflow = await self._workflow(workspace_id, workflow_id)
         return WorkflowRead.model_validate(workflow)
 
-    async def provider_descriptors(self) -> list[ProviderDescriptor]:
+    async def provider_descriptors(self, workspace_id: UUID) -> list[ProviderDescriptor]:
         descriptors: list[ProviderDescriptor] = []
-        for provider in self.providers.values():
+        for registered in self.providers.values():
+            provider = await self._provider(workspace_id, registered.key)
             health = await provider.health_check()
+            source: Literal["database", "environment", "builtin", "unconfigured"] = "builtin"
+            default_model: str | None = None
+            default_parameters: dict[str, Any] = {}
+            if provider.key == "openai_compatible" and self.settings is not None:
+                setting = await self._settings_service().llm_setting(workspace_id)
+                source = setting.source
+                default_model = setting.default_model
+                default_parameters = setting.default_parameters
+            elif provider.is_mock:
+                default_model = "mock-sports-writer-v1"
+                default_parameters = {"temperature": 0.2, "max_tokens": 4096}
             descriptors.append(
                 ProviderDescriptor(
                     key=provider.key,
@@ -287,6 +303,9 @@ class GenerationService:
                     is_mock=provider.is_mock,
                     supports_streaming=provider.supports_streaming,
                     detail=health.detail,
+                    source=source,
+                    default_model=default_model,
+                    default_parameters=default_parameters,
                 )
             )
         return descriptors
@@ -304,7 +323,7 @@ class GenerationService:
             )
         except PromptRenderError as exc:
             raise GenerationError(str(exc), code="prompt_render_failed", status_code=422) from exc
-        provider = self._provider(payload.provider)
+        provider = await self._provider(workspace_id, payload.provider)
         warnings = ["预览中的外部输入属于不可信数据，不能覆盖系统指令"]
         if provider.is_mock:
             warnings.append("当前选择 Mock LLM；所有结果仅用于测试")
@@ -334,9 +353,26 @@ class GenerationService:
         if existing is not None:
             return GenerationRunRead.model_validate(existing), False
         workflow, prompt, rule_version = await self._resolve_versions(workspace_id, payload)
-        provider = self._provider(payload.provider)
+        provider = await self._provider(workspace_id, payload.provider)
+        provider_defaults: dict[str, Any] = {}
+        input_cost: Decimal | None = None
+        output_cost: Decimal | None = None
+        if self.settings is not None and provider.key == "openai_compatible":
+            (
+                _model,
+                provider_defaults,
+                input_cost,
+                output_cost,
+            ) = await self._settings_service().effective_llm_defaults(workspace_id)
+        merged_config = dict(provider_defaults)
+        merged_config.update(prompt.model_config)
+        merged_config.update(payload.model_config_data)
+        if input_cost is not None:
+            merged_config.setdefault("input_cost_per_million", str(input_cost))
+        if output_cost is not None:
+            merged_config.setdefault("output_cost_per_million", str(output_cost))
         try:
-            await provider.validate_config(payload.model_config_data)
+            await provider.validate_config(merged_config)
         except (LLMProviderError, ValueError) as exc:
             raise GenerationError(
                 str(exc), code="llm_provider_not_configured", status_code=422
@@ -345,8 +381,6 @@ class GenerationService:
         input_hash = sha256(
             json.dumps(frozen, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
-        merged_config = dict(prompt.model_config)
-        merged_config.update(payload.model_config_data)
         run = GenerationRun(
             id=uuid4(),
             workspace_id=workspace_id,
@@ -557,7 +591,7 @@ class GenerationService:
             return
         if run.status == "running":
             raise GenerationConflict("生成运行正在执行", "generation_already_running")
-        provider = self._provider(run.provider)
+        provider = await self._provider(run.workspace_id, run.provider)
         prompt = await self._prompt_version(run.workspace_id, run.prompt_version_id)
         workflow = await self._workflow(run.workspace_id, run.workflow_id)
         rule_version = cast(
@@ -1161,13 +1195,23 @@ class GenerationService:
                 status_code=422,
             )
 
-    def _provider(self, key: str) -> LLMProvider:
+    async def _provider(self, workspace_id: UUID, key: str) -> LLMProvider:
+        if self.settings is not None:
+            try:
+                return await self._settings_service().resolve_llm_provider(workspace_id, key)
+            except SettingsError as exc:
+                raise GenerationError(str(exc), code=exc.code, status_code=exc.status_code) from exc
         try:
             return self.providers.get(key)
         except LookupError as exc:
             raise GenerationError(
                 "未知 LLM Provider", code="llm_provider_unknown", status_code=422
             ) from exc
+
+    def _settings_service(self) -> SettingsService:
+        if self.settings is None:
+            raise RuntimeError("runtime settings are unavailable")
+        return SettingsService(self.session, self.settings, self.providers)
 
     async def _collection(self, workspace_id: UUID, collection_id: UUID) -> PromptCollection:
         item = await self.repo.prompt_collection(workspace_id, collection_id)

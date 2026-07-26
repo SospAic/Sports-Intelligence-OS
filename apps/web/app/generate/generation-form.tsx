@@ -51,6 +51,8 @@ export function GenerationForm({
   const [provider, setProvider] = useState("mock_llm");
   const [model, setModel] = useState("mock-sports-writer-v1");
   const [temperature, setTemperature] = useState(0.4);
+  const [topP, setTopP] = useState(1);
+  const [maxTokens, setMaxTokens] = useState(4096);
   const [targetMin, setTargetMin] = useState(1200);
   const [targetMax, setTargetMax] = useState(1250);
   const [preview, setPreview] = useState<{
@@ -86,6 +88,8 @@ export function GenerationForm({
       model,
       model_config: {
         temperature,
+        top_p: topP,
+        max_tokens: maxTokens,
         target_min_chars: targetMin,
         target_max_chars: targetMax,
         max_rewrites: 2,
@@ -103,6 +107,8 @@ export function GenerationForm({
       provider,
       model,
       temperature,
+      topP,
+      maxTokens,
       targetMin,
       targetMax,
     ],
@@ -259,9 +265,23 @@ export function GenerationForm({
               className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm"
               onChange={(event) => {
                 const key = event.target.value;
+                const descriptor = providers.find((item) => item.key === key);
                 setProvider(key);
-                setModel(
-                  key === "mock_llm" ? "mock-sports-writer-v1" : "gpt-4.1-mini",
+                setModel(descriptor?.default_model ?? "");
+                setTemperature(
+                  numericDefault(
+                    descriptor?.default_parameters.temperature,
+                    0.4,
+                  ),
+                );
+                setTopP(
+                  numericDefault(descriptor?.default_parameters.top_p, 1),
+                );
+                setMaxTokens(
+                  numericDefault(
+                    descriptor?.default_parameters.max_tokens,
+                    4096,
+                  ),
                 );
               }}
               value={provider}
@@ -282,7 +302,7 @@ export function GenerationForm({
             />
           </label>
         </div>
-        <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <label className="text-xs text-slate-400">
             Temperature
             <input
@@ -293,6 +313,29 @@ export function GenerationForm({
               step={0.1}
               type="number"
               value={temperature}
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            Top P
+            <input
+              className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm"
+              max={1}
+              min={0}
+              onChange={(event) => setTopP(Number(event.target.value))}
+              step={0.05}
+              type="number"
+              value={topP}
+            />
+          </label>
+          <label className="text-xs text-slate-400">
+            最大 Token
+            <input
+              className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900 p-3 text-sm"
+              max={131072}
+              min={1}
+              onChange={(event) => setMaxTokens(Number(event.target.value))}
+              type="number"
+              value={maxTokens}
             />
           </label>
           <label className="text-xs text-slate-400">
@@ -385,4 +428,10 @@ export function GenerationForm({
       </section>
     </div>
   );
+}
+
+function numericDefault(value: unknown, fallback: number): number {
+  if (typeof value !== "number" && typeof value !== "string") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }

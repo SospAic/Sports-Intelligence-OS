@@ -6,7 +6,9 @@
 
 ## 密钥与日志
 
-API Key 只从后端环境或未来安全存储读取。Provider 描述、Prompt 预览、异常和结构化日志不得回显 Key、Authorization 或完整敏感请求头。
+API Key 只从后端环境或工作区加密配置读取。`llm_provider_settings` 保存密文、独立脱敏摘要、默认模型/参数、费率和健康状态；只有 Owner/Admin 可写。Provider 描述、Prompt 预览、异常和结构化日志不得回显 Key、Authorization 或完整敏感请求头。
+
+工作区 OpenAI 兼容配置会覆盖环境中的同名连接，并用于 API、Worker 和自动化生成。支持 Base URL、Organization、Project、自定义 Header、模型、Temperature、Top P、最大 Token、超时、重试与输入/输出费率。空白 Key 保留旧值，显式清除才删除。公网连接测试使用 `/models` 且执行请求前 DNS/IP 复核。
 
 ## 输出与真实性
 

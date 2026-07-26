@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 
-class NotificationConfigCipher:
+class SecretConfigCipher:
     def __init__(self, secret: str) -> None:
         if len(secret) < 16:
             raise ValueError("notification encryption material is too short")
@@ -25,7 +25,7 @@ class NotificationConfigCipher:
         try:
             raw = self._fernet.decrypt(token.encode("ascii"))
         except (InvalidToken, ValueError) as exc:
-            raise ValueError("notification channel configuration cannot be decrypted") from exc
+            raise ValueError("encrypted configuration cannot be decrypted") from exc
         value = json.loads(raw.decode("utf-8"))
         if not isinstance(value, dict):
             raise ValueError("notification channel configuration is invalid")
@@ -35,9 +35,13 @@ class NotificationConfigCipher:
 SECRET_PARTS = ("password", "secret", "token", "key", "authorization")
 
 
-def mask_notification_config(config: Mapping[str, Any]) -> dict[str, Any]:
+def mask_secret_config(config: Mapping[str, Any]) -> dict[str, Any]:
     def mask(key: str, value: Any) -> Any:
         lowered = key.casefold()
+        if lowered in {"headers", "custom_headers"} and isinstance(value, Mapping):
+            return {
+                str(child_key): "••••••••" if child else None for child_key, child in value.items()
+            }
         if any(part in lowered for part in SECRET_PARTS):
             return "••••••••" if value else None
         if lowered.endswith("url") and isinstance(value, str):
@@ -55,3 +59,8 @@ def mask_notification_config(config: Mapping[str, Any]) -> dict[str, Any]:
         return value
 
     return {str(key): mask(str(key), value) for key, value in config.items()}
+
+
+# Backward-compatible names retained for the notification domain.
+NotificationConfigCipher = SecretConfigCipher
+mask_notification_config = mask_secret_config
