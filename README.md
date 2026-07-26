@@ -26,6 +26,22 @@ Sports Intelligence OS 是面向体育短视频创作者、体育内容运营者
 
 ## 快速启动
 
+### 跨平台一键安装
+
+安装器会检查或安装 Docker Compose v2、生成本地随机密钥、启动全部服务、初始化管理员、导入完整 7.9 规则，并验证 API 就绪状态。已有 `.env` 不会被覆盖，Demo/Mock 数据必须显式选择。
+
+```powershell
+# Windows 10/11
+powershell -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+```
+
+```bash
+# Ubuntu/Debian/Fedora/RHEL/macOS
+bash scripts/install.sh
+```
+
+操作系统支持范围、非交互参数、Docker Desktop 重启边界和故障处理见 [跨平台一键安装指南](docs/ONE_CLICK_INSTALL.md)。
+
 前置条件：Docker Desktop 或其他支持 Docker Compose v2 的运行时。
 
 ```powershell

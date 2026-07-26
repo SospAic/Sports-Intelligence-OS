@@ -1,5 +1,7 @@
 # 安装与首次启动
 
+Windows、Ubuntu/Debian、Fedora/RHEL 系和 macOS 可以直接使用 [跨平台一键安装脚本](ONE_CLICK_INSTALL.md)。以下步骤保留给需要逐项控制配置、迁移和种子数据的手动安装场景。
+
 ## 前置条件
 
 - Docker Engine 或 Docker Desktop，支持 Docker Compose v2。

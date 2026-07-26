@@ -203,3 +203,11 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 行业官方产品资料对标与第二阶段建议见 `docs/INDUSTRY_BENCHMARK_AND_OPTIMIZATION.md`。优先级是表现归因闭环、趋势异常解释、跨语言事件与事实证据、人工审批，以及 Outbox/死信/重放可靠性。
 - 上传前全量检查通过：后端 45 项、前端 21 项、仓库与验收脚本 27 项测试通过；Ruff、Mypy、TypeScript、ESLint、Prettier 和 Compose 静态校验通过。验收脚本新增 HTTP(S) 同源限制，拒绝非 HTTP scheme、URL 明文凭证和跨源绝对路径。
 - 浏览器验收发现并修复顶部状态误报：Web 现在读取 `/health/ready`，Redis/Worker 依赖缺失时显示“后台任务服务降级”，不会因没有排队账号就宣称“同步队列正常”；设置页也会保留 503 返回中的组件级降级详情。
+
+## 2026-07-26 跨平台一键安装
+
+- 新增 Windows PowerShell、Linux、macOS 与 Unix 自动分发安装入口，覆盖 Windows 10/11、Ubuntu/Debian、Fedora/RHEL，以及 Rocky/AlmaLinux 的 best-effort 兼容路径。
+- 安装器在缺少运行时时使用 Docker Desktop、Docker 官方 apt/dnf 仓库或 Homebrew cask；Windows 首次许可、WSL 重启和 macOS 首次许可均保留为可见用户操作，不伪造静默成功。
+- 首次安装只在 `.env` 不存在时生成 PostgreSQL、会话签名和通知加密随机值；已有 `.env` 不覆盖、不自动轮换。管理员密码省略时随机生成，仅在安装成功后显示，不写入 Git 或 `.sio` 状态文件。
+- 安装闭环包括 Compose 配置校验、七服务构建启动、API readiness、Alembic 自动迁移、管理员、平台目录、完整 7.9 规则、Prompt/工作流、停用新闻源与停用自动化示例。Demo 监控数据保持显式 `--with-demo-data`/`-WithDemoData` opt-in，并标记为 Mock。
+- 新增 `docs/ONE_CLICK_INSTALL.md` 与安装器契约测试；PowerShell AST、Bash 语法、34 项仓库契约、45 项后端测试、21 项前端测试及生产构建均通过。脚本只在静态语法和无副作用契约层验证，当前 Windows 主机仍没有 Docker，因此没有把宿主机 Docker 安装、PostgreSQL/Redis 容器启动描述为已实机通过。

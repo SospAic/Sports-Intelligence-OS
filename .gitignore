@@ -46,6 +46,7 @@ Desktop.ini
 *.log
 tmp/
 temp/
+.sio/
 
 # Docker overrides
 docker-compose.override.yml
