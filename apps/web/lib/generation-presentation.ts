@@ -1,6 +1,7 @@
 import type { GenerationRun } from "@sio/shared-types";
 
-export type GenerationOutputKey =
+// ── A 组：原有字段 ────────────────────────────────────────────────────────────
+export type GenerationOutputKeyA =
   | "event_fact_summary"
   | "fact_sources"
   | "story_value"
@@ -16,7 +17,43 @@ export type GenerationOutputKey =
   | "used_rules"
   | "rewrite_reasons";
 
+// ── B 组：7.9 完整输出包新增核心字段 ─────────────────────────────────────────
+export type GenerationOutputKeyB =
+  | "spoken_char_count"
+  | "event_identity"
+  | "story_format"
+  | "story_format_reason"
+  | "central_question"
+  | "selected_hook"
+  | "cmssml"
+  | "ev3"
+  | "story_architecture"
+  | "lcr_enabled"
+  | "lcr_reason"
+  | "hook_candidates"
+  | "answer_word_map"
+  | "reaction_relay"
+  | "evidence_rewards"
+  | "exclusion_ladder"
+  | "dialogue_notes";
+
+// ── C 组：ambiguous 可选字段（原文不完整，最大努力生成） ──────────────────────
+export type GenerationOutputKeyC =
+  | "audio_performance_map"
+  | "tts_settings"
+  | "video_material_plan"
+  | "edit_map"
+  | "caption_map"
+  | "original_audio_plan"
+  | "srt_output";
+
+export type GenerationOutputKey =
+  | GenerationOutputKeyA
+  | GenerationOutputKeyB
+  | GenerationOutputKeyC;
+
 export const outputLabels: Record<GenerationOutputKey, string> = {
+  // A 组
   event_fact_summary: "事件事实摘要",
   fact_sources: "事实来源",
   story_value: "故事价值",
@@ -31,6 +68,32 @@ export const outputLabels: Record<GenerationOutputKey, string> = {
   qa_report: "质量检查",
   used_rules: "使用规则",
   rewrite_reasons: "重写原因",
+  // B 组
+  spoken_char_count: "精确字符数",
+  event_identity: "事件精确识别",
+  story_format: "主故事格式",
+  story_format_reason: "格式选择原因",
+  central_question: "中心悬念",
+  selected_hook: "选定 Hook",
+  cmssml: "CMSSML（单行）",
+  ev3: "EV3（单行）",
+  story_architecture: "故事架构",
+  lcr_enabled: "LCR 是否启用",
+  lcr_reason: "LCR 决策原因",
+  hook_candidates: "Hook 候选列表",
+  answer_word_map: "答案词与泄露映射",
+  reaction_relay: "Reaction Relay 结构",
+  evidence_rewards: "证据奖励结构",
+  exclusion_ladder: "合理解释排除列表",
+  dialogue_notes: "对话与心理说明",
+  // C 组
+  audio_performance_map: "Audio Performance Map",
+  tts_settings: "TTS 设置建议",
+  video_material_plan: "视频素材逐 Beat 计划",
+  edit_map: "剪辑 Map",
+  caption_map: "字幕 Map",
+  original_audio_plan: "原声使用计划",
+  srt_output: "SRT 字幕",
 };
 
 export function outputText(

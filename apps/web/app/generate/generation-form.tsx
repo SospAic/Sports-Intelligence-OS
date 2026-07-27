@@ -26,18 +26,18 @@ import {
 } from "./generation-source-picker";
 
 const lengthPresets = {
-  concise: { label: "精简版", hint: "约 60 秒", minimum: 800, maximum: 950 },
+  concise: { label: "精简版", hint: "约 45 秒", minimum: 800, maximum: 950 },
   standard: {
     label: "标准版",
-    hint: "约 75–90 秒",
-    minimum: 1200,
-    maximum: 1250,
+    hint: "约 60–75 秒",
+    minimum: 1180,
+    maximum: 1220,
   },
   extended: {
     label: "扩展版",
-    hint: "约 90–110 秒",
-    minimum: 1500,
-    maximum: 1650,
+    hint: "约 75–90 秒",
+    minimum: 1250,
+    maximum: 1500,
   },
 } as const;
 

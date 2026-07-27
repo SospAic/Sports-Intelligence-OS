@@ -220,6 +220,62 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 登录失败限流改为数据库共享窗口，身份和客户端地址仅保存 HMAC；新增每小时会话/登录尝试清理任务。浏览器验收同时修复通知凭证表单被密码管理器误填的风险。
 - 当前全量结果：后端 52 项、前端 25 项、仓库契约 35 项测试通过；Ruff、Mypy strict（120 个源文件）、TypeScript、ESLint、Prettier、Next.js 生产构建和 Compose 静态校验通过；迁移 0001–0010 共 40 张表通过临时 SQLite 验证。
 
+## 2026-07-27 7.9 完整输出包扩展
+
+### 变更内容
+
+**默认字符范围修正（与 7.9 原始值对齐）**
+- `DEFAULT_MIN_CHARS` 从 1200 → 1180，`DEFAULT_MAX_CHARS` 从 1250 → 1220
+- 影响范围：`workflows/generation.py`（常量定义）、`services/generation.py`（4 处引用）、`schemas/generation.py`（校验默认值）、`providers/llm/mock.py`（mock 输出目标长度）、前端 `generation-form.tsx`（标准版预设）
+- 扩展版预设同步修正为 1250–1500（对应 7.9 原文 75–90s 档位）
+
+**输出字段从 14 字段扩展为 7.9 完整内容包**
+- `validate_final_bundle` 必需字段从 14 个扩展为 22 个（A 组 14 + B 组 8）
+- 新增 B 组核心字段：`spoken_char_count`、`event_identity`、`story_format`、`central_question`、`selected_hook`、`cmssml`、`ev3`、`story_architecture`
+- C 组 17 个 ambiguous 字段允许 null/缺失，后端 `final_formatting` 步骤自动 `setdefault(None)`
+- `spoken_char_count` 由后端从 `len(tts_en)` 计算，不依赖 LLM，校验强一致性
+- `verification_status` 从 `run.verification_status` 复制，不允许 LLM 覆盖
+- `lcr_enabled` 不存在时默认 `False`，字符串 `"true"` 自动容错转换为布尔值
+
+**Prompt 种子升级至 v2.0.0**
+- `data/prompts/sports_short_video_full_package.json` 版本号 1.0.0 → 2.0.0
+- `user_prompt_template` 中 `final_formatting` 指令完整列出 A/B/C 三组字段及约束
+- `max_tokens` 从 2400 提升至 4096（支持完整输出包）
+- 默认字符范围同步修正为 1180–1220
+
+**Mock LLM 同步升级**
+- `providers/llm/mock.py` 的 `final_bundle` 新增全部 B/C 组字段占位值
+- `spoken_char_count` 占位值由后端后处理覆盖，保证与 `tts_en` 严格一致
+
+**前端展示层扩展**
+- `generation-presentation.ts`：`GenerationOutputKey` 类型拆分为 A/B/C 三组，新增 17 个 label
+- `generation-detail.tsx`：新增可折叠"完整叙事包"区域，展示 B/C 组字段；CMSSML/EV3 各自有独立复制按钮；ambiguous 字段标注 ⚠
+- `generation-form.tsx`：标准版预设修正为 1180–1220
+
+**测试扩展**
+- `tests/test_generation.py` 新增 5 个单元测试：默认字符范围验证、B 组完整性、`spoken_char_count` 一致性、多行 TTS 拒绝、`lcr_enabled` 类型校验
+- 端对端测试新增 B 组字段存在性断言、`spoken_char_count` 与 `tts_en` 一致性断言、`lcr_enabled` 类型断言、单行 TTS 断言
+
+### 字段来源标注
+
+| 类型 | 说明 |
+|---|---|
+| `explicit` | 7.9 原文明确定义 |
+| `derived` | 从多个规则推导 |
+| `ambiguous` | 原文不完整，系统辅助生成，不能作为完整规则依据 |
+| `product_extension` | Sports Intelligence OS 产品层扩展，不在 Part 13 顶层定义 |
+
+### 验证状态
+
+| 验证项 | 结果 |
+|---|---|
+| Ruff（5 个 Python 文件） | 全部通过 |
+| TypeScript 诊断（3 个前端文件） | 无错误 |
+| Python 诊断（4 个后端文件） | 无错误 |
+| Pytest（本机无运行时） | 待 Docker 环境验证 |
+
+---
+
 ## 2026-07-27 内容创作流程收敛
 
 - 创作者主流程收敛为“热门视频/新闻/事件或自定义材料 → 规则预设 → 一键生成 → 结构化成品”，不再要求选择 Prompt 版本、工作流、Provider、模型或采样参数。

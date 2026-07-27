@@ -17,7 +17,12 @@ from app.providers.llm.mock import MockLLMProvider
 from app.providers.llm.registry import build_llm_provider_registry
 from app.services.generation import GenerationService
 from app.services.generation_seed import seed_generation_defaults
-from app.workflows.generation import deterministic_qa
+from app.workflows.generation import (
+    DEFAULT_MAX_CHARS,
+    DEFAULT_MIN_CHARS,
+    deterministic_qa,
+    validate_final_bundle,
+)
 
 from .conftest import TEST_PASSWORD
 
@@ -257,12 +262,198 @@ def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
     assert result["token_usage"]["total_tokens"] > 0
     assert Decimal(str(result["estimated_cost"])) == 0
 
+    # ── B 组字段完整性验证 ────────────────────────────────────────────────────
+    final = result["final_output"]
+    tts_len = len(final["tts_en"])
+    # spoken_char_count 必须由后端计算且与 tts_en 长度一致
+    assert final["spoken_char_count"] == tts_len, (
+        f"spoken_char_count ({final['spoken_char_count']}) != len(tts_en) ({tts_len})"
+    )
+    # verification_status 必须从 run 对象复制，不允许 LLM 覆盖
+    assert final["verification_status"] == result["verification_status"]
+    # B 组核心字段必须全部存在
+    for b_field in (
+        "event_identity",
+        "story_format",
+        "central_question",
+        "selected_hook",
+        "cmssml",
+        "ev3",
+        "story_architecture",
+    ):
+        assert b_field in final, f"B 组字段缺失：{b_field}"
+    # lcr_enabled 必须是布尔值
+    assert isinstance(final["lcr_enabled"], bool), (
+        f"lcr_enabled 应为布尔值，实际：{type(final['lcr_enabled'])}"
+    )
+    # tts_en 必须是单行（后端 final_formatting 后处理确保）
+    assert "\n" not in final["tts_en"]
+    assert "\r" not in final["tts_en"]
+
     text_export = client.get(f"/api/v1/generations/{run_id}/export", params={"format": "txt"})
     assert text_export.status_code == 200
     assert "英文 TTS" in text_export.text
     json_export = client.get(f"/api/v1/generations/{run_id}/export", params={"format": "json"})
     assert json_export.status_code == 200
     assert json_export.json()["id"] == str(run_id)
+
+
+def test_default_char_range_follows_v7_9_original() -> None:
+    """7.9 原始默认值为 1180–1220，不是历史偏移值 1200–1250。"""
+    assert DEFAULT_MIN_CHARS == 1180
+    assert DEFAULT_MAX_CHARS == 1220
+
+
+def test_validate_final_bundle_requires_all_b_group_fields() -> None:
+    """B 组 8 个核心字段必须全部存在才能通过校验。"""
+    # 最小合法包（含所有 A 组 + B 组必需字段）
+    tts = "A" * 200
+    valid_bundle: dict = {
+        # A 组
+        "event_fact_summary": "Test summary",
+        "fact_sources": [],
+        "story_value": {"qualified": True},
+        "tts_en": tts,
+        "translation_zh": "测试翻译",
+        "video_title_en": "Test Title",
+        "video_title_zh": "测试标题",
+        "search_keywords": ["test"],
+        "material_keywords": ["footage"],
+        "tags": ["#test"],
+        "project_filename": "测试文件",
+        "qa_report": {},
+        "used_rules": [],
+        "rewrite_reasons": [],
+        # B 组
+        "spoken_char_count": len(tts),
+        "event_identity": {"sport": "basketball"},
+        "story_format": "consequence-first-decision",
+        "central_question": "What caused the outcome?",
+        "selected_hook": {"type": "scene-first-anomaly", "score": 80, "text": "Hook text"},
+        "cmssml": tts,
+        "ev3": tts,
+        "story_architecture": {"primary_format": "consequence-first-decision"},
+    }
+    assert validate_final_bundle(valid_bundle) == []
+
+    # 缺少单个 B 组字段时应报错
+    for b_field in (
+        "spoken_char_count",
+        "event_identity",
+        "story_format",
+        "central_question",
+        "selected_hook",
+        "cmssml",
+        "ev3",
+        "story_architecture",
+    ):
+        incomplete = {k: v for k, v in valid_bundle.items() if k != b_field}
+        errors = validate_final_bundle(incomplete)
+        assert any(b_field in e for e in errors), (
+            f"缺少 {b_field} 时应报错，实际返回：{errors}"
+        )
+
+
+def test_validate_final_bundle_spoken_char_count_must_match_tts() -> None:
+    """spoken_char_count 必须等于 tts_en 的实际字符长度。"""
+    tts = "B" * 150
+    bundle: dict = {
+        "event_fact_summary": "s",
+        "fact_sources": [],
+        "story_value": {},
+        "tts_en": tts,
+        "translation_zh": "t",
+        "video_title_en": "e",
+        "video_title_zh": "c",
+        "search_keywords": [],
+        "material_keywords": [],
+        "tags": [],
+        "project_filename": "文件名",
+        "qa_report": {},
+        "used_rules": [],
+        "rewrite_reasons": [],
+        "spoken_char_count": 999,   # 故意错误
+        "event_identity": {},
+        "story_format": "chain-reaction",
+        "central_question": "?",
+        "selected_hook": {},
+        "cmssml": tts,
+        "ev3": tts,
+        "story_architecture": {},
+    }
+    errors = validate_final_bundle(bundle)
+    assert any("spoken_char_count" in e for e in errors)
+
+    # 修正后应通过
+    bundle["spoken_char_count"] = len(tts)
+    assert validate_final_bundle(bundle) == []
+
+
+def test_validate_final_bundle_rejects_multiline_tts() -> None:
+    """tts_en 含换行符时应报错。"""
+    tts = "Line one.\nLine two."
+    bundle: dict = {
+        "event_fact_summary": "s",
+        "fact_sources": [],
+        "story_value": {},
+        "tts_en": tts,
+        "translation_zh": "t",
+        "video_title_en": "e",
+        "video_title_zh": "c",
+        "search_keywords": [],
+        "material_keywords": [],
+        "tags": [],
+        "project_filename": "文件名",
+        "qa_report": {},
+        "used_rules": [],
+        "rewrite_reasons": [],
+        "spoken_char_count": len(tts),
+        "event_identity": {},
+        "story_format": "chain-reaction",
+        "central_question": "?",
+        "selected_hook": {},
+        "cmssml": "single line",
+        "ev3": "single line",
+        "story_architecture": {},
+    }
+    errors = validate_final_bundle(bundle)
+    assert any("单行" in e or "换行" in e for e in errors)
+
+
+def test_validate_final_bundle_lcr_enabled_must_be_bool() -> None:
+    """lcr_enabled 如存在必须是布尔值，字符串 'true' 不可接受。"""
+    tts = "C" * 100
+    bundle: dict = {
+        "event_fact_summary": "s",
+        "fact_sources": [],
+        "story_value": {},
+        "tts_en": tts,
+        "translation_zh": "t",
+        "video_title_en": "e",
+        "video_title_zh": "c",
+        "search_keywords": [],
+        "material_keywords": [],
+        "tags": [],
+        "project_filename": "文件名",
+        "qa_report": {},
+        "used_rules": [],
+        "rewrite_reasons": [],
+        "spoken_char_count": len(tts),
+        "event_identity": {},
+        "story_format": "chain-reaction",
+        "central_question": "?",
+        "selected_hook": {},
+        "cmssml": tts,
+        "ev3": tts,
+        "story_architecture": {},
+        "lcr_enabled": "true",   # 应该是布尔值
+    }
+    errors = validate_final_bundle(bundle)
+    assert any("lcr_enabled" in e for e in errors)
+
+    bundle["lcr_enabled"] = False
+    # B 组字段合法，其余字段满足时应通过
+    assert validate_final_bundle(bundle) == []
 
 
 def test_generation_routes_require_authentication(client: TestClient) -> None:

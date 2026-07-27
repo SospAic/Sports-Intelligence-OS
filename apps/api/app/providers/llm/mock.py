@@ -29,8 +29,8 @@ class MockLLMProvider(LLMProvider):
             raise ValueError("Mock LLM configured to simulate an error")
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
-        minimum = int(request.parameters.get("target_min_chars", 1200))
-        maximum = int(request.parameters.get("target_max_chars", 1250))
+        minimum = int(request.parameters.get("target_min_chars", 1180))
+        maximum = int(request.parameters.get("target_max_chars", 1220))
         target = max(minimum, min(maximum, (minimum + maximum) // 2))
         title = str(request.metadata.get("title") or "the supplied sports event").strip()
         base = (
@@ -67,6 +67,55 @@ class MockLLMProvider(LLMProvider):
             "qa_report": {"provider": self.key, "mock": True},
             "used_rules": request.metadata.get("used_rules", []),
             "rewrite_reasons": request.metadata.get("rewrite_reasons", []),
+            # B 组字段（7.9 完整输出包）
+            # spoken_char_count 由后端 final_formatting 后处理自动计算，
+            # 此处提供占位值；服务层会以 len(tts_en) 覆盖。
+            "spoken_char_count": len(narration.replace("\n", " ")),
+            "event_identity": {
+                "sport": "MOCK",
+                "league": None,
+                "athletes": ["MOCK_ATHLETE"],
+                "teams": [],
+                "date": None,
+                "location": None,
+                "note": "Mock provider — event identity not derived from real facts",
+            },
+            "story_format": "consequence-first-decision",
+            "story_format_reason": "Mock provider: default format selected for contract test.",
+            "central_question": "MOCK: What caused the outcome in the supplied event?",
+            "selected_hook": {
+                "type": "scene-first-anomaly",
+                "score": 75,
+                "text": "MOCK TEST HOOK — opens on the anomalous moment.",
+                "reason": "Mock provider: default hook selected for contract test.",
+            },
+            "cmssml": narration.replace("\n", " "),
+            "ev3": narration.replace("\n", " "),
+            "story_architecture": {
+                "primary_format": "consequence-first-decision",
+                "depth_axis": "micro-action-and-body-mechanics",
+                "narrative_trajectory": "participant-action-trajectory",
+                "lcr_enabled": False,
+                "lcr_reason": "Mock provider: LCR conditions not evaluated.",
+                "functional_turns": [],
+                "note": "Mock provider — architecture not derived from real facts",
+            },
+            # C 组可选字段（ambiguous / 原文不完整）
+            "lcr_enabled": False,
+            "lcr_reason": None,
+            "hook_candidates": [],
+            "answer_word_map": None,
+            "reaction_relay": None,
+            "evidence_rewards": None,
+            "exclusion_ladder": None,
+            "dialogue_notes": None,
+            "audio_performance_map": None,
+            "tts_settings": None,
+            "video_material_plan": None,
+            "edit_map": None,
+            "caption_map": None,
+            "original_audio_plan": None,
+            "srt_output": None,
             "source_kind": "mock",
         }
         step_key = str(request.metadata.get("step_key", "generate_draft"))

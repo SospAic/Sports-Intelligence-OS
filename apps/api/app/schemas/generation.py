@@ -167,8 +167,8 @@ class GenerationCreate(BaseModel):
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"不支持的模型参数: {', '.join(sorted(unknown))}")
-        minimum = int(value.get("target_min_chars", 1200))
-        maximum = int(value.get("target_max_chars", 1250))
+        minimum = int(value.get("target_min_chars", 1180))
+        maximum = int(value.get("target_max_chars", 1220))
         if minimum < 200 or maximum > 5000 or minimum > maximum:
             raise ValueError("字符范围必须位于 200–5000 且最小值不能大于最大值")
         rewrites = int(value.get("max_rewrites", 2))

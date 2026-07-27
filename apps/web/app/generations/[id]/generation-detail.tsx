@@ -197,6 +197,7 @@ export function GenerationDetail({
 
       {run.status === "completed" && run.final_output ? (
         <>
+          {/* ── 主视图：英文 TTS + 翻译 + 标题 ─────────────────────────────── */}
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,0.8fr)]">
             <OutputCard
               action={() => copy("英文 TTS", tts)}
@@ -235,6 +236,7 @@ export function GenerationDetail({
             </section>
           </div>
 
+          {/* ── 关键词与标签 ────────────────────────────────────────────────── */}
           <div className="grid gap-6 lg:grid-cols-2 xl:grid-cols-3">
             <ListCard
               icon={<Search size={17} />}
@@ -253,6 +255,7 @@ export function GenerationDetail({
             />
           </div>
 
+          {/* ── 事实与故事判断 + 成片交付 ───────────────────────────────────── */}
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
             <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
               <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
@@ -284,6 +287,14 @@ export function GenerationDetail({
                   <dt className="text-xs text-slate-500">工程文件名</dt>
                   <dd className="mt-1 font-medium text-slate-100">
                     {projectFilename || "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-slate-500">精确字符数</dt>
+                  <dd className="mt-1 font-mono text-slate-300">
+                    {output["spoken_char_count"] != null
+                      ? String(output["spoken_char_count"])
+                      : "—"}
                   </dd>
                 </div>
                 <div>
@@ -320,6 +331,13 @@ export function GenerationDetail({
             </section>
           </div>
 
+          {/* ── B 组：7.9 完整叙事包 ────────────────────────────────────────── */}
+          <FullNarrativePackage
+            onCopy={copy}
+            output={output}
+          />
+
+          {/* ── 重新生成 ─────────────────────────────────────────────────────── */}
           <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
             <h2 className="text-lg font-semibold text-white">
               不满意？重新生成
@@ -355,6 +373,7 @@ export function GenerationDetail({
         </div>
       ) : null}
 
+      {/* ── 审计与技术信息 ─────────────────────────────────────────────────── */}
       <details className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 text-sm">
         <summary className="cursor-pointer text-slate-400">
           审计与技术信息
@@ -432,6 +451,275 @@ export function GenerationDetail({
           {status}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+// ── B/C 组：7.9 完整叙事包展开区 ─────────────────────────────────────────────
+function FullNarrativePackage({
+  output,
+  onCopy,
+}: {
+  output: Record<string, unknown>;
+  onCopy: (label: string, value: string) => void;
+}) {
+  const storyFormat = output["story_format"];
+  const storyFormatReason = output["story_format_reason"];
+  const centralQuestion = output["central_question"];
+  const selectedHook = output["selected_hook"];
+  const hookCandidates = output["hook_candidates"];
+  const storyArch = output["story_architecture"];
+  const lcrEnabled = output["lcr_enabled"];
+  const lcrReason = output["lcr_reason"];
+  const cmssml = typeof output["cmssml"] === "string" ? output["cmssml"] : null;
+  const ev3 = typeof output["ev3"] === "string" ? output["ev3"] : null;
+  const eventIdentity = output["event_identity"];
+  const answerWordMap = output["answer_word_map"];
+  const reactionRelay = output["reaction_relay"];
+  const evidenceRewards = output["evidence_rewards"];
+  const exclusionLadder = output["exclusion_ladder"];
+  const dialogueNotes = output["dialogue_notes"];
+
+  // C 组 ambiguous 字段
+  const audioMap = output["audio_performance_map"];
+  const ttsSettings = output["tts_settings"];
+  const materialPlan = output["video_material_plan"];
+  const editMap = output["edit_map"];
+
+  const hasAnyBField =
+    storyFormat != null ||
+    centralQuestion != null ||
+    selectedHook != null ||
+    cmssml != null ||
+    ev3 != null ||
+    storyArch != null;
+
+  if (!hasAnyBField) return null;
+
+  return (
+    <details className="rounded-2xl border border-slate-700 bg-slate-950/60 p-5">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-200">
+        完整叙事包（7.9 Full Package）
+      </summary>
+      <p className="mt-2 text-xs text-slate-500">
+        包含故事架构、Hook 分析、CMSSML、EV3 和叙事决策说明。带 ⚠ 标注的字段来自原文不完整条目（ambiguous），为系统辅助生成。
+      </p>
+
+      {/* 事件识别 */}
+      {eventIdentity != null && (
+        <div className="mt-5 rounded-xl border border-slate-800 p-4">
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            EVENT IDENTITY
+          </p>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">事件精确识别</h3>
+          <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+            {JSON.stringify(eventIdentity, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* 故事格式与中心悬念 */}
+      {(storyFormat != null || centralQuestion != null) && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          {storyFormat != null && (
+            <div className="rounded-xl border border-slate-800 p-4">
+              <p className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">
+                STORY FORMAT
+              </p>
+              <p className="mt-2 text-sm font-medium text-slate-100">
+                {typeof storyFormat === "string" ? storyFormat : JSON.stringify(storyFormat)}
+              </p>
+              {storyFormatReason != null && (
+                <p className="mt-2 text-xs text-slate-400">
+                  {typeof storyFormatReason === "string"
+                    ? storyFormatReason
+                    : JSON.stringify(storyFormatReason)}
+                </p>
+              )}
+            </div>
+          )}
+          {centralQuestion != null && (
+            <div className="rounded-xl border border-slate-800 p-4">
+              <p className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">
+                CENTRAL QUESTION
+              </p>
+              <p className="mt-2 text-sm text-slate-200">
+                {typeof centralQuestion === "string"
+                  ? centralQuestion
+                  : JSON.stringify(centralQuestion)}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Hook 分析 */}
+      {(selectedHook != null || hookCandidates != null) && (
+        <div className="mt-4 rounded-xl border border-slate-800 p-4">
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            HOOK ANALYSIS
+          </p>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">Hook 分析</h3>
+          {selectedHook != null && (
+            <div className="mt-3">
+              <p className="text-[10px] text-slate-500">选定 Hook</p>
+              <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+                {JSON.stringify(selectedHook, null, 2)}
+              </pre>
+            </div>
+          )}
+          {Array.isArray(hookCandidates) && hookCandidates.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[10px] text-slate-500">全部候选（{hookCandidates.length} 个）</p>
+              <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+                {JSON.stringify(hookCandidates, null, 2)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CMSSML / EV3 */}
+      {(cmssml != null || ev3 != null) && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          {cmssml != null && (
+            <div className="rounded-xl border border-slate-800 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">
+                  CMSSML
+                </p>
+                <button
+                  aria-label="复制 CMSSML"
+                  className="text-slate-500 hover:text-cyan-300"
+                  onClick={() => onCopy("CMSSML", cmssml)}
+                  type="button"
+                >
+                  <Clipboard size={13} />
+                </button>
+              </div>
+              <p className="mt-2 break-all text-xs leading-6 text-slate-300 font-mono">
+                {cmssml}
+              </p>
+            </div>
+          )}
+          {ev3 != null && (
+            <div className="rounded-xl border border-slate-800 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-semibold text-cyan-400 uppercase tracking-wider">
+                  EV3
+                </p>
+                <button
+                  aria-label="复制 EV3"
+                  className="text-slate-500 hover:text-cyan-300"
+                  onClick={() => onCopy("EV3", ev3)}
+                  type="button"
+                >
+                  <Clipboard size={13} />
+                </button>
+              </div>
+              <p className="mt-2 break-all text-xs leading-6 text-slate-300 font-mono">
+                {ev3}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 故事架构 */}
+      {storyArch != null && (
+        <div className="mt-4 rounded-xl border border-slate-800 p-4">
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            STORY ARCHITECTURE
+          </p>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">故事架构</h3>
+          {typeof lcrEnabled === "boolean" && (
+            <div className="mt-3 flex items-center gap-2">
+              <Badge tone={lcrEnabled ? "success" : "neutral"}>
+                LCR {lcrEnabled ? "已启用" : "未启用"}
+              </Badge>
+              {lcrReason != null && (
+                <span className="text-xs text-slate-400">
+                  {typeof lcrReason === "string" ? lcrReason : JSON.stringify(lcrReason)}
+                </span>
+              )}
+            </div>
+          )}
+          <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+            {JSON.stringify(storyArch, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* 答案词映射 */}
+      {answerWordMap != null && (
+        <div className="mt-4 rounded-xl border border-slate-800 p-4">
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            ANSWER WORD MAP
+          </p>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">答案词与泄露映射</h3>
+          <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
+            {JSON.stringify(answerWordMap, null, 2)}
+          </pre>
+        </div>
+      )}
+
+      {/* RR / EER / EL / 对话说明 */}
+      {(reactionRelay != null || evidenceRewards != null || exclusionLadder != null || dialogueNotes != null) && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          {reactionRelay != null && (
+            <NarrativeDetail label="Reaction Relay 结构" value={reactionRelay} />
+          )}
+          {evidenceRewards != null && (
+            <NarrativeDetail label="证据奖励结构（EER）" value={evidenceRewards} />
+          )}
+          {exclusionLadder != null && (
+            <NarrativeDetail label="合理解释排除列表（EL）" value={exclusionLadder} />
+          )}
+          {dialogueNotes != null && (
+            <NarrativeDetail label="对话与心理说明" value={dialogueNotes} />
+          )}
+        </div>
+      )}
+
+      {/* C 组：ambiguous 字段 */}
+      {(audioMap != null || ttsSettings != null || materialPlan != null || editMap != null) && (
+        <div className="mt-5 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
+          <p className="text-xs text-slate-500">
+            ⚠ 以下字段来自 7.9 原文不完整条目（ambiguous），为系统辅助生成，不能作为完整规则依据。
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {audioMap != null && (
+              <NarrativeDetail label="Audio Performance Map" value={audioMap} />
+            )}
+            {ttsSettings != null && (
+              <NarrativeDetail label="TTS 设置建议" value={ttsSettings} />
+            )}
+            {materialPlan != null && (
+              <NarrativeDetail label="视频素材逐 Beat 计划" value={materialPlan} />
+            )}
+            {editMap != null && (
+              <NarrativeDetail label="剪辑 Map" value={editMap} />
+            )}
+          </div>
+        </div>
+      )}
+    </details>
+  );
+}
+
+// ── 共用子组件 ────────────────────────────────────────────────────────────────
+
+function NarrativeDetail({ label, value }: { label: string; value: unknown }) {
+  const text =
+    typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  return (
+    <div className="rounded-xl border border-slate-800 p-4">
+      <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+        {label}
+      </p>
+      <pre className="mt-2 overflow-x-auto text-xs leading-5 text-slate-300 whitespace-pre-wrap">
+        {text}
+      </pre>
     </div>
   );
 }

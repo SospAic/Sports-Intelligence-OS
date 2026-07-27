@@ -52,6 +52,8 @@ from app.schemas.generation import (
 )
 from app.services.settings import SettingsError, SettingsService
 from app.workflows.generation import (
+    DEFAULT_MAX_CHARS,
+    DEFAULT_MIN_CHARS,
     aggregate_usage,
     deterministic_qa,
     extract_claims,
@@ -793,8 +795,8 @@ class GenerationService:
             answer_words, answer_ratio = self._answer_protection(frozen)
             return deterministic_qa(
                 str(context["generate_draft"]["tts_en"]),
-                target_min_chars=int(config.get("target_min_chars", 1200)),
-                target_max_chars=int(config.get("target_max_chars", 1250)),
+                target_min_chars=int(config.get("target_min_chars", DEFAULT_MIN_CHARS)),
+                target_max_chars=int(config.get("target_max_chars", DEFAULT_MAX_CHARS)),
                 verification_status=run.verification_status,
                 protected_answer_words=answer_words,
                 answer_reveal_min_ratio=answer_ratio,
@@ -827,8 +829,12 @@ class GenerationService:
                 run.rewrite_count += 1
                 qa = deterministic_qa(
                     draft,
-                    target_min_chars=int(run.model_config.get("target_min_chars", 1200)),
-                    target_max_chars=int(run.model_config.get("target_max_chars", 1250)),
+                    target_min_chars=int(
+                        run.model_config.get("target_min_chars", DEFAULT_MIN_CHARS)
+                    ),
+                    target_max_chars=int(
+                        run.model_config.get("target_max_chars", DEFAULT_MAX_CHARS)
+                    ),
                     verification_status=run.verification_status,
                     protected_answer_words=answer_words,
                     answer_reveal_min_ratio=answer_ratio,
@@ -867,6 +873,10 @@ class GenerationService:
                     )
             else:
                 content = dict(response.content)
+
+            # ── 后端强制覆盖字段（不允许 LLM 覆盖事实或审计字段） ──────────────
+            # tts_en 必须来自 generate_draft / automatic_rewrite 的输出，
+            # 而不是 final_formatting 步骤 LLM 的重新生成版本。
             content["tts_en"] = str(context["generate_draft"]["tts_en"])
             content["fact_sources"] = context["research_input"]["sources"]
             content["qa_report"] = context["qa_validation"]
@@ -874,6 +884,45 @@ class GenerationService:
             content["rewrite_reasons"] = [
                 item.get("code") for item in context["qa_validation"].get("findings", [])
             ]
+
+            # ── 后端计算字段（不依赖 LLM，确保与 tts_en 严格一致） ─────────────
+            # spoken_char_count：不含标题/标签/XML/TTS标签/中文翻译的精确字符数
+            content["spoken_char_count"] = len(content["tts_en"])
+
+            # verification_status：从 run 对象复制，不允许 LLM 改写核实级别
+            content["verification_status"] = run.verification_status
+
+            # ── B 组可选字段默认值（LLM 未生成时给出明确空值，不静默缺失） ──────
+            # lcr_enabled：LCR 是否满足启用条件，必须是布尔值
+            if "lcr_enabled" not in content:
+                content["lcr_enabled"] = False
+            elif not isinstance(content.get("lcr_enabled"), bool):
+                # 容错：LLM 有时返回字符串 "true"/"false"
+                raw_lcr = content["lcr_enabled"]
+                content["lcr_enabled"] = str(raw_lcr).lower() in ("true", "1", "yes")
+
+            # C 组 ambiguous 可选字段：允许 null，不强制要求（原文不完整）
+            for optional_field in (
+                "lcr_reason",
+                "hook_candidates",
+                "story_format_reason",
+                "clean_source_script",
+                "source_translation",
+                "answer_word_map",
+                "reaction_relay",
+                "evidence_rewards",
+                "exclusion_ladder",
+                "dialogue_notes",
+                "audio_performance_map",
+                "tts_settings",
+                "video_material_plan",
+                "edit_map",
+                "caption_map",
+                "original_audio_plan",
+                "srt_output",
+            ):
+                content.setdefault(optional_field, None)
+
             errors = validate_final_bundle(content)
             if errors:
                 raise GenerationError("; ".join(errors), code="final_output_invalid")
@@ -1168,8 +1217,8 @@ class GenerationService:
             or (context or {}).get("generate_draft", {}).get("tts_en", ""),
             "qa_findings": (context or {}).get("rewrite_qa", {}).get("findings", []),
             "manual_rewrite_instruction": (context or {}).get("manual_rewrite_instruction", ""),
-            "target_min_chars": int(model_config.get("target_min_chars", 1200)),
-            "target_max_chars": int(model_config.get("target_max_chars", 1250)),
+            "target_min_chars": int(model_config.get("target_min_chars", DEFAULT_MIN_CHARS)),
+            "target_max_chars": int(model_config.get("target_max_chars", DEFAULT_MAX_CHARS)),
             "verification_status": frozen.get("verification_status", "verification_incomplete"),
         }
 
