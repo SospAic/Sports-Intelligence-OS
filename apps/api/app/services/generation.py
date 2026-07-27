@@ -979,6 +979,7 @@ class GenerationService:
         return workflow, prompt, rule_version
 
     async def _freeze_input(self, workspace_id: UUID, payload: GenerationCreate) -> dict[str, Any]:
+        creator_controls = self._creator_controls(payload.input_payload)
         if payload.input_type == "user_text":
             return {
                 "text": str(payload.input_payload["text"]).strip(),
@@ -988,6 +989,7 @@ class GenerationService:
                 "sources": [],
                 "frozen_at": datetime.now(UTC).isoformat(),
                 "verification_status": "verification_incomplete",
+                **creator_controls,
             }
         if payload.input_type == "news":
             article = cast(
@@ -1000,7 +1002,7 @@ class GenerationService:
             )
             if article is None:
                 raise GenerationNotFound("新闻输入不存在")
-            return self._article_payload(article, article.source)
+            return {**self._article_payload(article, article.source), **creator_controls}
         if payload.input_type == "event":
             event = cast(
                 TopicEvent | None,
@@ -1035,6 +1037,7 @@ class GenerationService:
                     {"title": article.title, "summary": article.summary} for article, _ in rows
                 ],
                 "frozen_at": datetime.now(UTC).isoformat(),
+                **creator_controls,
             }
         content = cast(
             ContentItem | None,
@@ -1062,7 +1065,26 @@ class GenerationService:
                 }
             ],
             "frozen_at": datetime.now(UTC).isoformat(),
+            **creator_controls,
         }
+
+    @staticmethod
+    def _creator_controls(payload: dict[str, Any]) -> dict[str, Any]:
+        """Copy only bounded creator controls; source facts remain database-owned."""
+        controls: dict[str, Any] = {}
+        answer_word = payload.get("answer_word")
+        if isinstance(answer_word, str) and answer_word.strip():
+            controls["answer_word"] = answer_word.strip()[:200]
+            raw_ratio = payload.get("answer_reveal_min_ratio", 0.55)
+            try:
+                ratio = float(raw_ratio)
+            except (TypeError, ValueError):
+                ratio = 0.55
+            controls["answer_reveal_min_ratio"] = max(0.25, min(0.9, ratio))
+        creator_brief = payload.get("creator_brief")
+        if isinstance(creator_brief, str) and creator_brief.strip():
+            controls["creator_brief"] = creator_brief.strip()[:2000]
+        return controls
 
     def _article_payload(self, article: Article, source: Source) -> dict[str, Any]:
         return {

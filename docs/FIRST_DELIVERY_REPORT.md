@@ -5,7 +5,7 @@
 
 ## 交付结论
 
-代码、迁移、测试、中文文档和单机 Docker Compose 编排已经形成完整首期交付包。后端 51 项测试、前端 23 项测试、仓库契约 35 项测试、Python/TypeScript 静态检查和 Next.js 生产构建通过。
+代码、迁移、测试、中文文档和单机 Docker Compose 编排已经形成完整首期交付包。后端 52 项测试、前端 25 项测试、仓库契约 35 项测试、Python/TypeScript 静态检查和 Next.js 生产构建通过。
 
 当前执行环境缺少 Docker，因此本报告不把 Compose 静态检查或 SQLite 测试冒充 PostgreSQL/Redis/Worker/Beat 实机成功。第一次部署仍需在有 Docker Compose v2 的机器上执行本文“目标环境验收”清单。
 
@@ -17,12 +17,13 @@
 - 可复现且显著标记的 Mock Platform Adapter。
 - RSS、Atom、Generic JSON Feed 和手动新闻；去重、基础事件聚类、合并、拆分、收藏和评分参数版本。
 - 7.9 原文、816 个章节节点、1,021 条结构化规则、草稿、发布、对比、回滚、导入和导出。
-- 版本化 Prompt、统一 LLM Provider、十步生成工作流、Mock LLM、OpenAI 兼容 Provider、QA 和有限重写。
+- 面向创作者的一键内容创作：从热门视频、新闻、事件或自定义材料选择来源，只需选择规则预设即可生成结构化内容包。
+- 内部版本化 Prompt、统一 LLM Provider、十步生成编排、Mock LLM、OpenAI 兼容 Provider、QA 和有限重写；技术参数不再暴露在创作者主流程中，但完整保留版本与运行审计。
 - 结构化条件树、冷却、去重、连续命中、动作链和执行历史。
 - Email、Generic Webhook、Telegram、Discord、飞书、钉钉和企业微信 Provider；通知配置加密保存。
 - 细颗粒度设置中心：数据库/Redis 脱敏拓扑与连接参数、工作区 LLM 加密配置、统一通知 Provider 字段契约和连接测试。
 - 数据库共享的登录失败限流、HMAC 身份/IP 审计以及过期会话和登录尝试定时清理。
-- 中文管理后台：仪表盘、账号、作品、新闻、事件、选题、生成、规则、Prompt、自动化、通知、任务和日志。
+- 中文管理后台：仪表盘、账号、作品、新闻、事件、选题、内容创作、成品详情、规则、自动化、通知、任务和日志。Prompt 管理保留为内部维护入口，不进入主导航。
 - Docker Compose、Caddy、Alembic、Celery Worker/Beat、Makefile、CI 和中文运维文档。
 
 ## 可运行功能
@@ -40,9 +41,9 @@ Mock 结果固定包含 `source_kind=mock`、Provider 标识或 `MOCK TEST OUTPU
 
 | 检查 | 结果 |
 | --- | --- |
-| 后端 Pytest | 51 passed；1 个上游 Starlette TestClient/httpx 弃用警告 |
+| 后端 Pytest | 52 passed；1 个上游 Starlette TestClient/httpx 弃用警告 |
 | 仓库契约 Pytest | 35 passed |
-| 前端 Vitest | 23 passed |
+| 前端 Vitest | 25 passed |
 | Ruff | passed |
 | mypy | 120 个源文件通过 |
 | TypeScript | passed |
@@ -52,7 +53,7 @@ Mock 结果固定包含 `source_kind=mock`、Provider 标识或 `MOCK TEST OUTPU
 | Compose 静态解析脚本 | passed；7 个服务和依赖/健康检查契约有效 |
 | 本地 HTTP 冒烟 | FastAPI `/health/live` 200；Next `/login` 200 且存在密码表单 |
 | Docker Compose 实机 | 未执行：当前机器没有 Docker/Podman/nerdctl |
-| 浏览器可视化点击 | 本地设置中心通过：数据库/Redis、LLM API、通知 Provider 动态字段均由真实后端 API 驱动 |
+| 浏览器可视化点击 | 本地设置中心与一键内容创作通过：四类素材入口、规则预设、Mock 边界和真实后端 API 状态均正常；控制台无错误 |
 | Alembic | 0001–0010 在临时 SQLite 升级通过并核对 40 张表；PostgreSQL 实机仍待 Docker 环境验证 |
 
 测试没有通过删除、跳过或放宽既有断言换取成功。集成链路只使用显式 Mock、SQLite 隔离数据库和本地 `httpx.MockTransport`，没有访问外部平台。

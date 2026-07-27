@@ -14,8 +14,8 @@ Prompt 09 将此前分散的功能页整合为同一个中文管理后台。登�
 | `/news`、`/news/{id}` | 卡片/表格/时间线、筛选、来源与时间边界、事件/生成入口 |
 | `/events`、`/events/{id}` | 热度与来源排序、收藏、来源时间线、内容生成 |
 | `/topics` | 作品/新闻/事件/人工选题的持久化列表、优先级、状态流转与审计 |
-| `/generate`、`/generations` | Prompt 07 十步生成、预览、QA、重写、保存、复制与导出 |
-| `/rules`、`/prompts`、`/workflows` | 版本化规则、Prompt 和工作流真实管理界面 |
+| `/generate`、`/generations` | 热门作品/新闻/事件选择、规则预设、一键生成、结构化成品、重写、保存、复制与导出 |
+| `/rules` | 面向运营人员的版本化规则管理；Prompt 与工作流保留为内部版本审计能力，不进入主导航 |
 | `/automations` | 无需手写 JSON 的嵌套 AND/OR/NOT 条件构建器、动作排序、JSON 高级模式和执行历史 |
 | `/notification-channels` | Provider 动态配置、后端验证与加密保存、启停、确认后测试和投递历史 |
 | `/tasks`、`/logs` | 平台/新闻同步、生成、Worker 任务汇总；系统事件与审计记录 |

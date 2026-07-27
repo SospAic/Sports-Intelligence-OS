@@ -14,7 +14,6 @@ import {
   Bot,
   ChevronDown,
   CircleUserRound,
-  FileText,
   Gauge,
   GitBranch,
   ListChecks,
@@ -69,9 +68,8 @@ const navigation = [
   ["新闻热点", "/news", Newspaper],
   ["事件中心", "/events", Activity],
   ["选题库", "/topics", BookMarked],
-  ["内容生成", "/generate", Sparkles],
+  ["内容创作", "/generate", Sparkles],
   ["规则中心", "/rules", GitBranch],
-  ["Prompt 中心", "/prompts", FileText],
   ["自动化", "/automations", Bot],
   ["通知渠道", "/notification-channels", Webhook],
   ["任务记录", "/tasks", ListChecks],
@@ -329,7 +327,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                     className="block rounded-lg p-2 text-sm hover:bg-slate-900"
                     href="/generate"
                   >
-                    发起生成
+                    创建内容
                   </Link>
                   <Link
                     className="block rounded-lg p-2 text-sm hover:bg-slate-900"

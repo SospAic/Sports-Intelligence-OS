@@ -2,6 +2,7 @@
 
 import type {
   EditorialRule,
+  EditorialRuleSetSummary,
   EditorialRuleTree,
   GenerationWorkflow,
   LLMProviderDescriptor,
@@ -235,13 +236,13 @@ describe("登录与编辑器交互", () => {
 });
 
 describe("生成和通知真实前端流程", () => {
-  it("内容生成页面预览参数化工作流且显示后端脱敏结果", async () => {
+  it("内容创作页面只暴露素材和规则并使用内置 Prompt 一键生成", async () => {
     const workflow: GenerationWorkflow = {
       id: "workflow-1",
       key: "sports-full-package",
       name: "Sports Short Video Full Package",
       description: null,
-      input_types: ["user_text"],
+      input_types: ["news", "event", "content", "user_text"],
       steps: [
         {
           key: "research",
@@ -271,42 +272,57 @@ describe("生成和通知真实前端流程", () => {
         max_tokens: 2048,
       },
     };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(response({ csrf_token: "csrf-generation" }))
-      .mockResolvedValueOnce(
-        response({
-          system_prompt: "[REDACTED BACKEND PREVIEW]",
-          user_prompt: "Verified input snapshot",
-          warnings: ["Mock LLM"],
-        }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
+    const ruleSet: EditorialRuleSetSummary = {
+      id: "rule-set-1",
+      key: "elite-sports-narration-v7-9",
+      name: "7.9 体育叙事规则",
+      description: null,
+      current_version_id: "rules-79",
+      status: "active",
+      tags: [],
+      version_count: 1,
+      draft_count: 0,
+      created_at: "2026-07-26T00:00:00Z",
+      updated_at: "2026-07-26T00:00:00Z",
+    };
+    apiRequestMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/contents?")) {
+        return { items: [], page: 1, page_size: 12, total: 0 };
+      }
+      if (path === "/generations") return { id: "generation-1" };
+      throw new Error(`Unexpected API path: ${path}`);
+    });
     const user = userEvent.setup();
-    render(
+    withQueryClient(
       <GenerationForm
         workspaceId="workspace-1"
         workflows={[workflow]}
         providers={[provider]}
-        prompts={[]}
-        ruleSets={[]}
+        ruleSets={[ruleSet]}
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: "自定义材料" }));
     await user.type(
-      screen.getByPlaceholderText(/输入事件事实/),
+      screen.getByPlaceholderText(/粘贴事件事实/),
       "User supplied sports facts without independent verification.",
     );
-    await user.click(screen.getByRole("button", { name: "预览最终 Prompt" }));
+    expect(screen.queryByText("Prompt 版本")).not.toBeInTheDocument();
+    expect(screen.queryByText("Temperature")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /立即生成内容包/ }));
 
-    await screen.findByText("[REDACTED BACKEND PREVIEW]");
-    const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
-    const payload = JSON.parse(String(init.body));
+    await waitFor(() =>
+      expect(navigation.push).toHaveBeenCalledWith("/generations/generation-1"),
+    );
+    const call = apiRequestMock.mock.calls.find(
+      ([path]) => path === "/generations",
+    );
+    expect(call).toBeDefined();
+    const payload = JSON.parse(String(call?.[1]?.body));
     expect(payload.workflow_id).toBe("workflow-1");
+    expect(payload.prompt_version_id).toBeNull();
+    expect(payload.provider).toBe("mock_llm");
     expect(payload.model_config).toMatchObject({
-      temperature: 0.4,
-      top_p: 1,
-      max_tokens: 4096,
       target_min_chars: 1200,
       target_max_chars: 1250,
       max_rewrites: 2,

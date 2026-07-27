@@ -34,9 +34,9 @@ Sports Intelligence OS 将多平台体育账号表现、作品增长、新闻热
 
 系统支持最新/热度/来源排序，时间段与体育项目筛选，人物/赛事/队伍搜索，多来源事件聚类、去重、事件时间线和热点趋势。评分应保留算法版本和解释。
 
-### 2.3 规则与 Prompt 中心
+### 2.3 规则与内部内容模板
 
-规则集合和 Prompt 集合支持版本、草稿/发布状态、启停、优先级、标签、分类、测试、回滚、导入导出、差异比较和修改历史。
+规则集合支持面向运营人员的版本、草稿/发布状态、启停、优先级、标签、分类、测试、回滚、导入导出、差异比较和修改历史。Prompt 集合继续作为系统内部的版本化内容模板和审计资产，但不作为普通创作者的独立工作台；主创作流程不得要求用户选择 Prompt 版本、工作流、Provider、模型或采样参数。
 
 首个核心规则集合来自 `ELITE_SPORTS_FACELESS_NARRATION_ENGINE_V7_9_LATE_CAUSE_REVEAL_REACTION_RELAY_ANSWER_WORD_PROTECTION_FULL.txt`。必须同时保留不可变原文与结构化表示。结构化层级至少支持章节、子章节、规则、说明、Why、How、Good Example、Bad Example、QA Check、Rewrite Instruction、优先级、强制性、适用运动、故事类型、输出类型、依赖规则、冲突规则、标签和版本。
 
@@ -53,9 +53,9 @@ Sports Intelligence OS 将多平台体育账号表现、作品增长、新闻热
 
 ### 2.4 内容生成中心
 
-输入可来自账号、作品、单条新闻、热点事件、多新闻聚合事件、手动事件，以及用户上传的字幕、文案或文件。用户可选择规则/Prompt 集合、模型、输出语言/格式/长度、运动、叙事风格、联网核实，以及标题、翻译、素材搜索词、SSML、SRT、标签和自动审查重写选项。
+输入可来自账号、作品、单条新闻、热点事件、多新闻聚合事件、手动事件，以及用户上传的字幕、文案或文件。默认产品路径是“选择热门作品/新闻/事件 → 选择规则预设 → 一键生成 → 查看结构化成品”。用户只调整能理解的创作输入，例如素材、规则、成片长度、答案词保护和补充重点；系统从工作区设置自动选择 LLM，并使用工作流绑定的已发布 Prompt。Prompt 版本、模型参数和内部步骤只在审计信息中展示。
 
-标准流程是：Research → Fact Extraction → Event Timeline → Story Qualification → Draft → Editorial Review → QA → Rewrite → Final Output。每次运行记录输入、规则/Prompt 版本、模型与参数、原始输出、审查、重写、最终结果、Token、耗时、成本、评分和采用状态。
+内部标准流程仍是：Research → Fact Extraction → Event Timeline → Story Qualification → Draft → Editorial Review → QA → Rewrite → Final Output。它用于质量、恢复和审计，不直接暴露为普通用户需要编排的界面。每次运行记录输入、规则/Prompt 版本、模型与参数、原始输出、审查、重写、最终结果、Token、耗时、成本、评分和采用状态。
 
 ### 2.5 规则引擎与自动化
 

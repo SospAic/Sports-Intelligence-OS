@@ -2,7 +2,7 @@
 
 Sports Intelligence OS 是面向体育短视频创作者、体育内容运营者和多平台账号管理者的内容情报与自动化系统。
 
-当前已进入第一次交付验收：账号、作品、新闻、事件、选题、生成、规则、Prompt、自动化、通知、任务、日志和设置已经整合到统一中文后台；核心按钮连接真实后端 API。外部平台、LLM 和通知渠道未配置真实凭证时会显示真实错误或显式 Mock 标记，不会用静态成功响应补齐功能。
+当前已进入第一次交付验收：账号、作品、新闻、事件、选题、内容创作、规则、自动化、通知、任务、日志和设置已经整合到统一中文后台；核心按钮连接真实后端 API。Prompt、模型参数和多阶段工作流由系统内部版本化管理，不要求创作者手工编排。外部平台、LLM 和通知渠道未配置真实凭证时会显示真实错误或显式 Mock 标记，不会用静态成功响应补齐功能。
 
 ## 功能截图占位
 
@@ -11,7 +11,7 @@ Sports Intelligence OS 是面向体育短视频创作者、体育内容运营者
 | 仪表盘 | `docs/images/dashboard.png`（待真实部署截图） | 实时统计、趋势、任务和来源标记 |
 | 账号与作品 | `docs/images/monitoring.png`（待真实部署截图） | 同步、快照、排序、筛选和导出 |
 | 规则编辑器 | `docs/images/rules.png`（待真实部署截图） | 原文、结构化规则、版本和 QA |
-| 内容生成 | `docs/images/generation.png`（待真实部署截图） | 十步工作流、预览、QA 和重写 |
+| 内容创作 | `docs/images/generation.png`（待真实部署截图） | 热门素材、规则预设、一键生成和结构化成品 |
 | 自动化 | `docs/images/automation.png`（待真实部署截图） | 可视化条件、动作链和执行历史 |
 
 占位路径不会伪装成已完成截图；应在目标部署通过验收后替换。
@@ -139,7 +139,7 @@ SIO_LLM_OPENAI_COMPATIBLE_API_KEY=
 SIO_LLM_DEFAULT_MODEL=gpt-4.1-mini
 ```
 
-浏览器不会获得明文 Key，Prompt 预览也不会包含 Key。Owner/Admin 也可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数；该配置会用于新的手动、Worker 与自动化生成任务。登录后使用 `/generate`、`/generations`、`/prompts` 和 `/workflows`。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
+浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
 
 通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md)。
 

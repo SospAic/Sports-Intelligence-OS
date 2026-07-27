@@ -123,6 +123,22 @@ def test_deterministic_qa_detects_early_or_missing_answer_words() -> None:
     assert missing["answer_protection"]["checks"][0]["status"] == "missing"
 
 
+def test_generation_freezes_only_bounded_creator_controls() -> None:
+    controls = GenerationService._creator_controls(
+        {
+            "answer_word": "  Jordan  ",
+            "answer_reveal_min_ratio": 2,
+            "creator_brief": "Focus on the final possession.",
+            "title": "must not override database facts",
+        }
+    )
+    assert controls == {
+        "answer_word": "Jordan",
+        "answer_reveal_min_ratio": 0.9,
+        "creator_brief": "Focus on the final possession.",
+    }
+
+
 async def _seed_defaults(database_path: Path) -> None:
     settings = Settings(
         environment="test",
