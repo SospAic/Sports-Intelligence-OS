@@ -1,0 +1,245 @@
+name: sports-intelligence-os
+
+x-backend-environment: &backend-environment
+  SIO_ENVIRONMENT: ${SIO_ENVIRONMENT:-development}
+  SIO_APP_NAME: ${SIO_APP_NAME:-Sports Intelligence OS}
+  SIO_LOG_LEVEL: ${SIO_LOG_LEVEL:-INFO}
+  SIO_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sio}:${POSTGRES_PASSWORD:-sio-local-development-only}@postgres:5432/${POSTGRES_DB:-sports_intelligence}
+  SIO_REDIS_URL: redis://redis:6379/0
+  SIO_DATABASE_POOL_SIZE: ${SIO_DATABASE_POOL_SIZE:-10}
+  SIO_DATABASE_MAX_OVERFLOW: ${SIO_DATABASE_MAX_OVERFLOW:-20}
+  SIO_DATABASE_POOL_TIMEOUT_SECONDS: ${SIO_DATABASE_POOL_TIMEOUT_SECONDS:-30}
+  SIO_DATABASE_POOL_RECYCLE_SECONDS: ${SIO_DATABASE_POOL_RECYCLE_SECONDS:-1800}
+  SIO_DATABASE_COMMAND_TIMEOUT_SECONDS: ${SIO_DATABASE_COMMAND_TIMEOUT_SECONDS:-60}
+  SIO_REDIS_CONNECT_TIMEOUT_SECONDS: ${SIO_REDIS_CONNECT_TIMEOUT_SECONDS:-5}
+  SIO_REDIS_SOCKET_TIMEOUT_SECONDS: ${SIO_REDIS_SOCKET_TIMEOUT_SECONDS:-5}
+  SIO_REDIS_MAX_CONNECTIONS: ${SIO_REDIS_MAX_CONNECTIONS:-50}
+  SIO_REDIS_HEALTH_CHECK_INTERVAL_SECONDS: ${SIO_REDIS_HEALTH_CHECK_INTERVAL_SECONDS:-30}
+  SIO_REDIS_RETRY_ON_TIMEOUT: ${SIO_REDIS_RETRY_ON_TIMEOUT:-true}
+  SIO_SECRET_KEY: ${SIO_SECRET_KEY:-local-development-secret-replace-before-production-2026}
+  SIO_SESSION_COOKIE_NAME: ${SIO_SESSION_COOKIE_NAME:-sio_session}
+  SIO_SESSION_COOKIE_SECURE: ${SIO_SESSION_COOKIE_SECURE:-false}
+  SIO_SESSION_TTL_SECONDS: ${SIO_SESSION_TTL_SECONDS:-86400}
+  SIO_AUTH_LOGIN_WINDOW_SECONDS: ${SIO_AUTH_LOGIN_WINDOW_SECONDS:-900}
+  SIO_AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTITY: ${SIO_AUTH_LOGIN_MAX_ATTEMPTS_PER_IDENTITY:-10}
+  SIO_AUTH_LOGIN_MAX_ATTEMPTS_PER_IP: ${SIO_AUTH_LOGIN_MAX_ATTEMPTS_PER_IP:-100}
+  SIO_AUTH_ATTEMPT_RETENTION_SECONDS: ${SIO_AUTH_ATTEMPT_RETENTION_SECONDS:-604800}
+  SIO_SESSION_CLEANUP_RETENTION_SECONDS: ${SIO_SESSION_CLEANUP_RETENTION_SECONDS:-604800}
+  SIO_PASSWORD_MIN_LENGTH: ${SIO_PASSWORD_MIN_LENGTH:-12}
+  SIO_CORS_ORIGINS: '${SIO_CORS_ORIGINS:-["http://localhost:8080","http://localhost:3000","http://127.0.0.1:3000"]}'
+  SIO_BOOTSTRAP_ADMIN_EMAIL: ${SIO_BOOTSTRAP_ADMIN_EMAIL:-}
+  SIO_BOOTSTRAP_ADMIN_PASSWORD: ${SIO_BOOTSTRAP_ADMIN_PASSWORD:-}
+  SIO_BOOTSTRAP_WORKSPACE_NAME: ${SIO_BOOTSTRAP_WORKSPACE_NAME:-Sports Intelligence OS}
+  SIO_YOUTUBE_API_KEY: ${SIO_YOUTUBE_API_KEY:-}
+  SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS: ${SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS:-10}
+  SIO_PLATFORM_REQUEST_MAX_ATTEMPTS: ${SIO_PLATFORM_REQUEST_MAX_ATTEMPTS:-3}
+  SIO_SYNC_TASK_MAX_RETRIES: ${SIO_SYNC_TASK_MAX_RETRIES:-3}
+  SIO_TASK_STALE_AFTER_SECONDS: ${SIO_TASK_STALE_AFTER_SECONDS:-2100}
+  SIO_SYNC_PAGE_LIMIT: ${SIO_SYNC_PAGE_LIMIT:-20}
+  SIO_NEWS_SSRF_CHECK_ENABLED: ${SIO_NEWS_SSRF_CHECK_ENABLED:-true}
+  SIO_LLM_OPENAI_COMPATIBLE_BASE_URL: ${SIO_LLM_OPENAI_COMPATIBLE_BASE_URL:-}
+  SIO_LLM_OPENAI_COMPATIBLE_API_KEY: ${SIO_LLM_OPENAI_COMPATIBLE_API_KEY:-}
+  SIO_LLM_DEFAULT_MODEL: ${SIO_LLM_DEFAULT_MODEL:-gpt-4.1-mini}
+  SIO_LLM_DEFAULT_TEMPERATURE: ${SIO_LLM_DEFAULT_TEMPERATURE:-0.4}
+  SIO_LLM_DEFAULT_TOP_P: ${SIO_LLM_DEFAULT_TOP_P:-1.0}
+  SIO_LLM_DEFAULT_MAX_TOKENS: ${SIO_LLM_DEFAULT_MAX_TOKENS:-4096}
+  SIO_LLM_REQUEST_TIMEOUT_SECONDS: ${SIO_LLM_REQUEST_TIMEOUT_SECONDS:-60}
+  SIO_LLM_REQUEST_MAX_ATTEMPTS: ${SIO_LLM_REQUEST_MAX_ATTEMPTS:-3}
+  SIO_LLM_INTERNAL_HOSTS_ALLOWLIST: '["llm-gateway","llm-experimental"]'
+  SIO_BROWSER_FIRST_MODE: ${SIO_BROWSER_FIRST_MODE:-false}
+  SIO_LLM_FALLBACK_BASE_URL: ${SIO_LLM_FALLBACK_BASE_URL:-}
+  SIO_NOTIFICATION_ENCRYPTION_KEY: ${SIO_NOTIFICATION_ENCRYPTION_KEY:-}
+  SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS: ${SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS:-10}
+  SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS: ${SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS:-3}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sports_intelligence}
+      POSTGRES_USER: ${POSTGRES_USER:-sio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sio-local-development-only}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment: *backend-environment
+    command:
+      - /bin/sh
+      - -c
+      - cd apps/api && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/workspace/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment: *backend-environment
+    command:
+      [
+        "celery",
+        "-A",
+        "apps.worker.celery_app:celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--queues=maintenance,monitoring,news,generation,automation,notification",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  beat:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment: *backend-environment
+    command:
+      [
+        "celery",
+        "-A",
+        "apps.worker.celery_app:celery_app",
+        "beat",
+        "--loglevel=INFO",
+        "--schedule=/tmp/celerybeat-schedule",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Sports Intelligence OS}
+      API_INTERNAL_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--quiet",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:3000/login",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2.10-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── LLM Gateway (New API) ───────────────────────────────────────────
+  # Unified OpenAI-compatible gateway supporting 30+ official LLM providers.
+  # Access the management UI on http://localhost:3306 to add API keys.
+  llm-gateway:
+    image: calciumion/new-api:latest
+    ports:
+      - "127.0.0.1:3306:3000"
+    environment:
+      SQL_DSN: ""
+      REDIS_CONN_STRING: redis://redis:6379/1
+      SESSION_SECRET: ${SIO_LLM_GATEWAY_SESSION_SECRET:-sio-llm-gateway-local-session}
+      INITIAL_ROOT_TOKEN: ${SIO_LLM_GATEWAY_ROOT_TOKEN:-sio-local-gateway-token}
+    volumes:
+      - llm_gateway_data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    profiles:
+      - llm
+
+  # ─── LLM Experimental (Chat2API / gpt4free) ─────────────────────────
+  # Experimental web-to-API converter. NOT for production use.
+  # Provides free access via web scraping — unstable, may violate ToS.
+  # OpenAI-compatible API at http://llm-experimental:8080/v1
+  llm-experimental:
+    image: hlohaus789/g4f:latest
+    shm_size: "2gb"
+    ports:
+      - "127.0.0.1:8020:8080"
+      - "127.0.0.1:7900:7900"
+    volumes:
+      - llm_experimental_data:/app/har_and_cookies
+    restart: unless-stopped
+    profiles:
+      - llm-experimental
+
+volumes:
+  postgres_data:
+  redis_data:
+  llm_gateway_data:
+  llm_experimental_data:

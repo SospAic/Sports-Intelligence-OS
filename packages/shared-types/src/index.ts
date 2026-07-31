@@ -1,0 +1,905 @@
+export type SourceKind = "live" | "imported" | "mock";
+
+export type WorkspaceRole = "owner" | "admin" | "editor" | "analyst" | "viewer";
+
+export interface UserSummary {
+  id: string;
+  email: string;
+  display_name: string;
+  locale: string;
+  timezone: string;
+}
+
+export interface WorkspaceMembershipSummary {
+  workspace_id: string;
+  workspace_name: string;
+  role: WorkspaceRole;
+}
+
+export interface CurrentUserResponse {
+  user: UserSummary;
+  memberships: WorkspaceMembershipSummary[];
+}
+
+export interface AuthResponse {
+  user: UserSummary;
+  csrf_token: string;
+  expires_at: string;
+}
+
+export interface CsrfResponse {
+  csrf_token: string;
+}
+
+export interface HealthResponse {
+  status: "ok" | "degraded";
+  service: string;
+  version: string;
+  checks?: Record<string, "ok" | "error">;
+}
+
+export type AccountSyncStatus =
+  | "never"
+  | "queued"
+  | "syncing"
+  | "success"
+  | "error"
+  | "disabled";
+
+export interface PlatformSummary {
+  id: string;
+  key: string;
+  name: string;
+  adapter_key: string;
+}
+
+export interface MonitoringAccountSummary {
+  id: string;
+  platform: PlatformSummary;
+  display_name: string;
+  username: string | null;
+  source_kind: SourceKind;
+  sync_status: AccountSyncStatus;
+  last_synced_at: string | null;
+  next_sync_at: string | null;
+  last_sync_error_code: string | null;
+  last_sync_error_message: string | null;
+}
+
+export interface MonitoringAccountPage {
+  items: MonitoringAccountSummary[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface ProblemDetails {
+  type: string;
+  title: string;
+  status: number;
+  code: string;
+  detail: string;
+  instance?: string;
+  request_id?: string;
+  errors?: Array<{
+    path: string;
+    code: string;
+    message: string;
+  }>;
+}
+
+export type EditorialRuleType =
+  | "principle"
+  | "qualification"
+  | "research"
+  | "narrative"
+  | "language"
+  | "structure"
+  | "fact_check"
+  | "length"
+  | "output"
+  | "qa"
+  | "rewrite"
+  | "tts"
+  | "ssml"
+  | "title"
+  | "search_keyword"
+  | "material_search";
+
+export interface EditorialRuleSetSummary {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  current_version_id: string | null;
+  status: "active" | "disabled" | "archived";
+  tags: string[];
+  version_count: number;
+  draft_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EditorialRuleVersionSummary {
+  id: string;
+  version: string;
+  source_hash: string;
+  changelog: string | null;
+  status: "draft" | "published" | "archived";
+  created_by: string;
+  created_at: string;
+  published_at: string | null;
+}
+
+export interface EditorialRuleSetDetail extends EditorialRuleSetSummary {
+  versions: EditorialRuleVersionSummary[];
+}
+
+export interface EditorialRuleVersion extends EditorialRuleVersionSummary {
+  rule_set_id: string;
+  source_text: string;
+  section_count: number;
+  rule_count: number;
+}
+
+export interface EditorialRule {
+  id: string;
+  version_id: string;
+  section_id: string;
+  key: string;
+  title: string;
+  rule_type: EditorialRuleType;
+  instruction: string;
+  why: string | null;
+  how: string | null;
+  good_example: string | null;
+  bad_example: string | null;
+  qa_check: string | null;
+  rewrite_instruction: string | null;
+  priority: number;
+  severity: "info" | "warning" | "error" | "critical";
+  is_mandatory: boolean;
+  enabled: boolean;
+  sports: string[];
+  story_types: string[];
+  output_types: string[];
+  dependencies: string[];
+  conflicts: string[];
+  tags: string[];
+  source_reference: string | null;
+  source_status: "full" | "partial" | "unresolved";
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EditorialRuleSectionNode {
+  id: string;
+  version_id: string;
+  parent_id: string | null;
+  title: string;
+  slug: string;
+  description: string | null;
+  sort_order: number;
+  rules: EditorialRule[];
+  children: EditorialRuleSectionNode[];
+}
+
+export interface EditorialRuleTree {
+  version: EditorialRuleVersionSummary;
+  sections: EditorialRuleSectionNode[];
+  total_rules: number;
+}
+
+export interface EditorialRuleSetPage {
+  items: EditorialRuleSetSummary[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface PromptVersionSummary {
+  id: string;
+  collection_id: string;
+  version: string;
+  changelog: string | null;
+  status: "draft" | "published" | "archived";
+  created_at: string;
+  published_at: string | null;
+}
+
+export interface PromptVersion extends PromptVersionSummary {
+  system_prompt: string;
+  user_prompt_template: string;
+  variables_schema: Record<string, unknown>;
+  model_config: Record<string, unknown>;
+  created_by: string;
+}
+
+export interface PromptCollectionSummary {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  category: string;
+  current_version_id: string | null;
+  status: "active" | "disabled" | "archived";
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  version_count: number;
+}
+
+export interface PromptCollectionDetail extends PromptCollectionSummary {
+  versions: PromptVersionSummary[];
+}
+
+export interface PromptCollectionPage {
+  items: PromptCollectionSummary[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface GenerationWorkflow {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  input_types: string[];
+  steps: Array<{
+    key: string;
+    name: string;
+    sort_order: number;
+    required: boolean;
+  }>;
+  default_rule_set_version_id: string | null;
+  default_prompt_version_id: string | null;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LLMProviderDescriptor {
+  key: string;
+  name: string;
+  configured: boolean;
+  is_mock: boolean;
+  supports_streaming: boolean;
+  detail: string;
+  source: "database" | "environment" | "builtin" | "unconfigured";
+  default_model: string | null;
+  default_parameters: Record<string, unknown>;
+}
+
+export interface RuntimeSettingField {
+  key: string;
+  label: string;
+  value: string | number | boolean | null;
+  value_type: "text" | "number" | "boolean";
+  env_var: string;
+  description: string;
+  secret: boolean;
+  restart_required: boolean;
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface RuntimeSettingSection {
+  key: string;
+  title: string;
+  description: string;
+  fields: RuntimeSettingField[];
+}
+
+export interface RuntimeSettingsRecord {
+  environment: string;
+  sections: RuntimeSettingSection[];
+  apply_mode: "environment_restart";
+  warning: string;
+}
+
+export interface LLMProviderSettingRecord {
+  id: string | null;
+  provider_key: string;
+  name: string;
+  source: "database" | "environment" | "unconfigured";
+  base_url: string | null;
+  api_key_configured: boolean;
+  config_masked: Record<string, unknown>;
+  default_model: string;
+  default_parameters: Record<string, unknown>;
+  input_cost_per_million: string | number | null;
+  output_cost_per_million: string | number | null;
+  enabled: boolean;
+  configured: boolean;
+  last_tested_at: string | null;
+  health_status: string;
+  updated_at: string | null;
+  fields: ConfigFieldDescriptor[];
+}
+
+export interface LLMProviderTestResult {
+  status: "ok" | "degraded" | "unavailable";
+  detail: string;
+  tested_at: string;
+}
+
+export interface GenerationStep {
+  id: string;
+  step_key: string;
+  name: string;
+  sort_order: number;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  input_payload: Record<string, unknown>;
+  output_payload: Record<string, unknown> | null;
+  prompt_snapshot: Record<string, unknown> | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error: Record<string, unknown> | null;
+}
+
+export interface GenerationRun {
+  id: string;
+  workflow_id: string;
+  input_type: string;
+  input_id: string | null;
+  input_payload: Record<string, unknown>;
+  rule_set_version_id: string;
+  prompt_version_id: string;
+  provider: string;
+  model: string;
+  model_config: Record<string, unknown>;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  current_step: string | null;
+  verification_status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  raw_output: Record<string, unknown> | null;
+  final_output: Record<string, unknown> | null;
+  validation_result: Record<string, unknown>;
+  rewrite_count: number;
+  token_usage: Record<string, unknown>;
+  estimated_cost: string | number | null;
+  error: { code?: string; message?: string } | null;
+  metadata: Record<string, unknown>;
+  is_saved: boolean;
+  user_rating: number | null;
+  created_at: string;
+  updated_at: string;
+  steps: GenerationStep[];
+}
+
+export interface GenerationRunPage {
+  items: GenerationRun[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface PlatformRecord extends PlatformSummary {
+  category: string;
+  enabled: boolean;
+  capabilities: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdapterConfigFieldRead {
+  key: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+  description: string | null;
+}
+
+export interface AdapterDescriptorRead {
+  key: string;
+  name: string;
+  implementation_status: "implemented" | "skeleton";
+  capabilities: Record<string, boolean>;
+  config_fields: AdapterConfigFieldRead[];
+  source_kinds: string[];
+}
+
+export interface AccountSnapshot {
+  id: string;
+  account_id: string;
+  captured_at: string;
+  follower_count: number | null;
+  following_count: number | null;
+  total_like_count: number | null;
+  total_view_count: number | null;
+  video_count: number | null;
+  engagement_rate: number | null;
+  metadata: Record<string, unknown>;
+  source_kind: SourceKind;
+  source_provider: string;
+  fetched_at: string;
+}
+
+export interface AccountRecord extends MonitoringAccountSummary {
+  workspace_id: string;
+  platform_id: string;
+  platform: PlatformRecord;
+  external_id: string;
+  profile_url: string | null;
+  avatar_url: string | null;
+  description: string | null;
+  country: string | null;
+  language: string | null;
+  is_verified: boolean | null;
+  is_active: boolean;
+  metadata: Record<string, unknown>;
+  sync_interval_seconds: number;
+  source_provider: string;
+  fetched_at: string;
+  source_url: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_snapshot: AccountSnapshot | null;
+  follower_growth_24h: number | null;
+}
+
+export interface AccountRecordPage {
+  items: AccountRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface AccountSnapshotPage {
+  items: AccountSnapshot[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface AccountMetricsHistoryPoint {
+  captured_at: string;
+  follower_count: number | null;
+  following_count: number | null;
+  total_like_count: number | null;
+  total_view_count: number | null;
+  video_count: number | null;
+}
+
+export interface AccountMetricsHistory {
+  account_id: string;
+  days: number;
+  points: AccountMetricsHistoryPoint[];
+}
+
+export interface ContentSnapshot {
+  id: string;
+  content_item_id: string;
+  captured_at: string;
+  view_count: number | null;
+  like_count: number | null;
+  comment_count: number | null;
+  share_count: number | null;
+  favorite_count: number | null;
+  follower_gain: number | null;
+  average_watch_time: number | null;
+  completion_rate: number | null;
+  search_traffic_rate: number | null;
+  recommendation_traffic_rate: number | null;
+  profile_traffic_rate: number | null;
+  revenue: number | null;
+  rpm: number | null;
+  metadata: Record<string, unknown>;
+  source_kind: SourceKind;
+  source_provider: string;
+  fetched_at: string;
+}
+
+export interface ContentRecord {
+  id: string;
+  workspace_id: string;
+  platform_id: string;
+  platform: PlatformRecord;
+  account_id: string;
+  external_id: string;
+  content_type: string;
+  title: string;
+  description: string | null;
+  published_at: string | null;
+  duration_seconds: number | null;
+  canonical_url: string;
+  cover_url: string | null;
+  language: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  first_seen_at: string;
+  last_seen_at: string;
+  source_kind: SourceKind;
+  source_provider: string;
+  fetched_at: string;
+  source_url: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_snapshot: ContentSnapshot | null;
+  view_growth_24h: number | null;
+}
+
+export interface ContentRecordPage {
+  items: ContentRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface ContentSnapshotPage {
+  items: ContentSnapshot[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface DerivedMetricRecord {
+  id: string;
+  entity_type: "account" | "content_item";
+  entity_id: string;
+  metric_key: string;
+  window: string;
+  value: number;
+  calculated_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface DerivedMetricPage {
+  items: DerivedMetricRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface NewsSourceRecord {
+  id: string;
+  workspace_id: string;
+  name: string;
+  source_type: "rss" | "atom" | "json" | "manual";
+  url: string | null;
+  category: string;
+  language: string | null;
+  country: string | null;
+  reliability_score: number;
+  priority: number;
+  enabled: boolean;
+  provider_key: string;
+  last_synced_at: string | null;
+  next_sync_at: string | null;
+  last_error_code: string | null;
+  last_error_message: string | null;
+  consecutive_failures: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArticleRecord {
+  id: string;
+  workspace_id: string;
+  source_id: string;
+  source: NewsSourceRecord;
+  external_id: string;
+  canonical_url: string;
+  title: string;
+  summary: string | null;
+  content: string | null;
+  author: string | null;
+  published_at: string | null;
+  event_time: string | null;
+  fetched_at: string;
+  language: string | null;
+  sport: string | null;
+  league: string | null;
+  country: string | null;
+  metadata: Record<string, unknown>;
+  duplicate_group_id: string | null;
+  is_duplicate: boolean;
+  is_bookmarked: boolean;
+  source_kind: "live" | "imported";
+  source_provider: string;
+  source_url: string;
+  event_id: string | null;
+  heat_score: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ArticleRecordPage {
+  items: ArticleRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface TopicEventRecord {
+  id: string;
+  workspace_id: string;
+  title: string;
+  normalized_title: string;
+  summary: string | null;
+  sport: string | null;
+  league: string | null;
+  start_time: string | null;
+  last_update_time: string;
+  article_count: number;
+  source_count: number;
+  heat_score: number;
+  reliability_score: number;
+  controversy_score: number;
+  visual_score: number;
+  story_score: number;
+  status: "active" | "developing" | "closed";
+  metadata: Record<string, unknown>;
+  is_bookmarked: boolean;
+  bookmarked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TopicEventDetail extends TopicEventRecord {
+  articles: ArticleRecord[];
+}
+
+export interface TopicEventPage {
+  items: TopicEventRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export type AutomationEntityType =
+  | "content"
+  | "account"
+  | "news"
+  | "topic_event";
+export type AutomationActionType =
+  | "notification"
+  | "webhook"
+  | "create_topic"
+  | "create_generation"
+  | "save_content"
+  | "external_api";
+
+export interface AutomationActionRecord {
+  id: string;
+  rule_id: string;
+  action_type: AutomationActionType;
+  config: Record<string, unknown>;
+  sort_order: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRuleRecord {
+  id: string;
+  created_by: string;
+  name: string;
+  description: string | null;
+  entity_type: AutomationEntityType;
+  trigger_type: string;
+  condition_tree: Record<string, unknown>;
+  schedule: Record<string, unknown>;
+  cooldown_seconds: number;
+  deduplication_window: number;
+  enabled: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationRuleDetail extends AutomationRuleRecord {
+  actions: AutomationActionRecord[];
+}
+
+export interface AutomationRulePage {
+  items: AutomationRuleRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface AutomationEvaluationRecord {
+  id: string;
+  rule_id: string;
+  entity_type: string;
+  entity_id: string;
+  evaluated_at: string;
+  matched: boolean;
+  condition_result: Record<string, unknown>;
+  deduplication_key: string;
+  event_key: string;
+  execution_status: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface AutomationEvaluationPage {
+  items: AutomationEvaluationRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export type NotificationProviderKey =
+  | "mock_notification"
+  | "email"
+  | "generic_webhook"
+  | "telegram"
+  | "discord"
+  | "feishu"
+  | "dingtalk"
+  | "wecom";
+
+export interface NotificationProviderDescriptor {
+  key: NotificationProviderKey;
+  name: string;
+  is_mock: boolean;
+  config_fields: ConfigFieldDescriptor[];
+}
+
+export interface ConfigFieldDescriptor {
+  key: string;
+  label: string;
+  value_type:
+    | "text"
+    | "password"
+    | "number"
+    | "boolean"
+    | "select"
+    | "json"
+    | "list";
+  required: boolean;
+  secret: boolean;
+  default: unknown;
+  minimum: number | null;
+  maximum: number | null;
+  step: number | null;
+  options: Array<{ value: string; label: string }>;
+  placeholder: string | null;
+  help_text: string | null;
+}
+
+export interface NotificationChannelRecord {
+  id: string;
+  provider_key: NotificationProviderKey;
+  name: string;
+  config_masked: Record<string, unknown>;
+  enabled: boolean;
+  last_tested_at: string | null;
+  health_status: "unknown" | "healthy" | "degraded" | "unhealthy";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationDeliveryRecord {
+  id: string;
+  channel_id: string;
+  rule_id: string | null;
+  entity_type: string;
+  entity_id: string;
+  payload: Record<string, unknown>;
+  status: "queued" | "sending" | "delivered" | "failed" | "cancelled";
+  attempts: number;
+  sent_at: string | null;
+  error: Record<string, unknown> | null;
+  provider_message_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationDeliveryPage {
+  items: NotificationDeliveryRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface SyncRunRecord {
+  id: string;
+  workspace_id: string;
+  target_type: string;
+  target_id: string;
+  adapter_key: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: string;
+  records_created: number;
+  records_updated: number;
+  progress_percent: number;
+  progress_stage: string;
+  progress_message: string | null;
+  items_processed: number;
+  items_total: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface SyncRunPage {
+  items: SyncRunRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface SavedTopicRecord {
+  id: string;
+  created_by: string;
+  title: string;
+  summary: string | null;
+  source_type: "content" | "article" | "event" | "manual";
+  source_id: string | null;
+  status: "inbox" | "planned" | "in_progress" | "completed" | "archived";
+  priority: number;
+  notes: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedTopicPage {
+  items: SavedTopicRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface OperationTaskRecord {
+  id: string;
+  category: string;
+  task_type: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  metadata: Record<string, unknown>;
+}
+export interface OperationTaskPage {
+  items: OperationTaskRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface SystemEventRecord {
+  id: string;
+  severity: string;
+  category: string;
+  event_type: string;
+  message: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  status: string;
+  metadata: Record<string, unknown>;
+  trace_id: string;
+  created_at: string;
+}
+export interface SystemEventPage {
+  items: SystemEventRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface AuditEntryRecord {
+  id: string;
+  actor_type: string;
+  actor_id: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  change_summary: Record<string, unknown>;
+  reason: string | null;
+  trace_id: string;
+  created_at: string;
+}
+export interface AuditEntryPage {
+  items: AuditEntryRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}

@@ -1,0 +1,1121 @@
+import logging
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from statistics import median
+from typing import Any, TypeVar
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.adapters.platforms.base import (
+    AdapterCallContext,
+    AdapterConfigurationError,
+    AdapterContractError,
+    PlatformAdapter,
+    PlatformAdapterError,
+    PlatformContentData,
+    PlatformMetricsData,
+)
+from app.core.config import Settings
+from app.models.monitoring import (
+    Account,
+    AccountSnapshot,
+    ContentItem,
+    ContentSnapshot,
+    DerivedMetric,
+)
+from app.models.operations import ExternalCallAttempt, SystemEvent
+from app.models.sync import SyncRun
+from app.providers.registry import ProviderRegistry
+from app.repositories.sync import SyncRepository
+from app.schemas.monitoring import SyncRunPage, SyncRunRead
+from app.services.metric_calculations import (
+    percentile_rank,
+    ratio_score,
+    safe_rate,
+    sample_confidence,
+    weighted_available_score,
+)
+from app.services.platform_credentials import (
+    MANAGED_PLATFORM_KEYS,
+    PlatformCredentialService,
+)
+
+logger = logging.getLogger(__name__)
+
+SnapshotT = TypeVar("SnapshotT", AccountSnapshot, ContentSnapshot)
+
+
+class SyncError(Exception):
+    code = "sync_error"
+    status_code = 400
+
+
+class SyncNotFoundError(SyncError):
+    code = "sync_resource_not_found"
+    status_code = 404
+
+
+class SyncValidationError(SyncError):
+    code = "sync_validation_error"
+    status_code = 422
+
+
+class SyncDispatchError(SyncError):
+    code = "sync_queue_unavailable"
+    status_code = 503
+
+
+class RetryableSyncError(Exception):
+    pass
+
+
+def _as_int(value: int | float | None) -> int | None:
+    return int(value) if value is not None else None
+
+
+def _as_decimal(value: int | float | None) -> Decimal | None:
+    return Decimal(str(value)) if value is not None else None
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+class SyncService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        registry: ProviderRegistry[PlatformAdapter],
+        settings: Settings,
+    ) -> None:
+        self.session = session
+        self.repository = SyncRepository(session)
+        self.registry = registry
+        self.settings = settings
+
+    @staticmethod
+    def settings_now() -> datetime:
+        return datetime.now(UTC)
+
+    async def request_account_sync(
+        self,
+        workspace_id: UUID,
+        account_id: UUID,
+        request_id: str,
+    ) -> tuple[SyncRunRead, bool]:
+        account = await self.repository.get_account(workspace_id, account_id)
+        if account is None:
+            raise SyncNotFoundError("account was not found")
+        if not account.is_active or account.sync_status == "disabled":
+            raise SyncValidationError("disabled accounts cannot be synchronized")
+        mode, _ = await PlatformCredentialService(
+            self.session, self.settings
+        ).resolve(workspace_id, account.platform.key)
+        if mode == "unconfigured" and account.platform.key in MANAGED_PLATFORM_KEYS:
+            raise SyncValidationError(
+                "platform acquisition is not configured: add official API credentials "
+                "or approve every public-page collection condition"
+            )
+        base_adapter_key = account.platform.adapter_key
+        if mode == "api" and not self.settings.browser_first_mode:
+            # Standard API-first: use the non-browser adapter.
+            resolved_key = base_adapter_key.replace("_browser", "")
+        elif mode == "api" and self.settings.browser_first_mode:
+            # Browser-first mode: prefer browser adapter even when API creds exist,
+            # unless the platform has no browser adapter registered.
+            browser_key = (
+                base_adapter_key
+                if base_adapter_key.endswith("_browser")
+                else f"{base_adapter_key}_browser"
+            )
+            try:
+                self.registry.get(browser_key)
+                resolved_key = browser_key
+            except LookupError:
+                resolved_key = base_adapter_key.replace("_browser", "")
+        else:
+            resolved_key = (
+                base_adapter_key
+                if base_adapter_key.endswith("_browser")
+                else f"{base_adapter_key}_browser"
+            )
+        try:
+            adapter = self.registry.get(resolved_key)
+        except LookupError:
+            # Fallback to whatever the platform declares
+            try:
+                adapter = self.registry.get(base_adapter_key)
+            except LookupError as exc:
+                raise SyncValidationError("platform adapter is not registered") from exc
+        if adapter.descriptor.implementation_status != "implemented":
+            raise SyncValidationError("platform adapter is a skeleton and cannot synchronize")
+
+        lock_key = f"account:{account.id}"
+        active = await self.repository.get_active_run(lock_key)
+        if active is not None:
+            return SyncRunRead.model_validate(active), False
+
+        now = datetime.now(UTC)
+        run = SyncRun(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            target_type="account",
+            target_id=account.id,
+            adapter_key=adapter.key,
+            request_id=request_id,
+            queued_at=now,
+            started_at=None,
+            finished_at=None,
+            status="queued",
+            records_created=0,
+            records_updated=0,
+            progress_percent=0,
+            progress_stage="queued",
+            progress_message="等待后台任务开始",
+            items_processed=0,
+            items_total=None,
+            error_code=None,
+            error_message=None,
+            metadata_json={"trigger": "manual", "retry_count": 0},
+            lock_key=lock_key,
+        )
+        account.sync_status = "queued"
+        account.last_sync_error_code = None
+        account.last_sync_error_message = None
+        self.session.add(run)
+        try:
+            await self.session.commit()
+        except IntegrityError:
+            await self.session.rollback()
+            active = await self.repository.get_active_run(lock_key)
+            if active is None:
+                raise
+            return SyncRunRead.model_validate(active), False
+        return SyncRunRead.model_validate(run), True
+
+    async def mark_dispatch_failure(self, run_id: UUID) -> None:
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            return
+        account = await self.repository.get_account_unscoped(run.target_id)
+        now = datetime.now(UTC)
+        run.status = "error"
+        run.finished_at = now
+        run.error_code = "queue_dispatch_failed"
+        run.error_message = "Background task broker is unavailable"
+        run.progress_stage = "failed"
+        run.progress_message = run.error_message
+        run.lock_key = None
+        if account is not None:
+            account.sync_status = "error"
+            account.last_sync_error_code = run.error_code
+            account.last_sync_error_message = run.error_message
+        await self.session.commit()
+
+    async def list_account_runs(
+        self,
+        workspace_id: UUID,
+        account_id: UUID,
+        *,
+        page: int,
+        page_size: int,
+    ) -> SyncRunPage:
+        account = await self.repository.get_account(workspace_id, account_id)
+        if account is None:
+            raise SyncNotFoundError("account was not found")
+        runs, total = await self.repository.list_runs(
+            workspace_id, account_id, page=page, page_size=page_size
+        )
+        return SyncRunPage(
+            items=[SyncRunRead.model_validate(item) for item in runs],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    async def recover_stale_runs(self, stale_before: datetime) -> int:
+        runs = list(
+            (
+                await self.session.scalars(
+                    select(SyncRun)
+                    .where(
+                        SyncRun.lock_key.is_not(None),
+                        SyncRun.status.in_(("queued", "running")),
+                    )
+                    .limit(500)
+                )
+            ).all()
+        )
+        recovered = 0
+        now = datetime.now(UTC)
+        for run in runs:
+            last_active = run.started_at or run.queued_at
+            if _utc(last_active) >= _utc(stale_before):
+                continue
+            run.status = "error"
+            run.finished_at = now
+            run.error_code = "stale_task_recovered"
+            run.error_message = "Task exceeded its execution lease and was released"
+            run.lock_key = None
+            run.progress_stage = "failed"
+            run.progress_message = "任务超出执行租约，已自动释放"
+            account = await self.repository.get_account_unscoped(run.target_id)
+            if account is not None:
+                account.sync_status = "error"
+                account.last_sync_error_code = run.error_code
+                account.last_sync_error_message = run.error_message
+                account.next_sync_at = now
+            recovered += 1
+        if recovered:
+            await self.session.commit()
+        return recovered
+
+
+class PlatformSyncExecutor:
+    def __init__(
+        self,
+        session: AsyncSession,
+        registry: ProviderRegistry[PlatformAdapter],
+        settings: Settings,
+    ) -> None:
+        self.session = session
+        self.repository = SyncRepository(session)
+        self.registry = registry
+        self.settings = settings
+
+    async def _config_for(self, account: Account) -> dict[str, Any]:
+        if account.platform.adapter_key == "mock_platform":
+            config = account.metadata_json.get("mock_config", {})
+            return dict(config) if isinstance(config, Mapping) else {}
+        mode, config = await PlatformCredentialService(
+            self.session, self.settings
+        ).resolve(account.workspace_id, account.platform.key)
+        if mode == "unconfigured" and account.platform.key in MANAGED_PLATFORM_KEYS:
+            raise AdapterConfigurationError(
+                "platform acquisition policy is no longer configured"
+            )
+        return config
+
+    async def execute_account_run(self, run_id: UUID) -> None:
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            raise SyncNotFoundError("sync run was not found")
+        if run.status in ("success", "degraded"):
+            return
+        account = await self.repository.get_account(run.workspace_id, run.target_id)
+        if account is None:
+            await self._terminal_error(run, None, "account_not_found", "account was deleted")
+            return
+        adapter = self.registry.get(run.adapter_key)
+        now = datetime.now(UTC)
+        run.status = "running"
+        run.started_at = run.started_at or now
+        run.error_code = None
+        run.error_message = None
+        account.sync_status = "syncing"
+        self._set_progress(run, 5, "validating", "正在验证采集方式与凭证")
+        await self.session.commit()
+        attempt_started = datetime.now(UTC)
+        attempt_number = int(run.metadata_json.get("retry_count", 0)) + 1
+
+        try:
+            ctx = AdapterCallContext(
+                config=await self._config_for(account),
+                observed_at=now,
+                request_id=run.request_id,
+            )
+            await adapter.validate_config(ctx.config)
+            self._set_progress(run, 12, "account_profile", "正在同步账号资料与公开指标")
+            await self.session.commit()
+            created, updated, metrics_degraded = await self._sync_account(account, adapter, ctx)
+            self._set_progress(run, 25, "content_list", "账号资料已完成，正在获取作品列表")
+            await self.session.commit()
+            content_created, content_updated = await self._sync_contents(
+                account, adapter, ctx, run
+            )
+            created += content_created
+            updated += content_updated
+            self._set_progress(run, 92, "derived_metrics", "正在计算增长与高潜指标")
+            await self.session.commit()
+            await self._calculate_metrics(account, ctx.observed_at)
+        except PlatformAdapterError as exc:
+            self._record_external_attempt(
+                run,
+                account,
+                attempt_started,
+                attempt_number,
+                status="failed",
+                error_code=exc.code,
+                error_detail=str(exc),
+                retryable=exc.retryable,
+            )
+            if exc.retryable:
+                run.status = "queued"
+                run.error_code = exc.code
+                run.error_message = str(exc)[:2000]
+                run.metadata_json = {
+                    **run.metadata_json,
+                    "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
+                }
+                account.sync_status = "queued"
+                account.last_sync_error_code = exc.code
+                account.last_sync_error_message = str(exc)[:2000]
+                run.progress_stage = "retry_wait"
+                run.progress_message = "平台暂时不可用，等待有限重试"
+                await self.session.commit()
+                raise RetryableSyncError(str(exc)) from exc
+            await self._terminal_error(run, account, exc.code, str(exc))
+            return
+        except Exception:
+            logger.exception(
+                "platform_sync_unexpected_error",
+                extra={"event": "platform.sync.failed", "sync_run_id": str(run.id)},
+            )
+            await self._terminal_error(
+                run, account, "unexpected_sync_error", "Unexpected synchronization error"
+            )
+            self._record_external_attempt(
+                run,
+                account,
+                attempt_started,
+                attempt_number,
+                status="failed",
+                error_code="unexpected_sync_error",
+                error_detail="Unexpected synchronization error",
+                retryable=False,
+            )
+            await self.session.commit()
+            raise
+
+        finished = datetime.now(UTC)
+        final_status = "degraded" if metrics_degraded else "success"
+        self._record_external_attempt(
+            run,
+            account,
+            attempt_started,
+            attempt_number,
+            status=final_status,
+            response_summary={
+                "records_created": created,
+                "records_updated": updated,
+                "items_processed": run.items_processed,
+                "metrics_degraded": metrics_degraded,
+            },
+        )
+        run.status = final_status
+        run.finished_at = finished
+        run.records_created = created
+        run.records_updated = updated
+        run.error_code = None
+        run.error_message = (
+            "指标提取失败，仅更新了账号资料" if metrics_degraded else None
+        )
+        run.lock_key = None
+        run.progress_percent = 100
+        run.progress_stage = "completed"
+        run.progress_message = (
+            "同步完成（指标提取失败，仅更新了账号资料）"
+            if metrics_degraded
+            else "同步完成"
+        )
+        run.items_total = run.items_processed
+        account.sync_status = "success"
+        account.last_synced_at = finished
+        account.next_sync_at = finished + timedelta(seconds=account.sync_interval_seconds)
+        account.last_sync_error_code = None
+        account.last_sync_error_message = None
+        await self.session.commit()
+
+    async def mark_retry_exhausted(self, run_id: UUID, message: str) -> None:
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            return
+        account = await self.repository.get_account_unscoped(run.target_id)
+        await self._terminal_error(run, account, "retry_exhausted", message)
+
+    async def calculate_account_metrics(self, account_id: UUID) -> None:
+        account = await self.repository.get_account_unscoped(account_id)
+        if account is None:
+            raise SyncNotFoundError("account was not found")
+        await self._calculate_metrics(account, datetime.now(UTC))
+        await self.session.commit()
+
+    async def _terminal_error(
+        self,
+        run: SyncRun,
+        account: Account | None,
+        code: str,
+        message: str,
+    ) -> None:
+        finished_at = datetime.now(UTC)
+        run.status = "error"
+        run.finished_at = finished_at
+        run.error_code = code
+        run.error_message = message[:2000]
+        run.lock_key = None
+        run.progress_stage = "failed"
+        run.progress_message = message[:500]
+        if account is not None:
+            account.sync_status = "error"
+            account.last_sync_error_code = code
+            account.last_sync_error_message = message[:2000]
+            account.next_sync_at = datetime.now(UTC) + timedelta(
+                seconds=account.sync_interval_seconds
+            )
+            self.session.add(
+                SystemEvent(
+                    id=uuid4(),
+                    workspace_id=account.workspace_id,
+                    severity="error",
+                    category="platform_sync",
+                    event_type="platform.account.sync_failed",
+                    message=f"账号「{account.display_name}」同步失败",
+                    resource_type="account",
+                    resource_id=account.id,
+                    status="open",
+                    metadata_safe_json={
+                        "adapter_key": run.adapter_key,
+                        "error_code": code,
+                    },
+                    trace_id=uuid4(),
+                    created_at=finished_at,
+                )
+            )
+        await self.session.commit()
+
+    def _record_external_attempt(
+        self,
+        run: SyncRun,
+        account: Account,
+        started_at: datetime,
+        attempt_number: int,
+        *,
+        status: str,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        retryable: bool | None = None,
+        response_summary: dict[str, Any] | None = None,
+    ) -> None:
+        finished_at = datetime.now(UTC)
+        self.session.add(
+            ExternalCallAttempt(
+                id=uuid4(),
+                workspace_id=run.workspace_id,
+                call_type="platform_api",
+                provider_key=run.adapter_key,
+                entity_type="account",
+                entity_id=account.id,
+                attempt_number=attempt_number,
+                status=status,
+                target_url=account.profile_url,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=max(
+                    0, int((finished_at - started_at).total_seconds() * 1000)
+                ),
+                http_status=None,
+                error_code=error_code,
+                error_detail_safe=error_detail[:500] if error_detail else None,
+                retryable=retryable,
+                request_summary={"run_id": str(run.id), "target_type": run.target_type},
+                response_summary=response_summary,
+            )
+        )
+
+    async def _sync_account(
+        self,
+        account: Account,
+        adapter: PlatformAdapter,
+        ctx: AdapterCallContext,
+    ) -> tuple[int, int, bool]:
+        data = await adapter.resolve_account(ctx, account.external_id)
+        if not data.external_id.strip() or not data.display_name.strip():
+            raise AdapterContractError("account response is missing its identity")
+        if self._text_is_error_page(data.display_name):
+            raise AdapterContractError("account response contains an error-page title")
+        if data.profile_url and not data.profile_url.lower().startswith(("https://", "http://")):
+            raise AdapterContractError("account response contains an invalid profile URL")
+        metrics = await adapter.fetch_account_analytics(ctx, data.external_id)
+        original_locator = account.external_id
+        account.external_id = data.external_id
+        account.username = data.username
+        account.display_name = data.display_name
+        account.profile_url = data.profile_url
+        if data.avatar_url:
+            account.avatar_url = data.avatar_url
+        account.description = data.description
+        account.country = data.country
+        account.language = data.language
+        account.is_verified = data.is_verified
+        account.metadata_json = {
+            **account.metadata_json,
+            **dict(data.metadata),
+            "original_locator": account.metadata_json.get("original_locator", original_locator),
+        }
+        account.source_kind = data.source_kind
+        account.source_provider = data.provider
+        account.fetched_at = data.fetched_at
+        account.source_url = data.profile_url
+        self.session.add(self._account_snapshot(account, metrics))
+        await self.session.flush()
+        # Data-quality check: if ALL key metrics are None the extraction likely failed.
+        m = metrics.metrics
+        metrics_degraded = (
+            m.get("follower_count") is None
+            and m.get("video_count") is None
+            and m.get("total_view_count") is None
+        )
+        return 1, 1, metrics_degraded
+
+    def _account_snapshot(self, account: Account, data: PlatformMetricsData) -> AccountSnapshot:
+        metrics = data.metrics
+        return AccountSnapshot(
+            id=uuid4(),
+            account_id=account.id,
+            captured_at=data.captured_at,
+            follower_count=_as_int(metrics.get("follower_count")),
+            following_count=_as_int(metrics.get("following_count")),
+            total_like_count=_as_int(metrics.get("total_like_count")),
+            total_view_count=_as_int(metrics.get("total_view_count")),
+            video_count=_as_int(metrics.get("video_count")),
+            engagement_rate=_as_decimal(metrics.get("engagement_rate")),
+            metadata_json={
+                **dict(data.metadata),
+                "unavailable_metrics": list(data.unavailable_metrics),
+            },
+            source_kind=data.source_kind,
+            source_provider=data.provider,
+            fetched_at=data.fetched_at,
+            raw_payload_ref=None,
+            created_at=datetime.now(UTC),
+        )
+
+    async def _sync_contents(
+        self,
+        account: Account,
+        adapter: PlatformAdapter,
+        ctx: AdapterCallContext,
+        run: SyncRun,
+    ) -> tuple[int, int]:
+        cursor: str | None = None
+        created = 0
+        updated = 0
+        newest_seen = await self.session.scalar(
+            select(ContentItem.published_at)
+            .where(ContentItem.account_id == account.id)
+            .order_by(ContentItem.published_at.desc())
+            .limit(1)
+        )
+        for page_index in range(self.settings.sync_page_limit):
+            page = await adapter.list_contents(
+                ctx,
+                account.external_id,
+                published_after=_utc(newest_seen) if newest_seen is not None else None,
+                cursor=cursor,
+                page_size=50,
+            )
+            page_items: list[ContentItem] = []
+            for data in page.items:
+                rejection = self._content_rejection_reason(data)
+                if rejection is not None:
+                    rejected = list(run.metadata_json.get("rejected_items", []))
+                    if len(rejected) < 20:
+                        rejected.append(
+                            {
+                                "external_id": data.external_id,
+                                "reason": rejection,
+                            }
+                        )
+                    run.metadata_json = {
+                        **run.metadata_json,
+                        "rejected_item_count": int(
+                            run.metadata_json.get("rejected_item_count", 0)
+                        )
+                        + 1,
+                        "rejected_items": rejected,
+                    }
+                    continue
+                content, was_created = await self._upsert_content(account, data)
+                page_items.append(content)
+                created += int(was_created)
+                updated += int(not was_created)
+            await self.session.flush()
+            analytics = await adapter.fetch_content_analytics(
+                ctx, [item.external_id for item in page_items]
+            )
+            by_external_id = {item.external_id: item for item in page_items}
+            for analytics_data in analytics:
+                matched_content = by_external_id.get(analytics_data.external_id)
+                if matched_content is not None and analytics_data.metrics:
+                    self.session.add(self._content_snapshot(matched_content.id, analytics_data))
+                    created += 1
+            run.items_processed += len(page.items)
+            run.records_created = created
+            run.records_updated = updated
+            progress = 30 + round(55 * (page_index + 1) / self.settings.sync_page_limit)
+            self._set_progress(
+                run,
+                min(progress, 85),
+                "content_metrics",
+                f"已处理 {run.items_processed} 个作品，正在同步作品指标",
+            )
+            if not page.next_cursor:
+                run.items_total = run.items_processed
+            await self.session.commit()
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return created, updated
+
+    @staticmethod
+    def _content_rejection_reason(data: PlatformContentData) -> str | None:
+        if not data.external_id.strip():
+            return "missing_external_id"
+        if not data.title.strip():
+            return "missing_title"
+        if PlatformSyncExecutor._text_is_error_page(data.title):
+            return "error_page_title"
+        if not data.canonical_url.lower().startswith(("https://", "http://")):
+            return "invalid_canonical_url"
+        return None
+
+    @staticmethod
+    def _text_is_error_page(value: str) -> bool:
+        normalized = " ".join(value.casefold().split())
+        return normalized in {
+            "404",
+            "404 not found",
+            "not found",
+            "page not found",
+            "页面不存在",
+            "内容不存在",
+            "视频不存在",
+        }
+
+    @staticmethod
+    def _set_progress(run: SyncRun, percent: int, stage: str, message: str) -> None:
+        run.progress_percent = min(100, max(run.progress_percent, percent))
+        run.progress_stage = stage
+        run.progress_message = message[:500]
+
+    async def _upsert_content(
+        self, account: Account, data: PlatformContentData
+    ) -> tuple[ContentItem, bool]:
+        content = await self.session.scalar(
+            select(ContentItem).where(
+                ContentItem.workspace_id == account.workspace_id,
+                ContentItem.platform_id == account.platform_id,
+                ContentItem.external_id == data.external_id,
+            )
+        )
+        created = content is None
+        if content is None:
+            content = ContentItem(
+                id=uuid4(),
+                workspace_id=account.workspace_id,
+                platform_id=account.platform_id,
+                account_id=account.id,
+                external_id=data.external_id,
+                content_type=data.content_type,
+                title=data.title,
+                description=data.description,
+                published_at=data.published_at,
+                duration_seconds=_as_decimal(data.duration_seconds),
+                canonical_url=data.canonical_url,
+                cover_url=data.cover_url,
+                language=data.language,
+                status=data.status,
+                metadata_json=dict(data.metadata),
+                first_seen_at=data.fetched_at,
+                last_seen_at=data.fetched_at,
+                source_kind=data.source_kind,
+                source_provider=data.provider,
+                fetched_at=data.fetched_at,
+                source_url=data.canonical_url,
+                raw_payload_ref=None,
+            )
+            self.session.add(content)
+        else:
+            content.title = data.title
+            content.description = data.description
+            content.published_at = data.published_at
+            content.duration_seconds = _as_decimal(data.duration_seconds)
+            content.canonical_url = data.canonical_url
+            if data.cover_url:
+                content.cover_url = data.cover_url
+            content.language = data.language
+            content.status = data.status
+            content.metadata_json = {**content.metadata_json, **dict(data.metadata)}
+            content.last_seen_at = data.fetched_at
+            content.source_kind = data.source_kind
+            content.source_provider = data.provider
+            content.fetched_at = data.fetched_at
+            content.source_url = data.canonical_url
+        return content, created
+
+    def _content_snapshot(self, content_id: UUID, data: PlatformMetricsData) -> ContentSnapshot:
+        value = data.metrics
+        return ContentSnapshot(
+            id=uuid4(),
+            content_item_id=content_id,
+            captured_at=data.captured_at,
+            view_count=_as_int(value.get("view_count")),
+            like_count=_as_int(value.get("like_count")),
+            comment_count=_as_int(value.get("comment_count")),
+            share_count=_as_int(value.get("share_count")),
+            favorite_count=_as_int(value.get("favorite_count")),
+            follower_gain=_as_int(value.get("follower_gain")),
+            average_watch_time=_as_decimal(value.get("average_watch_time")),
+            completion_rate=_as_decimal(value.get("completion_rate")),
+            search_traffic_rate=_as_decimal(value.get("search_traffic_rate")),
+            recommendation_traffic_rate=_as_decimal(value.get("recommendation_traffic_rate")),
+            profile_traffic_rate=_as_decimal(value.get("profile_traffic_rate")),
+            revenue=_as_decimal(value.get("revenue")),
+            rpm=_as_decimal(value.get("rpm")),
+            metadata_json={
+                **dict(data.metadata),
+                "unavailable_metrics": list(data.unavailable_metrics),
+            },
+            source_kind=data.source_kind,
+            source_provider=data.provider,
+            fetched_at=data.fetched_at,
+            raw_payload_ref=None,
+            created_at=datetime.now(UTC),
+        )
+
+    async def _calculate_metrics(self, account: Account, calculated_at: datetime) -> None:
+        await self.session.flush()
+        account_snapshots = list(
+            (
+                await self.session.scalars(
+                    select(AccountSnapshot)
+                    .where(AccountSnapshot.account_id == account.id)
+                    .order_by(AccountSnapshot.captured_at.desc())
+                )
+            ).all()
+        )
+        if account_snapshots:
+            latest_account = account_snapshots[0]
+            previous = self._snapshot_for_window(account_snapshots, latest_account.captured_at, 24)
+            if (
+                latest_account.follower_count is not None
+                and previous is not None
+                and previous.follower_count is not None
+            ):
+                elapsed_hours = self._elapsed_hours(
+                    latest_account.captured_at, previous.captured_at
+                )
+                self._metric(
+                    account,
+                    account.id,
+                    "account",
+                    "follower_growth_24h",
+                    "24h",
+                    latest_account.follower_count - previous.follower_count,
+                    calculated_at,
+                    metadata={
+                        "quality": "derived",
+                        "formula": "latest_follower_count - prior_follower_count",
+                        "actual_window_hours": round(elapsed_hours, 3),
+                        "input_snapshot_ids": [str(latest_account.id), str(previous.id)],
+                    },
+                )
+
+        contents = await self.repository.contents_for_account(account.id)
+        latest_views: list[int] = []
+        baseline_cutoff = _utc(calculated_at) - timedelta(days=30)
+        snapshots_by_content: dict[UUID, list[ContentSnapshot]] = {}
+        for content in contents:
+            snapshots = list(
+                (
+                    await self.session.scalars(
+                        select(ContentSnapshot)
+                        .where(ContentSnapshot.content_item_id == content.id)
+                        .order_by(ContentSnapshot.captured_at.desc())
+                    )
+                ).all()
+            )
+            snapshots_by_content[content.id] = snapshots
+            if (
+                snapshots
+                and snapshots[0].view_count is not None
+                and content.published_at is not None
+                and _utc(content.published_at) >= baseline_cutoff
+            ):
+                latest_views.append(snapshots[0].view_count)
+        baseline = float(median(latest_views)) if latest_views else None
+        # Latest known account follower count, used for the play/follower ratio.
+        # This is a snapshot proxy for follower-at-publish (we persist only the
+        # most recent account snapshot), documented in the metric metadata.
+        follower_ref = account_snapshots[0].follower_count if account_snapshots else None
+        calculations: list[dict[str, Any]] = []
+        for content in contents:
+            snapshots = snapshots_by_content[content.id]
+            if not snapshots:
+                continue
+            latest = snapshots[0]
+            views = latest.view_count
+            observed_engagement = {
+                "likes": latest.like_count,
+                "comments": latest.comment_count,
+                "shares": latest.share_count,
+            }
+            included_engagement = {
+                key: value for key, value in observed_engagement.items() if value is not None
+            }
+            engagement = safe_rate(
+                sum(included_engagement.values()) if included_engagement else None,
+                views,
+            )
+            share_rate = safe_rate(latest.share_count, views)
+            favorite_rate = safe_rate(latest.favorite_count, views)
+            growth: dict[int, tuple[float, float, ContentSnapshot]] = {}
+            for hours in (1, 6, 24):
+                prior = self._snapshot_for_window(snapshots, latest.captured_at, hours)
+                if views is not None and prior is not None and prior.view_count is not None:
+                    elapsed_hours = self._elapsed_hours(latest.captured_at, prior.captured_at)
+                    delta = float(views - prior.view_count)
+                    growth[hours] = (delta, elapsed_hours, prior)
+                    self._metric(
+                        account,
+                        content.id,
+                        "content_item",
+                        f"view_growth_{hours}h",
+                        f"{hours}h",
+                        delta,
+                        calculated_at,
+                        metadata={
+                            "quality": "derived",
+                            "formula": "latest_view_count - prior_view_count",
+                            "actual_window_hours": round(elapsed_hours, 3),
+                            "input_snapshot_ids": [str(latest.id), str(prior.id)],
+                        },
+                    )
+            velocity = None
+            velocity_source_hours = None
+            if 1 in growth:
+                velocity = growth[1][0] / growth[1][1]
+                velocity_source_hours = growth[1][1]
+            elif 6 in growth:
+                velocity = growth[6][0] / growth[6][1]
+                velocity_source_hours = growth[6][1]
+            short_velocity = growth[1][0] / growth[1][1] if 1 in growth else None
+            long_velocity = growth[6][0] / growth[6][1] if 6 in growth else None
+            acceleration = (
+                (short_velocity - long_velocity) / 5
+                if short_velocity is not None and long_velocity is not None
+                else None
+            )
+            baseline_ratio = float(views) / baseline if views is not None and baseline else None
+            values: dict[str, tuple[str, float | None, dict[str, Any]]] = {
+                "engagement_rate": (
+                    "current",
+                    engagement,
+                    {
+                        "quality": (
+                            "derived"
+                            if len(included_engagement) == len(observed_engagement)
+                            else "partial"
+                        ),
+                        "formula": "sum(available interactions) / view_count",
+                        "included_components": sorted(included_engagement),
+                        "missing_components": sorted(
+                            set(observed_engagement) - set(included_engagement)
+                        ),
+                    },
+                ),
+                "share_rate": (
+                    "current",
+                    share_rate,
+                    {"quality": "derived", "formula": "share_count / view_count"},
+                ),
+                "favorite_rate": (
+                    "current",
+                    favorite_rate,
+                    {"quality": "derived", "formula": "favorite_count / view_count"},
+                ),
+            }
+            if velocity is not None:
+                values["view_velocity"] = (
+                    "1h",
+                    velocity,
+                    {
+                        "quality": "derived",
+                        "formula": "view_delta / actual_elapsed_hours",
+                        "actual_window_hours": round(velocity_source_hours or 0, 3),
+                    },
+                )
+            if acceleration is not None:
+                values["view_acceleration"] = (
+                    "6h",
+                    acceleration,
+                    {
+                        "quality": "derived",
+                        "formula": "(1h_velocity - 6h_velocity) / 5h",
+                    },
+                )
+            if baseline is not None:
+                values["median_views_30d"] = (
+                    "30d",
+                    baseline,
+                    {
+                        "quality": "derived",
+                        "formula": "median(latest views of content published in trailing 30d)",
+                        "sample_size": len(latest_views),
+                    },
+                )
+            if baseline_ratio is not None:
+                values["account_baseline_ratio"] = (
+                    "30d",
+                    baseline_ratio,
+                    {"quality": "derived", "formula": "view_count / account_30d_median_views"},
+                )
+            # Relative metric: how many views per follower. A value > 1 means the
+            # content reached well beyond the account's follower base.
+            if follower_ref is not None and views is not None:
+                values["play_follower_ratio"] = (
+                    "current",
+                    safe_rate(views, follower_ref),
+                    {
+                        "quality": "derived",
+                        "formula": "view_count / account_follower_count (latest known snapshot)",
+                    },
+                )
+            for key, (window, value, metadata) in values.items():
+                if value is None:
+                    continue
+                self._metric(
+                    account,
+                    content.id,
+                    "content_item",
+                    key,
+                    window,
+                    value,
+                    calculated_at,
+                    metadata=metadata,
+                )
+            calculations.append(
+                {
+                    "content": content,
+                    "engagement": engagement,
+                    "share_rate": share_rate,
+                    "velocity": velocity,
+                    "baseline_ratio": baseline_ratio,
+                }
+            )
+
+        engagement_values = [item["engagement"] for item in calculations]
+        share_values = [item["share_rate"] for item in calculations]
+        velocity_values = [item["velocity"] for item in calculations]
+        for item in calculations:
+            components = {
+                "account_baseline": (ratio_score(item["baseline_ratio"]), 0.4),
+                "view_velocity": (percentile_rank(item["velocity"], velocity_values), 0.3),
+                "engagement": (percentile_rank(item["engagement"], engagement_values), 0.2),
+                "share": (percentile_rank(item["share_rate"], share_values), 0.1),
+            }
+            raw_viral_score, applied_weights = weighted_available_score(
+                components, minimum_components=2
+            )
+            if raw_viral_score is None:
+                continue
+            available_count = sum(value is not None for value, _weight in components.values())
+            confidence = sample_confidence(len(calculations)) * (available_count / 4)
+            viral_score = round(50 + (raw_viral_score - 50) * confidence, 2)
+            self._metric(
+                account,
+                item["content"].id,
+                "content_item",
+                "viral_score",
+                "current",
+                viral_score,
+                calculated_at,
+                metadata={
+                    "quality": "derived",
+                    "formula": "weighted account-relative performance components",
+                    "formula_version": "content-opportunity-v3",
+                    "raw_score_before_confidence": raw_viral_score,
+                    "confidence_adjusted": True,
+                    "component_scores": {
+                        key: value for key, (value, _weight) in components.items()
+                    },
+                    "applied_weights": applied_weights,
+                    "sample_size": len(calculations),
+                    "confidence_score": round(confidence, 4),
+                    "missing_components": [
+                        key for key, (value, _weight) in components.items() if value is None
+                    ],
+                    "incomplete_components": [
+                        key for key, (value, _weight) in components.items() if value is None
+                    ],
+                },
+            )
+
+    @staticmethod
+    def _snapshot_for_window(
+        snapshots: list[SnapshotT],
+        latest_at: datetime,
+        window_hours: int,
+    ) -> SnapshotT | None:
+        """Choose the closest earlier observation inside a truthful time tolerance."""
+        latest_utc = _utc(latest_at)
+        minimum = window_hours * 0.75
+        maximum = window_hours * 1.5
+        candidates = [
+            item
+            for item in snapshots[1:]
+            if minimum
+            <= (latest_utc - _utc(item.captured_at)).total_seconds() / 3600
+            <= maximum
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda item: abs(
+                (latest_utc - _utc(item.captured_at)).total_seconds() / 3600 - window_hours
+            ),
+        )
+
+    @staticmethod
+    def _elapsed_hours(latest_at: datetime, prior_at: datetime) -> float:
+        return max(0.000001, (_utc(latest_at) - _utc(prior_at)).total_seconds() / 3600)
+
+    def _metric(
+        self,
+        account: Account,
+        entity_id: UUID,
+        entity_type: str,
+        key: str,
+        window: str,
+        value: int | float,
+        calculated_at: datetime,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.session.add(
+            DerivedMetric(
+                id=uuid4(),
+                workspace_id=account.workspace_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                metric_key=key,
+                window=window,
+                value=Decimal(str(value)),
+                calculated_at=calculated_at,
+                metadata_json={
+                    "algorithm_version": "monitoring-derived-v3",
+                    "source": "calculated_not_platform_metric",
+                    **dict(metadata or {}),
+                },
+            )
+        )
+
+
+def enqueue_platform_sync(run_id: UUID) -> None:
+    from app.tasks.monitoring import sync_account
+
+    sync_account.delay(str(run_id))

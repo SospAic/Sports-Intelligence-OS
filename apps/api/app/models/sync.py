@@ -1,0 +1,67 @@
+from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
+
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import JSON
+
+from app.db.base import Base
+
+
+class SyncRun(Base):
+    """Auditable execution record and cross-worker lock for platform synchronization."""
+
+    __tablename__ = "sync_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "target_type IN ('account', 'account_contents', 'content_item')",
+            name="sync_run_target_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'success', 'degraded', 'error', 'skipped')",
+            name="sync_run_status",
+        ),
+        CheckConstraint("records_created >= 0", name="sync_run_created_nonnegative"),
+        CheckConstraint("records_updated >= 0", name="sync_run_updated_nonnegative"),
+        CheckConstraint(
+            "progress_percent >= 0 AND progress_percent <= 100",
+            name="sync_run_progress_range",
+        ),
+        CheckConstraint(
+            "items_processed >= 0", name="sync_run_items_processed_nonnegative"
+        ),
+        Index("ix_sync_runs_workspace_started", "workspace_id", "started_at"),
+        Index("ix_sync_runs_target_started", "target_type", "target_id", "started_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
+    adapter_key: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    request_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    records_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    records_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    progress_stage: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
+    progress_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    items_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    items_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=False,
+        default=dict,
+    )
+    # Non-null only while queued/running. The unique value is released on terminal status.
+    lock_key: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)

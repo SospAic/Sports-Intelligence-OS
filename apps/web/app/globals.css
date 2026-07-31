@@ -1,0 +1,177 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --background: #050b14;
+  --foreground: #e7eef8;
+  --muted: #91a4bc;
+  --panel: rgba(15, 26, 43, 0.78);
+  --line: rgba(148, 163, 184, 0.2);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #f3f6fa;
+  --foreground: #172033;
+  --muted: #52637a;
+  --panel: rgba(255, 255, 255, 0.92);
+  --line: rgba(51, 65, 85, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--background);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--foreground);
+  background:
+    radial-gradient(
+      circle at 15% 0%,
+      rgba(34, 211, 238, 0.13),
+      transparent 32rem
+    ),
+    radial-gradient(
+      circle at 90% 10%,
+      rgba(59, 130, 246, 0.1),
+      transparent 28rem
+    ),
+    var(--background);
+  font-family:
+    Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", Arial,
+    Helvetica, sans-serif;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: var(--foreground);
+}
+
+a {
+  color: inherit;
+}
+
+:root[data-theme="light"] body {
+  background: var(--background);
+}
+:root[data-theme="light"] .bg-slate-950,
+:root[data-theme="light"] .bg-slate-950\/70,
+:root[data-theme="light"] .bg-slate-950\/80,
+:root[data-theme="light"] .bg-slate-950\/95 {
+  background-color: rgba(255, 255, 255, 0.94) !important;
+}
+:root[data-theme="light"] .text-white,
+:root[data-theme="light"] .text-slate-100,
+:root[data-theme="light"] .text-slate-200 {
+  color: #172033 !important;
+}
+:root[data-theme="light"] .text-slate-300,
+:root[data-theme="light"] .text-slate-400 {
+  color: #52637a !important;
+}
+:root[data-theme="light"] .border-slate-800,
+:root[data-theme="light"] .border-slate-700 {
+  border-color: rgba(51, 65, 85, 0.2) !important;
+}
+:root[data-theme="light"] header.sticky {
+  background: rgba(255, 255, 255, 0.9) !important;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease,
+    opacity 150ms ease,
+    transform 100ms ease;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+.surface-card {
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease,
+    transform 150ms ease;
+}
+
+.surface-card:hover {
+  border-color: rgba(71, 85, 105, 0.9);
+  box-shadow: 0 18px 42px rgba(2, 8, 23, 0.16);
+}
+
+.page-enter {
+  animation: page-enter 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.sync-progress {
+  appearance: none;
+  border: 0;
+  background: rgb(30 41 59);
+}
+
+.sync-progress::-webkit-progress-bar {
+  background: rgb(30 41 59);
+  border-radius: 999px;
+}
+
+.sync-progress::-webkit-progress-value {
+  background: linear-gradient(90deg, rgb(34 211 238), rgb(59 130 246));
+  border-radius: 999px;
+  transition: width 240ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.sync-progress::-moz-progress-bar {
+  background: linear-gradient(90deg, rgb(34 211 238), rgb(59 130 246));
+  border-radius: 999px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #22d3ee;
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  button,
+  input,
+  select {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,202 @@
+from typing import Annotated, Any
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, Query
+
+from app.api.dependencies import (
+    CsrfProtectedAuth,
+    CurrentWorkspace,
+    DatabaseSession,
+    require_workspace_role,
+)
+from app.schemas.trends import (
+    CrossPlatformLinkPage,
+    CrossPlatformLinkRead,
+    ScoreExplanation,
+    TrendDashboard,
+    TrendKeywordSnapshotRead,
+    TrendTopicPage,
+    TrendVideoPage,
+)
+from app.services.trends import TrendService
+
+router = APIRouter(prefix="/trends", tags=["trends"])
+Page = Annotated[int, Query(ge=1)]
+PageSize = Annotated[int, Query(ge=1, le=100)]
+
+
+@router.get("/dashboard", response_model=TrendDashboard)
+async def get_dashboard(
+    workspace: CurrentWorkspace, db: DatabaseSession
+) -> TrendDashboard:
+    return await TrendService(db).get_dashboard(workspace.workspace_id)
+
+
+@router.get("/topics", response_model=TrendTopicPage)
+async def list_topics(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    platform: str | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> TrendTopicPage:
+    return await TrendService(db).list_topics(
+        workspace.workspace_id,
+        platform=platform,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/videos", response_model=TrendVideoPage)
+async def list_videos(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    platform: str | None = None,
+    sort_by: str = "breakout_score",
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> TrendVideoPage:
+    return await TrendService(db).list_videos(
+        workspace.workspace_id,
+        platform=platform,
+        sort_by=sort_by,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/keywords", response_model=list[TrendKeywordSnapshotRead])
+async def list_keywords(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    keyword: str | None = None,
+    platform: str | None = None,
+) -> list[TrendKeywordSnapshotRead]:
+    return await TrendService(db).list_keywords(
+        workspace.workspace_id,
+        keyword=keyword,
+        platform=platform,
+    )
+
+
+@router.get("/videos/{video_id}/explain", response_model=ScoreExplanation)
+async def explain_video(
+    video_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> ScoreExplanation:
+    """Return the score breakdown for a trend video's breakout_score."""
+    return await TrendService(db).explain_video(workspace.workspace_id, video_id)
+
+
+@router.get("/topics/{topic_id}/explain", response_model=ScoreExplanation)
+async def explain_topic(
+    topic_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> ScoreExplanation:
+    """Return the score breakdown for a trend topic's heat_score."""
+    return await TrendService(db).explain_topic(workspace.workspace_id, topic_id)
+
+
+@router.post("/collect", response_model=dict[str, Any], status_code=202)
+async def collect_trends(
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+) -> dict[str, Any]:
+    """Queue a real trend collection job for the current workspace."""
+    require_workspace_role(workspace, {"owner", "admin"})
+    from app.tasks.trends import collect_platform_trends
+
+    try:
+        task = collect_platform_trends.delay(str(workspace.workspace_id))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="后台任务 broker 不可用，无法分发趋势采集任务",
+        ) from exc
+    return {
+        "status": "queued",
+        "task_id": task.id,
+        "message": "trend collection queued",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform links
+# ---------------------------------------------------------------------------
+
+
+@router.get("/cross-platform-links", response_model=CrossPlatformLinkPage)
+async def list_cross_platform_links(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    status: str | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> CrossPlatformLinkPage:
+    """List cross-platform same-topic link suggestions."""
+    from app.services.cross_platform import CrossPlatformClusterService
+
+    svc = CrossPlatformClusterService(db)
+    items, total = await svc.list_links(
+        workspace.workspace_id, status=status, page=page, page_size=page_size
+    )
+    return CrossPlatformLinkPage(
+        items=[CrossPlatformLinkRead.model_validate(item) for item in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.post("/cross-platform-links/run", response_model=dict[str, Any], status_code=202)
+async def run_cross_platform_clustering(
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> dict[str, Any]:
+    """Run cross-platform clustering and generate suggested links."""
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    from app.services.cross_platform import CrossPlatformClusterService
+
+    svc = CrossPlatformClusterService(db)
+    new_links = await svc.run_clustering(workspace.workspace_id)
+    return {
+        "status": "completed",
+        "new_suggestions": len(new_links),
+        "message": f"跨平台聚类完成，新增 {len(new_links)} 条建议关联",
+    }
+
+
+@router.post("/cross-platform-links/{link_id}/confirm", response_model=CrossPlatformLinkRead)
+async def confirm_cross_platform_link(
+    link_id: UUID,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> CrossPlatformLinkRead:
+    """Confirm a suggested cross-platform link."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    from app.services.cross_platform import CrossPlatformClusterService
+
+    svc = CrossPlatformClusterService(db)
+    link = await svc.confirm_link(workspace.workspace_id, link_id)
+    return CrossPlatformLinkRead.model_validate(link)
+
+
+@router.post("/cross-platform-links/{link_id}/reject", response_model=CrossPlatformLinkRead)
+async def reject_cross_platform_link(
+    link_id: UUID,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> CrossPlatformLinkRead:
+    """Reject a suggested cross-platform link."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    from app.services.cross_platform import CrossPlatformClusterService
+
+    svc = CrossPlatformClusterService(db)
+    link = await svc.reject_link(workspace.workspace_id, link_id)
+    return CrossPlatformLinkRead.model_validate(link)
