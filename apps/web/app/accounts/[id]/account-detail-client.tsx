@@ -10,10 +10,12 @@ import type {
   SyncRunPage,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckCircle2,
   Circle,
   ExternalLink,
+  Film,
   Loader2,
   RefreshCw,
   Save,
@@ -21,9 +23,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
+import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
 import { useToast } from "@/components/toast";
 import { TrendChart } from "@/components/trend-chart";
@@ -249,6 +252,191 @@ function MetricTrendChart({
       <div className="mb-2 text-sm text-slate-300">{title}</div>
       <TrendChart data={data} />
     </div>
+  );
+}
+
+function contentEngagementRate(content: ContentRecordPage["items"][number]): number | null {
+  const snap = content.latest_snapshot;
+  const views = snap?.view_count ?? 0;
+  if (!snap || !views) return null;
+  const interactions =
+    (snap.like_count ?? 0) +
+    (snap.comment_count ?? 0) +
+    (snap.share_count ?? 0) +
+    (snap.favorite_count ?? 0);
+  return interactions / views;
+}
+
+function dominantTrafficSource(
+  content: ContentRecordPage["items"][number],
+): { label: string; tone: "info" | "success" | "warning" } | null {
+  const snap = content.latest_snapshot;
+  if (!snap) return null;
+  const candidates = [
+    { key: "recommendation", value: snap.recommendation_traffic_rate ?? 0, label: "推荐", tone: "info" as const },
+    { key: "search", value: snap.search_traffic_rate ?? 0, label: "搜索", tone: "success" as const },
+    { key: "profile", value: snap.profile_traffic_rate ?? 0, label: "关注", tone: "warning" as const },
+  ];
+  const best = candidates.reduce((a, b) => (b.value > a.value ? b : a));
+  if (best.value <= 0) return null;
+  return { label: best.label, tone: best.tone };
+}
+
+function ContentTable({
+  rows,
+}: {
+  rows: ContentRecordPage["items"];
+}) {
+  const columns = useMemo<ColumnDef<ContentRecordPage["items"][number], unknown>[]>(
+    () => [
+      {
+        id: "cover",
+        header: "",
+        enableSorting: false,
+        cell: ({ row }) =>
+          row.original.cover_url ? (
+            <ExternalImage
+              src={row.original.cover_url}
+              alt=""
+              className="h-12 w-20 shrink-0 rounded-md object-cover ring-1 ring-slate-700"
+            />
+          ) : (
+            <span className="grid h-12 w-20 place-items-center rounded-md bg-slate-800 text-slate-600">
+              <Film size={16} />
+            </span>
+          ),
+      },
+      {
+        id: "title",
+        header: "标题",
+        accessorFn: (row) => row.title,
+        cell: ({ row }) => (
+          <Link
+            href={`/contents/${row.original.id}`}
+            className="block max-w-[280px] truncate text-sm text-slate-200 hover:text-cyan-300"
+          >
+            {row.original.title}
+          </Link>
+        ),
+      },
+      {
+        id: "published_at",
+        header: "发布时间",
+        accessorFn: (row) => row.published_at ?? "",
+        cell: ({ row }) => (
+          <span className="text-xs text-slate-400">
+            {formatDate(row.original.published_at)}
+          </span>
+        ),
+      },
+      {
+        id: "view_count",
+        header: "播放",
+        accessorFn: (row) => row.latest_snapshot?.view_count ?? 0,
+        cell: ({ row }) => (
+          <span className="tabular-nums text-sm text-slate-200">
+            {formatNumber(row.original.latest_snapshot?.view_count)}
+          </span>
+        ),
+      },
+      {
+        id: "like_count",
+        header: "点赞",
+        accessorFn: (row) => row.latest_snapshot?.like_count ?? 0,
+        cell: ({ row }) => (
+          <span className="tabular-nums text-sm text-slate-400">
+            {formatNumber(row.original.latest_snapshot?.like_count)}
+          </span>
+        ),
+      },
+      {
+        id: "comment_count",
+        header: "评论",
+        accessorFn: (row) => row.latest_snapshot?.comment_count ?? 0,
+        cell: ({ row }) => (
+          <span className="tabular-nums text-sm text-slate-400">
+            {formatNumber(row.original.latest_snapshot?.comment_count)}
+          </span>
+        ),
+      },
+      {
+        id: "completion_rate",
+        header: "完播率",
+        accessorFn: (row) => row.latest_snapshot?.completion_rate ?? 0,
+        cell: ({ row }) => {
+          const value = row.original.latest_snapshot?.completion_rate;
+          if (value === null || value === undefined)
+            return <span className="text-xs text-slate-600">—</span>;
+          const weak = value < 0.15;
+          return (
+            <span
+              className={`tabular-nums text-sm ${weak ? "text-rose-400" : "text-emerald-400"}`}
+            >
+              {formatPercent(value)}
+            </span>
+          );
+        },
+      },
+      {
+        id: "engagement_rate",
+        header: "互动率",
+        accessorFn: (row) => contentEngagementRate(row) ?? 0,
+        cell: ({ row }) => {
+          const value = contentEngagementRate(row.original);
+          if (value === null) return <span className="text-xs text-slate-600">—</span>;
+          const weak = value < 0.03;
+          return (
+            <span
+              className={`tabular-nums text-sm ${weak ? "text-amber-400" : "text-cyan-300"}`}
+            >
+              {formatPercent(value)}
+            </span>
+          );
+        },
+      },
+      {
+        id: "traffic_source",
+        header: "主导流量",
+        enableSorting: false,
+        cell: ({ row }) => {
+          const src = dominantTrafficSource(row.original);
+          if (!src) return <span className="text-xs text-slate-600">—</span>;
+          return (
+            <Badge tone={src.tone}>
+              {src.label}
+            </Badge>
+          );
+        },
+      },
+      {
+        id: "view_growth_24h",
+        header: "近24h增量",
+        accessorFn: (row) => row.view_growth_24h ?? 0,
+        cell: ({ row }) => {
+          const value = row.original.view_growth_24h;
+          if (!value) return <span className="text-xs text-slate-600">—</span>;
+          return (
+            <span
+              className={`tabular-nums text-sm ${value > 0 ? "text-emerald-400" : "text-slate-400"}`}
+            >
+              +{formatNumber(value)}
+            </span>
+          );
+        },
+      },
+    ],
+    [],
+  );
+
+  return (
+    <DataTable
+      data={rows}
+      columns={columns}
+      total={rows.length}
+      page={1}
+      pageSize={rows.length || 1}
+      empty="尚无作品数据"
+    />
   );
 }
 
@@ -535,44 +723,37 @@ export function AccountDetailClient({ id }: { id: string }) {
         </>
       )}
       {tab === "作品" && (
-        <Panel>
-          <div className="border-b border-slate-800 p-5">
-            <h2 className="font-medium text-white">最近作品</h2>
+        <Panel className="overflow-hidden p-0">
+          <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+            <div>
+              <h2 className="font-medium text-white">作品清单</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                共 {contents.data?.total ?? contents.data?.items.length ?? 0} 条 · 点击标题查看单作品深度诊断
+              </p>
+            </div>
+            {contents.isFetching && (
+              <span className="flex items-center gap-2 text-xs text-cyan-300">
+                <RefreshCw size={12} className="animate-spin" />
+                加载中
+              </span>
+            )}
           </div>
           {contents.data?.items.length ? (
-            <div className="divide-y divide-slate-800">
-              {contents.data.items.map((content) => (
-                <Link
-                  href={`/contents/${content.id}`}
-                  className="flex items-center gap-4 p-4 hover:bg-slate-900/50"
-                  key={content.id}
-                >
-                  {content.cover_url ? (
-                    <ExternalImage
-                      src={content.cover_url}
-                      alt=""
-                      className="h-14 w-24 shrink-0 rounded-lg object-cover ring-1 ring-slate-700"
-                    />
-                  ) : null}
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm text-slate-200">
-                      {content.title}
-                    </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      {formatDate(content.published_at)}
-                    </p>
-                  </div>
-                  <span className="shrink-0 text-sm text-slate-400">
-                    {formatNumber(content.latest_snapshot?.view_count)} 播放
-                  </span>
-                </Link>
-              ))}
-            </div>
+            <ContentTable rows={contents.data.items} />
           ) : (
             <StatePanel
               type="empty"
-              title="尚无作品"
-              detail="运行账号同步后，Adapter 返回的作品会出现在这里。"
+              title="尚无作品数据"
+              detail="运行一次账号同步（需该平台适配器已配置凭证）后，Adapter 返回的作品及播放、互动、完播、流量来源等指标会出现在这里。所有指标均标注数据来源（live / imported），不会用模拟数据冒充真实平台数据。"
+              action={
+                item.is_active &&
+                item.platform.capabilities?.implementation_status === "implemented" ? (
+                  <button className={buttonClass} onClick={sync}>
+                    <RefreshCw size={15} />
+                    立即同步
+                  </button>
+                ) : undefined
+              }
             />
           )}
         </Panel>
