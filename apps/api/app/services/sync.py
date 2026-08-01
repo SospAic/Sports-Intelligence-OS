@@ -85,6 +85,22 @@ def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def _run_last_active(run: "SyncRun") -> datetime:
+    """Most recent signal that a sync run was still progressing.
+
+    Falls back to ``started_at``/``queued_at`` when no heartbeat is recorded, so
+    a run that never reported progress is still recoverable.
+    """
+
+    hb = (run.metadata_json or {}).get("heartbeat_at")
+    if isinstance(hb, str):
+        try:
+            return _utc(datetime.fromisoformat(hb))
+        except ValueError:
+            pass
+    return _utc(run.started_at or run.queued_at)
+
+
 class SyncService:
     def __init__(
         self,
@@ -237,7 +253,20 @@ class SyncService:
             total=total,
         )
 
-    async def recover_stale_runs(self, stale_before: datetime) -> int:
+    async def recover_stale_runs(
+        self, stale_before: datetime, dispatch_stale_before: datetime | None = None
+    ) -> int:
+        """Release sync runs that are stuck holding an account lock.
+
+        Two distinct failure modes are handled:
+
+        * **Never dispatched** — ``status == 'queued'`` and no worker ever picked
+          the task up (no heartbeat). Released fast via ``dispatch_stale_before``
+          so a transient broker/worker outage does not permanently lock an account.
+        * **Exceeded lease** — ``status == 'running'`` but silent longer than
+          ``stale_before`` (no heartbeat). A worker may have died mid-run.
+        """
+
         runs = list(
             (
                 await self.session.scalars(
@@ -253,26 +282,40 @@ class SyncService:
         recovered = 0
         now = datetime.now(UTC)
         for run in runs:
-            last_active = run.started_at or run.queued_at
-            if _utc(last_active) >= _utc(stale_before):
-                continue
-            run.status = "error"
-            run.finished_at = now
-            run.error_code = "stale_task_recovered"
-            run.error_message = "Task exceeded its execution lease and was released"
-            run.lock_key = None
-            run.progress_stage = "failed"
-            run.progress_message = "任务超出执行租约，已自动释放"
-            account = await self.repository.get_account_unscoped(run.target_id)
-            if account is not None:
-                account.sync_status = "error"
-                account.last_sync_error_code = run.error_code
-                account.last_sync_error_message = run.error_message
-                account.next_sync_at = now
+            last_active = _run_last_active(run)
+            if run.status == "queued" and dispatch_stale_before is not None:
+                if _utc(last_active) >= _utc(dispatch_stale_before):
+                    continue
+                await self._release_stuck_run(
+                    run, now, "dispatch_timeout", "Sync task was queued but never picked up by a worker"
+                )
+            else:
+                if _utc(last_active) >= _utc(stale_before):
+                    continue
+                await self._release_stuck_run(
+                    run, now, "stale_task_recovered", "Task exceeded its execution lease and was released"
+                )
             recovered += 1
         if recovered:
             await self.session.commit()
         return recovered
+
+    async def _release_stuck_run(
+        self, run: "SyncRun", now: datetime, error_code: str, error_message: str
+    ) -> None:
+        run.status = "error"
+        run.finished_at = now
+        run.error_code = error_code
+        run.error_message = error_message
+        run.lock_key = None
+        run.progress_stage = "failed"
+        run.progress_message = "任务卡死，已自动释放锁"
+        account = await self.repository.get_account_unscoped(run.target_id)
+        if account is not None:
+            account.sync_status = "error"
+            account.last_sync_error_code = run.error_code
+            account.last_sync_error_message = run.error_message
+            account.next_sync_at = now
 
 
 class PlatformSyncExecutor:
@@ -709,6 +752,10 @@ class PlatformSyncExecutor:
         run.progress_percent = min(100, max(run.progress_percent, percent))
         run.progress_stage = stage
         run.progress_message = message[:500]
+        run.metadata_json = {
+            **(run.metadata_json or {}),
+            "heartbeat_at": datetime.now(UTC).isoformat(),
+        }
 
     async def _upsert_content(
         self, account: Account, data: PlatformContentData

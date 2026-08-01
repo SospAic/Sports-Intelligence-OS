@@ -35,6 +35,7 @@ celery_app.conf.update(
         "app.tasks.system.heartbeat": {"queue": "maintenance"},
         "app.tasks.system.cleanup_auth_records": {"queue": "maintenance"},
         "app.tasks.monitoring.*": {"queue": "monitoring"},
+        "app.tasks.monitoring.recover_stale_sync_runs": {"queue": "maintenance"},
         "app.tasks.news.*": {"queue": "news"},
         "app.tasks.generation.recover_stale_generations": {"queue": "maintenance"},
         "app.tasks.generation.*": {"queue": "generation"},
@@ -55,6 +56,10 @@ celery_app.conf.update(
         },
         "sync-all-due-accounts": {
             "task": "app.tasks.monitoring.sync_all_due_accounts",
+            "schedule": 60.0,
+        },
+        "recover-stale-sync-runs": {
+            "task": "app.tasks.monitoring.recover_stale_sync_runs",
             "schedule": 60.0,
         },
         "sync-all-news-sources": {

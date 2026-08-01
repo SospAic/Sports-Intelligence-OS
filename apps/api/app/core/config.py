@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     platform_request_max_attempts: int = Field(default=3, ge=1, le=5)
     sync_task_max_retries: int = Field(default=3, ge=0, le=10)
     task_stale_after_seconds: int = Field(default=2100, ge=1860, le=86_400)
+    task_dispatch_timeout_seconds: int = Field(
+        default=180,
+        ge=30,
+        le=1800,
+        description=(
+            "A sync run left in 'queued' with no worker pickup beyond this window is "
+            "treated as stuck and auto-released, so an account is never permanently "
+            "locked by a task the worker failed to dispatch."
+        ),
+    )
     sync_page_limit: int = Field(default=20, ge=1, le=200)
     llm_openai_compatible_base_url: str | None = None
     llm_openai_compatible_api_key: SecretStr | None = None

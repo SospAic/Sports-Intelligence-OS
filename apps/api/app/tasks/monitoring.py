@@ -99,7 +99,8 @@ async def _schedule_due() -> int:
         async with session_factory() as session:
             service = SyncService(session, registry, settings)
             await service.recover_stale_runs(
-                datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds)
+                datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds),
+                datetime.now(UTC) - timedelta(seconds=settings.task_dispatch_timeout_seconds),
             )
             accounts = await service.repository.due_accounts(service.settings_now(), limit=500)
             for account in accounts:
@@ -139,6 +140,36 @@ async def _schedule_due() -> int:
 )
 def sync_all_due_accounts() -> int:
     return asyncio.run(_schedule_due())
+
+
+async def _recover_stale() -> int:
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    try:
+        async with session_factory() as session:
+            service = SyncService(
+                session, build_platform_adapter_registry(settings), settings
+            )
+            return await service.recover_stale_runs(
+                datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds),
+                datetime.now(UTC) - timedelta(seconds=settings.task_dispatch_timeout_seconds),
+            )
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.tasks.monitoring.recover_stale_sync_runs"
+)
+def recover_stale_sync_runs() -> int:
+    """Dedicated high-frequency recovery sweep for stuck sync locks.
+
+    Runs every 60s on the maintenance queue. The fast dispatch-timeout branch
+    releases accounts that were queued but never picked up by a worker, so a
+    broker/worker outage cannot permanently lock an account.
+    """
+
+    return asyncio.run(_recover_stale())
 
 
 async def _calculate(account_id: UUID) -> None:
