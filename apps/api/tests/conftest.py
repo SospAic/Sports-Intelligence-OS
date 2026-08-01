@@ -2,7 +2,6 @@ import json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -50,7 +49,7 @@ TEST_PLATFORM_ID = uuid4()
 # ---------------------------------------------------------------------------
 POSTGRES_TEST_DB = "sports_intelligence_test"
 _PG_USER = "sio"
-_PG_PASSWORD = "sio-local-development-only"
+_PG_PASSWORD = "sio-local-development-only"  # noqa: S105 local-dev-only test DB password
 _PG_HOST = "127.0.0.1"
 _PG_PORT = 5432
 

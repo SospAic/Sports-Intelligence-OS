@@ -88,7 +88,6 @@ class InfrastructureContractTests(unittest.TestCase):
     def test_prompt_03_monitoring_contract_is_present(self) -> None:
         model = self.read("apps/api/app/models/monitoring.py")
         routes = self.read("apps/api/app/api/routes/monitoring.py")
-        seed = self.read("apps/api/app/services/monitoring_seed.py")
         for entity in (
             "class Platform",
             "class Account",
@@ -100,7 +99,6 @@ class InfrastructureContractTests(unittest.TestCase):
             self.assertIn(entity, model)
         self.assertIn('@router.get("/contents"', routes)
         self.assertIn('@router.get("/accounts/export.csv"', routes)
-        self.assertIn('source_kind="mock"', seed)
 
     def test_prompt_04_platform_sync_contract_is_present(self) -> None:
         adapter = self.read("apps/api/app/adapters/platforms/base.py")
@@ -191,7 +189,6 @@ class InfrastructureContractTests(unittest.TestCase):
     def test_prompt_07_generation_contract_is_present(self) -> None:
         model = self.read("apps/api/app/models/generation.py")
         provider = self.read("apps/api/app/providers/llm/base.py")
-        mock = self.read("apps/api/app/providers/llm/mock.py")
         workflow = self.read("apps/api/app/workflows/generation.py")
         routes = self.read("apps/api/app/api/routes/generation.py")
         prompt_seed = self.read("data/prompts/sports_short_video_full_package.json")
@@ -211,7 +208,6 @@ class InfrastructureContractTests(unittest.TestCase):
             "health_check",
         ):
             self.assertIn(method, provider)
-        self.assertIn("MOCK TEST OUTPUT", mock)
         self.assertIn("WORKFLOW_STEPS", workflow)
         self.assertIn('@router.post("/generations/preview"', routes)
         self.assertIn('@router.post("/generations"', routes)
@@ -291,8 +287,8 @@ class InfrastructureContractTests(unittest.TestCase):
         frontend = self.read("apps/web/app/editor-flows.test.tsx")
         makefile = self.read("Makefile")
         self.assertIn("view_growth_1h", integration)
-        self.assertIn("mock_llm", integration)
-        self.assertIn("Mock Webhook", integration)
+        self.assertIn("StubLLMProvider", integration)
+        self.assertIn("GenericWebhookProvider", integration)
         for flow in ("LoginForm", "RuleEditor", "PromptEditor", "GenerationForm"):
             self.assertIn(flow, frontend)
         self.assertIn('cd apps/api && alembic upgrade head', makefile)

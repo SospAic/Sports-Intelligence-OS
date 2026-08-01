@@ -64,7 +64,7 @@ class ProjectContextContractTests(unittest.TestCase):
         readme = self.read("README.md")
         status = self.read("docs/STATUS.md")
         self.assertIn("第一次交付验收", readme)
-        self.assertIn("Prompt 11：最终代码审查与修复 — 已完成", status)
+        self.assertIn("Prompt 11 后续维护", status)
         self.assertIn("当前机器没有 Docker", self.read("docs/FIRST_DELIVERY_REPORT.md"))
         self.assertIn("显式 Mock 标记", readme)
         self.assertIn("verification_incomplete", status)

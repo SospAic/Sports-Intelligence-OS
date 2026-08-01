@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
@@ -48,7 +49,12 @@ from app.schemas.editorial_rules import (
 )
 
 
-def _sort_sections_parents_first(sections, *, key_of, parent_of):
+def _sort_sections_parents_first[T](
+    sections: list[T],
+    *,
+    key_of: Callable[[T], object],
+    parent_of: Callable[[T], object | None],
+) -> list[T]:
     """Order sections so every parent row precedes its children.
 
     ``RuleSection`` carries a self-referential ``parent_id`` foreign key.
@@ -57,10 +63,10 @@ def _sort_sections_parents_first(sections, *, key_of, parent_of):
     masked this ordering requirement. Sorting by ancestor depth guarantees
     parents are inserted first regardless of how deeply sections are nested.
     """
-    by_key = {key_of(item): item for item in sections}
-    depth_cache: dict = {}
+    by_key: dict[object, T] = {key_of(item): item for item in sections}
+    depth_cache: dict[object, int] = {}
 
-    def depth(item) -> int:
+    def depth(item: T) -> int:
         key = key_of(item)
         cached = depth_cache.get(key)
         if cached is not None:
@@ -73,7 +79,10 @@ def _sort_sections_parents_first(sections, *, key_of, parent_of):
         depth_cache[key] = value
         return value
 
-    return sorted(sections, key=lambda item: (depth(item), getattr(item, "sort_order", 0)))
+    return sorted(
+        sections,
+        key=lambda item: (depth(item), getattr(item, "sort_order", 0)),
+    )
 
 
 class EditorialRuleError(RuntimeError):

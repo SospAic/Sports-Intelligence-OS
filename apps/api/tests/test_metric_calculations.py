@@ -26,6 +26,7 @@ from app.services.metric_calculations import (
 from app.services.search import SearchService
 from app.services.sync import PlatformSyncExecutor
 from app.services.trend_collector import _confidence_adjusted, _optional_int
+
 from .conftest import PG_ASYNC_URL
 
 
