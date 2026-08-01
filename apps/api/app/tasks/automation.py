@@ -310,9 +310,9 @@ async def _scan_recent_entities() -> int:
                     )
                     inferred_source_kind = "live" if "live" in article_source_kinds else "imported"
                     source_kind = str(event.metadata_json.get("source_kind", inferred_source_kind))
-                    if source_kind not in {"live", "imported", "mock"}:
+                    if source_kind not in {"live", "imported"}:
                         source_kind = "imported"
-                    validated_source_kind = cast(Literal["live", "imported", "mock"], source_kind)
+                    validated_source_kind = cast(Literal["live", "imported"], source_kind)
                     await service.evaluate(
                         workspace_id,
                         actor_id,

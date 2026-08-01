@@ -66,8 +66,7 @@ export function GenerationForm({
   );
   const provider = useMemo(
     () =>
-      providers.find((item) => item.configured && !item.is_mock) ??
-      providers.find((item) => item.configured && item.is_mock),
+      providers.find((item) => item.configured && !item.is_mock),
     [providers],
   );
   const initialType = normalizeSourceType(search.get("input_type"));
@@ -279,20 +278,7 @@ export function GenerationForm({
           </ul>
 
           <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-xs text-slate-400">
-            {provider?.is_mock ? (
-              <>
-                <Badge tone="warning">Mock 测试模式</Badge>
-                <p className="mt-2 leading-5">
-                  当前没有可用的真实 LLM 配置，结果会明确标记为测试输出。
-                </p>
-                <Link
-                  className="mt-2 inline-flex items-center gap-1 text-cyan-300"
-                  href="/settings"
-                >
-                  <Settings2 size={13} /> 配置 LLM API
-                </Link>
-              </>
-            ) : provider ? (
+            {provider ? (
               <>
                 <Badge tone="success">内容引擎已就绪</Badge>
                 <p className="mt-2 leading-5">

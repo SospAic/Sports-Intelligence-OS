@@ -75,7 +75,7 @@ class Article(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("source_id", "external_id"),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="news_article_source_kind",
         ),
         Index("ix_articles_workspace_published", "workspace_id", "published_at"),

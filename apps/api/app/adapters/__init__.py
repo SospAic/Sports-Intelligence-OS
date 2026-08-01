@@ -3,7 +3,6 @@
 from app.adapters.platforms import (
     BilibiliBrowserAdapter,
     DouyinAdapter,
-    MockPlatformAdapter,
     PlatformAdapter,
     TikTokAdapter,
     YouTubeAdapter,
@@ -12,7 +11,6 @@ from app.adapters.platforms import (
 __all__ = [
     "BilibiliBrowserAdapter",
     "DouyinAdapter",
-    "MockPlatformAdapter",
     "PlatformAdapter",
     "TikTokAdapter",
     "YouTubeAdapter",

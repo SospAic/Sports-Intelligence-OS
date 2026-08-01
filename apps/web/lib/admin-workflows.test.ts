@@ -90,7 +90,7 @@ describe("可视化自动化与通知配置", () => {
           value: "1000000",
         },
         {
-          id: "not-mock",
+          id: "not-imported",
           kind: "group",
           operator: "NOT",
           conditions: [
@@ -99,7 +99,7 @@ describe("可视化自动化与通知配置", () => {
               kind: "leaf",
               field: "source_kind",
               operator: "eq",
-              value: "mock",
+              value: "imported",
             },
           ],
         },
@@ -111,7 +111,7 @@ describe("可视化自动化与通知配置", () => {
         { field: "view_count", operator: "gte", value: 1000000 },
         {
           operator: "NOT",
-          conditions: [{ field: "source_kind", operator: "eq", value: "mock" }],
+          conditions: [{ field: "source_kind", operator: "eq", value: "imported" }],
         },
       ],
     });

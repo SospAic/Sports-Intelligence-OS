@@ -18,7 +18,6 @@ ActionType = Literal[
     "external_api",
 ]
 ProviderKey = Literal[
-    "mock_notification",
     "email",
     "generic_webhook",
     "telegram",
@@ -140,7 +139,7 @@ class AutomationEvaluateRequest(StrictModel):
     previous: dict[str, Any] = Field(default_factory=dict)
     trigger_type: str = Field(default="entity_updated", min_length=1, max_length=64)
     event_key: str = Field(min_length=1, max_length=200)
-    source_kind: Literal["live", "imported", "mock"]
+    source_kind: Literal["live", "imported"]
     test_mode: bool = False
 
 
@@ -175,7 +174,7 @@ class NotificationChannelCreate(StrictModel):
 
     @model_validator(mode="after")
     def reject_empty_config(self) -> NotificationChannelCreate:
-        if not self.config and self.provider_key != "mock_notification":
+        if not self.config:
             raise ValueError("notification channel config cannot be empty")
         return self
 

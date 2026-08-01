@@ -258,14 +258,14 @@ describe("生成和通知真实前端流程", () => {
       updated_at: "2026-07-26T00:00:00Z",
     };
     const provider: LLMProviderDescriptor = {
-      key: "mock_llm",
-      name: "Mock LLM（测试）",
+      key: "openai_compatible",
+      name: "OpenAI 兼容（测试）",
       configured: true,
-      is_mock: true,
+      is_mock: false,
       supports_streaming: false,
       detail: "Only deterministic test output",
       source: "builtin",
-      default_model: "mock-sports-writer-v1",
+      default_model: "gpt-4.1-mini",
       default_parameters: {
         temperature: 0.2,
         top_p: 1,
@@ -321,7 +321,7 @@ describe("生成和通知真实前端流程", () => {
     const payload = JSON.parse(String(call?.[1]?.body));
     expect(payload.workflow_id).toBe("workflow-1");
     expect(payload.prompt_version_id).toBeNull();
-    expect(payload.provider).toBe("mock_llm");
+    expect(payload.provider).toBe("openai_compatible");
     expect(payload.model_config).toMatchObject({
       target_min_chars: 1180,
       target_max_chars: 1220,
@@ -332,8 +332,8 @@ describe("生成和通知真实前端流程", () => {
   it("通知渠道测试先确认，再调用后端测试 API 并展示回执", async () => {
     const channel: NotificationChannelRecord = {
       id: "channel-1",
-      provider_key: "mock_notification",
-      name: "Mock Webhook（测试）",
+      provider_key: "generic_webhook",
+      name: "Generic Webhook（测试）",
       config_masked: {},
       enabled: true,
       last_tested_at: null,
@@ -345,9 +345,9 @@ describe("生成和通知真实前端流程", () => {
       if (path === "/notification-providers")
         return [
           {
-            key: "mock_notification",
-            name: "Mock Notification（测试）",
-            is_mock: true,
+            key: "generic_webhook",
+            name: "Generic Webhook（测试）",
+            is_mock: false,
             config_fields: [],
           },
         ];
@@ -362,7 +362,7 @@ describe("生成和通知真实前端流程", () => {
     const user = userEvent.setup();
     withQueryClient(<NotificationChannelsClient />);
 
-    await screen.findByText("Mock Webhook（测试）");
+    await screen.findByText("Generic Webhook（测试）");
     await user.click(screen.getByRole("button", { name: "测试" }));
 
     await waitFor(() =>
@@ -371,7 +371,9 @@ describe("生成和通知真实前端流程", () => {
         expect.objectContaining({ method: "POST", csrf: true }),
       ),
     );
-    expect(window.confirm).toHaveBeenCalledWith("发送 Mock 测试通知？");
+    expect(window.confirm).toHaveBeenCalledWith(
+      "这将向真实外部渠道发送一条测试通知，是否继续？",
+    );
     expect(notifyMock).toHaveBeenCalledWith("测试通知已投递", "success");
   });
 

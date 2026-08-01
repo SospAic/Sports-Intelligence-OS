@@ -331,9 +331,6 @@ class PlatformSyncExecutor:
         self.settings = settings
 
     async def _config_for(self, account: Account) -> dict[str, Any]:
-        if account.platform.adapter_key == "mock_platform":
-            config = account.metadata_json.get("mock_config", {})
-            return dict(config) if isinstance(config, Mapping) else {}
         mode, config = await PlatformCredentialService(
             self.session, self.settings
         ).resolve(account.workspace_id, account.platform.key)

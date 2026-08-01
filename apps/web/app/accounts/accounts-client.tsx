@@ -637,9 +637,7 @@ export function AccountsClient() {
         <div>
           {row.original.platform.name}
           <div className="mt-1">
-            <Badge
-              tone={row.original.source_kind === "mock" ? "warning" : "success"}
-            >
+            <Badge tone="success">
               {sourceKindLabel(row.original.source_kind)}
             </Badge>
           </div>
@@ -762,7 +760,7 @@ export function AccountsClient() {
       <PageHeader
         eyebrow="Monitoring"
         title="账号监控"
-        description="统一查看多平台账号、增长与同步状态；Mock 来源会被显著标记，未同步字段保持为空。"
+        description="统一查看多平台账号、增长与同步状态；未同步字段保持为空。"
         actions={
           <>
             <button className={secondaryButtonClass} onClick={saveView}>
@@ -884,7 +882,6 @@ export function AccountsClient() {
             {platforms.data?.map((item) => (
               <option value={item.id} key={item.id}>
                 {item.name}
-                {item.adapter_key === "mock" ? "（Mock）" : ""}
               </option>
             ))}
           </select>

@@ -487,11 +487,6 @@ export function AccountDetailClient({ id }: { id: string }) {
           />
         </div>
       </div>
-      {item.source_kind === "mock" && (
-        <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
-          此账号来自 Mock Adapter，仅用于开发与契约测试，不代表真实平台数据。
-        </div>
-      )}
       {["queued", "syncing"].includes(item.sync_status) && (
         <SyncProgressPanel runs={runs.data?.items} syncStatus={item.sync_status} />
       )}

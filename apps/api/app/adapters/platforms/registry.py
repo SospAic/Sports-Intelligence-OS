@@ -2,7 +2,6 @@ from app.adapters.platforms.base import PlatformAdapter
 from app.adapters.platforms.bilibili_browser import BilibiliBrowserAdapter
 from app.adapters.platforms.douyin import DouyinAdapter
 from app.adapters.platforms.douyin_browser import DouyinBrowserAdapter
-from app.adapters.platforms.mock import MockPlatformAdapter
 from app.adapters.platforms.tiktok import TikTokAdapter
 from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
 from app.adapters.platforms.youtube import YouTubeAdapter
@@ -21,7 +20,6 @@ def build_platform_adapter_registry(
             max_attempts=(settings.platform_request_max_attempts if settings else 3),
         )
     )
-    registry.register(MockPlatformAdapter())
     registry.register(TikTokAdapter())
     registry.register(DouyinAdapter())
     # Browser adapters require an approved public-page or authorized-account mode.

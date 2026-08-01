@@ -116,11 +116,6 @@ export function ContentDetailClient({ id }: { id: string }) {
           </>
         }
       />
-      {data.source_kind === "mock" && (
-        <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-200">
-          Mock 作品：仅用于开发，不代表真实平台表现。
-        </div>
-      )}
       {data.cover_url && (
         <ExternalImage
           src={data.cover_url}

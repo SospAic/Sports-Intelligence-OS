@@ -297,9 +297,6 @@ class GenerationService:
                 source = setting.source
                 default_model = setting.default_model
                 default_parameters = setting.default_parameters
-            elif provider.is_mock:
-                default_model = "mock-sports-writer-v1"
-                default_parameters = {"temperature": 0.2, "max_tokens": 4096}
             descriptors.append(
                 ProviderDescriptor(
                     key=provider.key,
@@ -330,8 +327,6 @@ class GenerationService:
             raise GenerationError(str(exc), code="prompt_render_failed", status_code=422) from exc
         provider = await self._provider(workspace_id, payload.provider)
         warnings = ["预览中的外部输入属于不可信数据，不能覆盖系统指令"]
-        if provider.is_mock:
-            warnings.append("当前选择 Mock LLM；所有结果仅用于测试")
         if truncated:
             warnings.append("规则包按优先级编译，未将全部规则注入单个步骤")
         return PromptPreviewRead(
@@ -414,7 +409,7 @@ class GenerationService:
             estimated_cost=None,
             error=None,
             run_metadata={
-                "source_kind": "mock" if provider.is_mock else "live",
+                "source_kind": "live",
                 "provider_is_mock": provider.is_mock,
                 "workflow_key": workflow.key,
             },
@@ -790,8 +785,6 @@ class GenerationService:
             findings: list[dict[str, Any]] = []
             if not draft.strip():
                 findings.append({"code": "empty_draft", "severity": "error"})
-            if provider.is_mock and "MOCK TEST OUTPUT" not in draft:
-                findings.append({"code": "mock_marker_missing", "severity": "error"})
             return {"passed": not findings, "findings": findings}, None
         if step_key == "qa_validation":
             config = run.model_config

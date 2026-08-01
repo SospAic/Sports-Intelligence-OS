@@ -665,7 +665,6 @@ const CAPABILITY_LABELS: Record<string, string> = {
 
 function sourceKindLabel(kind: string): string {
   if (kind === "live") return "实时";
-  if (kind === "mock") return "模拟";
   if (kind === "imported") return "导入";
   return kind;
 }

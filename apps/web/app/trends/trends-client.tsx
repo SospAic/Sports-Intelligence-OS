@@ -488,12 +488,6 @@ function VideoCard({
               实时
             </span>
           )}
-          {video.metadata?.source_kind === "mock" && (
-            <span className="inline-flex items-center gap-1 text-amber-400">
-              <span className="size-1.5 rounded-full bg-amber-400" />
-              示例
-            </span>
-          )}
         </div>
         {workspaceId && (
           <ScoreExplanationPanel
@@ -1172,12 +1166,6 @@ export function TrendsClient() {
                             <span className="inline-flex items-center gap-1 text-emerald-400">
                               <span className="size-1.5 rounded-full bg-emerald-400" />
                               实时
-                            </span>
-                          )}
-                          {topic.metadata?.source_kind === "mock" && (
-                            <span className="inline-flex items-center gap-1 text-amber-400">
-                              <span className="size-1.5 rounded-full bg-amber-400" />
-                              示例
                             </span>
                           )}
                           <span

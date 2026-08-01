@@ -34,7 +34,7 @@ class AdapterDescriptor:
     implementation_status: Literal["implemented", "skeleton"]
     capabilities: Mapping[AdapterCapability, bool]
     config_fields: tuple[AdapterConfigField, ...]
-    source_kinds: frozenset[Literal["live", "mock"]]
+    source_kinds: frozenset[Literal["live"]]
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ class PlatformAccountData:
     country: str | None
     language: str | None
     is_verified: bool | None
-    source_kind: Literal["live", "mock"]
+    source_kind: Literal["live"]
     provider: str
     fetched_at: datetime
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -74,7 +74,7 @@ class PlatformContentData:
     cover_url: str | None
     language: str | None
     status: str
-    source_kind: Literal["live", "mock"]
+    source_kind: Literal["live"]
     provider: str
     fetched_at: datetime
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -85,7 +85,7 @@ class PlatformMetricsData:
     external_id: str
     captured_at: datetime
     metrics: Mapping[str, int | float | None]
-    source_kind: Literal["live", "mock"]
+    source_kind: Literal["live"]
     provider: str
     fetched_at: datetime
     unavailable_metrics: tuple[str, ...] = ()

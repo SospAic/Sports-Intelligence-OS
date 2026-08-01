@@ -327,25 +327,14 @@ class AutomationService:
             )
             self.session.add(state)
 
-        mock_blocked = payload.source_kind == "mock" and not (
-            payload.test_mode or bool(rule.schedule.get("allow_mock", False))
+        condition = evaluate_condition_tree(
+            rule.condition_tree,
+            payload.facts,
+            previous=payload.previous,
+            consecutive_count=state.consecutive_count,
         )
-        if mock_blocked:
-            matched = False
-            explanation: dict[str, Any] = {
-                "result": False,
-                "reason": "mock_source_blocked",
-                "detail": "Mock 数据默认不会触发生产通知",
-            }
-        else:
-            condition = evaluate_condition_tree(
-                rule.condition_tree,
-                payload.facts,
-                previous=payload.previous,
-                consecutive_count=state.consecutive_count,
-            )
-            matched = condition.matched
-            explanation = condition.explanation
+        matched = condition.matched
+        explanation = condition.explanation
 
         pending_consecutive = self._has_pending_consecutive(explanation)
         state.consecutive_count = (

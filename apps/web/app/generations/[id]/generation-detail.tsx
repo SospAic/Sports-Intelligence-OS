@@ -153,12 +153,6 @@ export function GenerationDetail({
         </div>
       </header>
 
-      {run.metadata.provider_is_mock ? (
-        <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4 text-sm text-amber-200">
-          这是明确标记的 Mock 测试输出，不代表真实 LLM 生成或事实已经联网核实。
-        </div>
-      ) : null}
-
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
         <div className="flex items-center justify-between gap-4">
           <div>

@@ -12,7 +12,6 @@ from app.adapters.platforms.base import (
 from app.adapters.platforms.bilibili_browser import BilibiliBrowserAdapter
 from app.adapters.platforms.douyin import DouyinAdapter
 from app.adapters.platforms.douyin_browser import DouyinBrowserAdapter
-from app.adapters.platforms.mock import MockPlatformAdapter
 from app.adapters.platforms.tiktok import TikTokAdapter
 from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
 from app.adapters.platforms.youtube import YouTubeAdapter
@@ -27,7 +26,6 @@ __all__ = [
     "BilibiliBrowserAdapter",
     "DouyinAdapter",
     "DouyinBrowserAdapter",
-    "MockPlatformAdapter",
     "PlatformAccountData",
     "PlatformAdapter",
     "PlatformContentData",

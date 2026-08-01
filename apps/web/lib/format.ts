@@ -38,11 +38,9 @@ export function formatPercent(value: number | null | undefined): string {
 }
 
 export function sourceKindLabel(value: string): string {
-  return value === "mock"
-    ? "模拟数据"
-    : value === "live"
-      ? "实时来源"
-      : "用户导入";
+  if (value === "live") return "实时来源";
+  if (value === "imported") return "用户导入";
+  return value;
 }
 
 const SPORT_LABELS: Record<string, string> = {

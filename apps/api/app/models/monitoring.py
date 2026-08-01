@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from app.models.workspace import Workspace
 
 
-SOURCE_KINDS = ("live", "imported", "mock")
+SOURCE_KINDS = ("live", "imported")
 DERIVED_METRIC_KEYS = (
     "view_growth_1h",
     "view_growth_6h",
@@ -65,7 +65,7 @@ class Account(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "platform_id", "external_id"),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="account_source_kind",
         ),
         CheckConstraint(
@@ -152,7 +152,7 @@ class AccountSnapshot(Base):
             name="account_snapshot_engagement_range",
         ),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="account_snapshot_source_kind",
         ),
         Index("ix_account_snapshots_account_captured", "account_id", "captured_at"),
@@ -188,7 +188,7 @@ class ContentItem(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "platform_id", "external_id"),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="content_item_source_kind",
         ),
         CheckConstraint(
@@ -294,7 +294,7 @@ class ContentSnapshot(Base):
             name="content_snapshot_profile_rate_range",
         ),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="content_snapshot_source_kind",
         ),
         Index("ix_content_snapshots_content_captured", "content_item_id", "captured_at"),

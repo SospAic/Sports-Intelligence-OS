@@ -153,11 +153,7 @@ export function NotificationChannelsClient({
   async function test(channel: NotificationChannelRecord) {
     if (
       !workspaceId ||
-      !window.confirm(
-        channel.provider_key === "mock_notification"
-          ? "发送 Mock 测试通知？"
-          : "这将向真实外部渠道发送一条测试通知，是否继续？",
-      )
+      !window.confirm("这将向真实外部渠道发送一条测试通知，是否继续？")
     )
       return;
     try {
@@ -299,7 +295,6 @@ export function NotificationChannelsClient({
                 {providers.data?.map((item) => (
                   <option key={item.key} value={item.key}>
                     {item.name}
-                    {item.is_mock ? "（Mock）" : ""}
                   </option>
                 ))}
               </select>

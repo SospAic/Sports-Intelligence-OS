@@ -68,7 +68,6 @@ function sourceKindTone(
 ): "success" | "info" | "warning" | "neutral" {
   if (kind === "live") return "success";
   if (kind === "imported") return "info";
-  if (kind === "mock") return "warning";
   return "neutral";
 }
 

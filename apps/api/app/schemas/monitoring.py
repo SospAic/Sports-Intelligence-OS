@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
-SourceKind = Literal["live", "imported", "mock"]
+SourceKind = Literal["live", "imported"]
 AccountSyncStatus = Literal[
     "never", "queued", "syncing", "success", "degraded", "error", "disabled"
 ]
