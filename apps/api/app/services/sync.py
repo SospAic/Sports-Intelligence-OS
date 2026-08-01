@@ -32,6 +32,7 @@ from app.models.sync import SyncRun
 from app.providers.registry import ProviderRegistry
 from app.repositories.sync import SyncRepository
 from app.schemas.monitoring import SyncRunPage, SyncRunRead
+from app.services.adaptive_sync import compute_adaptive_interval
 from app.services.metric_calculations import (
     percentile_rank,
     ratio_score,
@@ -476,7 +477,11 @@ class PlatformSyncExecutor:
         run.items_total = run.items_processed
         account.sync_status = final_status
         account.last_synced_at = finished
-        account.next_sync_at = finished + timedelta(seconds=account.sync_interval_seconds)
+        # Adaptive cadence: tune the next poll to the account's recent posting
+        # rhythm so active accounts are refreshed often and dormant ones rarely.
+        interval, _ = await compute_adaptive_interval(self.session, account.id)
+        account.sync_interval_seconds = interval
+        account.next_sync_at = finished + timedelta(seconds=interval)
         if metrics_degraded:
             account.last_sync_error_code = "account_metrics_extraction_failed"
             account.last_sync_error_message = "指标提取失败，仅更新了账号资料"

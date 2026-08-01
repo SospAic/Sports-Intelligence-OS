@@ -15,6 +15,13 @@ from app.api.dependencies import (
 from app.core.problems import problem_response
 from app.repositories.monitoring import AccountFilters, ContentFilters
 from app.schemas.monitoring import (
+    AccountBatchDeleteRequest,
+    AccountBatchResult,
+    AccountBatchSyncItem,
+    AccountBatchSyncRequest,
+    AccountBatchSyncResult,
+    AccountBatchUpdateRequest,
+    AccountComparisonResponse,
     AccountCreate,
     AccountMetricsHistory,
     AccountPage,
@@ -31,6 +38,7 @@ from app.schemas.monitoring import (
     DerivedMetricPage,
     PlatformRead,
     SortOrder,
+    SyncIntervalResponse,
     SyncRunPage,
     SyncRunRead,
 )
@@ -131,6 +139,122 @@ async def list_accounts(
     )
 
 
+@router.get("/accounts/compare", response_model=AccountComparisonResponse)
+async def compare_accounts(
+    account_ids: Annotated[list[UUID], Query()],
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> AccountComparisonResponse:
+    """Side-by-side comparison of several accounts across platforms.
+
+    Only real observations (``source_kind`` is ``live``/``imported``) are
+    returned; nothing here is synthesised or mocked.
+    """
+    return await MonitoringService(db).compare_accounts(workspace.workspace_id, account_ids)
+
+
+@router.patch("/accounts/batch", response_model=AccountBatchResult)
+async def batch_update_accounts(
+    payload: AccountBatchUpdateRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> AccountBatchResult:
+    """Activate or deactivate many accounts at once."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    updated = await MonitoringService(db).batch_update_accounts(
+        workspace.workspace_id, payload.account_ids, payload.is_active, auth.user.id
+    )
+    return AccountBatchResult(updated=updated, account_ids=payload.account_ids)
+
+
+@router.post("/accounts/batch/delete", response_model=AccountBatchResult)
+async def batch_delete_accounts(
+    payload: AccountBatchDeleteRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> AccountBatchResult:
+    """Soft-delete many accounts (deactivate and stop syncing)."""
+    require_workspace_role(workspace, {"owner", "admin"})
+    updated = await MonitoringService(db).batch_disable_accounts(
+        workspace.workspace_id, payload.account_ids, auth.user.id
+    )
+    return AccountBatchResult(updated=updated, account_ids=payload.account_ids)
+
+
+@router.post("/accounts/batch/sync", response_model=AccountBatchSyncResult, status_code=202)
+async def batch_sync_accounts(
+    payload: AccountBatchSyncRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> AccountBatchSyncResult:
+    """Request a sync for several accounts at once.
+
+    Each account is validated for workspace membership and dispatched like the
+    single-account endpoint. The response reports per-account outcome so a
+    caller can tell which were accepted, skipped (not found) or failed.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    service = SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    )
+    monitoring = MonitoringService(db)
+    items: list[AccountBatchSyncItem] = []
+    accepted = skipped = failed = 0
+    for account_id in payload.account_ids:
+        try:
+            await monitoring.get_account(workspace.workspace_id, account_id)
+        except MonitoringError:
+            skipped += 1
+            items.append(
+                AccountBatchSyncItem(
+                    account_id=account_id, status="skipped", detail="not found in workspace"
+                )
+            )
+            continue
+        try:
+            run, created = await service.request_account_sync(
+                workspace.workspace_id,
+                account_id,
+                request_id=str(request.state.request_id),
+            )
+        except SyncError as exc:
+            failed += 1
+            items.append(
+                AccountBatchSyncItem(
+                    account_id=account_id, status="failed", detail=str(exc)
+                )
+            )
+            continue
+        if created:
+            try:
+                sync_module.enqueue_platform_sync(run.id)
+            except Exception:
+                failed += 1
+                items.append(
+                    AccountBatchSyncItem(
+                        account_id=account_id,
+                        status="failed",
+                        detail="background task broker is unavailable",
+                    )
+                )
+                continue
+        accepted += 1
+        items.append(
+            AccountBatchSyncItem(
+                account_id=account_id, status="accepted", sync_run_id=run.id
+            )
+        )
+    return AccountBatchSyncResult(
+        accepted=accepted, skipped=skipped, failed=failed, items=items
+    )
+
+
 @router.get("/accounts/{account_id}", response_model=AccountRead)
 async def get_account(
     account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
@@ -189,6 +313,20 @@ async def request_account_sync(
             await service.mark_dispatch_failure(run.id)
             raise SyncDispatchError("background task broker is unavailable") from exc
     return run
+
+
+@router.post("/accounts/{account_id}/sync-interval", response_model=SyncIntervalResponse)
+async def recompute_sync_interval(
+    account_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> SyncIntervalResponse:
+    """Recompute the adaptive sync interval from recent posting cadence."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await MonitoringService(db).recompute_account_sync_interval(
+        workspace.workspace_id, account_id
+    )
 
 
 @router.get("/accounts/{account_id}/sync-runs", response_model=SyncRunPage)

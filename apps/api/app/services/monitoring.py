@@ -2,12 +2,15 @@ import csv
 import json
 from datetime import UTC, datetime, timedelta
 from io import StringIO
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.monitoring import Account, ContentItem
+from app.models.monitoring import Account, AccountSnapshot, ContentItem
 from app.models.operations import AuditEntry
 from app.repositories.monitoring import (
     AccountFilters,
@@ -18,6 +21,10 @@ from app.repositories.monitoring import (
     Order,
 )
 from app.schemas.monitoring import (
+    AccountComparisonResponse,
+    AccountComparisonRow,
+    AccountComparisonSnapshot,
+    AccountComparisonSummary,
     AccountCreate,
     AccountMetricsHistory,
     AccountMetricsHistoryPoint,
@@ -25,6 +32,7 @@ from app.schemas.monitoring import (
     AccountRead,
     AccountSnapshotPage,
     AccountSnapshotRead,
+    AccountSyncStatus,
     AccountUpdate,
     ContentCreate,
     ContentPage,
@@ -35,7 +43,10 @@ from app.schemas.monitoring import (
     DerivedMetricPage,
     DerivedMetricRead,
     PlatformRead,
+    SourceKind,
+    SyncIntervalResponse,
 )
+from app.services.adaptive_sync import compute_adaptive_interval
 
 RESERVED_METADATA_KEYS = {
     "source_kind",
@@ -316,6 +327,170 @@ class MonitoringService:
             )
         )
         await self._session.commit()
+
+    async def batch_update_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID], is_active: bool, actor_id: UUID
+    ) -> int:
+        """Activate or deactivate many accounts at once. Returns updated count."""
+        statement = (
+            update(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .values(is_active=is_active, updated_at=datetime.now(UTC))
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    async def batch_disable_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID], actor_id: UUID
+    ) -> int:
+        """Soft-delete many accounts (deactivate + stop syncing). Returns count."""
+        statement = (
+            update(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .values(is_active=False, sync_status="disabled", updated_at=datetime.now(UTC))
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    async def compare_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID]
+    ) -> AccountComparisonResponse:
+        if not account_ids:
+            raise MonitoringValidationError("at least one account_id is required")
+        statement = (
+            select(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .options(selectinload(Account.platform))
+        )
+        accounts = list(await self._session.scalars(statement))
+        found = {a.id for a in accounts}
+        missing = [str(aid) for aid in account_ids if aid not in found]
+        if missing:
+            raise MonitoringNotFoundError(
+                "accounts not found in workspace: " + ", ".join(missing)
+            )
+
+        rows: list[AccountComparisonRow] = []
+        total_followers = total_views = 0
+        best_followers_id = best_views_id = best_engagement_id = None
+        best_followers_v = best_views_v = best_engagement_v = None
+
+        for account in accounts:
+            snapshots = list(
+                await self._session.scalars(
+                    select(AccountSnapshot)
+                    .where(AccountSnapshot.account_id == account.id)
+                    .order_by(AccountSnapshot.captured_at.desc())
+                    .limit(2)
+                )
+            )
+            latest = snapshots[0] if snapshots else None
+            previous = snapshots[1] if len(snapshots) > 1 else None
+
+            def _snapshot_dto(snap: AccountSnapshot) -> AccountComparisonSnapshot:
+                return AccountComparisonSnapshot(
+                    captured_at=snap.captured_at,
+                    follower_count=snap.follower_count,
+                    total_view_count=snap.total_view_count,
+                    video_count=snap.video_count,
+                    engagement_rate=(
+                        float(snap.engagement_rate)
+                        if snap.engagement_rate is not None
+                        else None
+                    ),
+                    source_kind=cast("SourceKind", snap.source_kind),
+                )
+
+            latest_dto = _snapshot_dto(latest) if latest is not None else None
+            previous_dto = _snapshot_dto(previous) if previous is not None else None
+
+            follower_delta = view_delta = None
+            window_hours = None
+            if latest is not None and previous is not None:
+                if (
+                    latest.follower_count is not None
+                    and previous.follower_count is not None
+                ):
+                    follower_delta = latest.follower_count - previous.follower_count
+                if (
+                    latest.total_view_count is not None
+                    and previous.total_view_count is not None
+                ):
+                    view_delta = latest.total_view_count - previous.total_view_count
+                window_hours = round(
+                    (latest.captured_at - previous.captured_at).total_seconds() / 3600.0, 2
+                )
+
+            rows.append(
+                AccountComparisonRow(
+                    account_id=account.id,
+                    platform_key=account.platform.key if account.platform else "",
+                    display_name=account.display_name,
+                    username=account.username,
+                    is_active=account.is_active,
+                    sync_status=cast("AccountSyncStatus", account.sync_status),
+                    latest=latest_dto,
+                    previous=previous_dto,
+                    follower_delta=follower_delta,
+                    view_delta=view_delta,
+                    window_hours=window_hours,
+                )
+            )
+
+            if latest is not None:
+                if latest.follower_count is not None:
+                    total_followers += latest.follower_count
+                    if best_followers_v is None or latest.follower_count > best_followers_v:
+                        best_followers_v = latest.follower_count
+                        best_followers_id = account.id
+                if latest.total_view_count is not None:
+                    total_views += latest.total_view_count
+                    if best_views_v is None or latest.total_view_count > best_views_v:
+                        best_views_v = latest.total_view_count
+                        best_views_id = account.id
+                if latest.engagement_rate is not None:
+                    eng = float(latest.engagement_rate)
+                    if best_engagement_v is None or eng > best_engagement_v:
+                        best_engagement_v = eng
+                        best_engagement_id = account.id
+
+        summary = AccountComparisonSummary(
+            account_count=len(rows),
+            total_followers=total_followers or None,
+            total_views=total_views or None,
+            total_videos=None,
+            best_followers_account_id=best_followers_id,
+            best_views_account_id=best_views_id,
+            best_engagement_account_id=best_engagement_id,
+        )
+        return AccountComparisonResponse(rows=rows, summary=summary)
+
+    async def recompute_account_sync_interval(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> SyncIntervalResponse:
+        account = (
+            await self._session.scalars(
+                select(Account).where(
+                    Account.workspace_id == workspace_id, Account.id == account_id
+                )
+            )
+        ).first()
+        if account is None:
+            raise MonitoringNotFoundError("account was not found")
+        interval, median_gap = await compute_adaptive_interval(self._session, account_id)
+        account.sync_interval_seconds = interval
+        await self._session.commit()
+        basis: Literal["adaptive", "default"] = (
+            "adaptive" if median_gap is not None else "default"
+        )
+        return SyncIntervalResponse(
+            account_id=account.id,
+            sync_interval_seconds=interval,
+            basis=basis,
+            posting_median_gap_seconds=median_gap,
+        )
 
     async def account_snapshots(
         self, workspace_id: UUID, account_id: UUID, *, page: int, page_size: int

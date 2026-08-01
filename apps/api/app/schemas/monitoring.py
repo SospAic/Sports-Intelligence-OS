@@ -193,6 +193,92 @@ class AccountPage(BaseModel):
     total: int
 
 
+# -- Batch operations -------------------------------------------------------
+
+
+class AccountBatchSyncRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class AccountBatchUpdateRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+    is_active: bool
+
+
+class AccountBatchDeleteRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class AccountBatchSyncItem(BaseModel):
+    account_id: UUID
+    status: Literal["accepted", "skipped", "failed"]
+    sync_run_id: UUID | None = None
+    detail: str | None = None
+
+
+class AccountBatchSyncResult(BaseModel):
+    accepted: int
+    skipped: int
+    failed: int
+    items: list[AccountBatchSyncItem]
+
+
+class AccountBatchResult(BaseModel):
+    updated: int
+    account_ids: list[UUID]
+
+
+# -- Cross-platform comparison ---------------------------------------------
+
+
+class AccountComparisonSnapshot(BaseModel):
+    captured_at: datetime
+    follower_count: int | None
+    total_view_count: int | None
+    video_count: int | None
+    engagement_rate: float | None
+    source_kind: SourceKind
+
+
+class AccountComparisonRow(BaseModel):
+    account_id: UUID
+    platform_key: str
+    display_name: str
+    username: str | None
+    is_active: bool
+    sync_status: AccountSyncStatus
+    latest: AccountComparisonSnapshot | None = None
+    previous: AccountComparisonSnapshot | None = None
+    follower_delta: int | None = None
+    view_delta: int | None = None
+    window_hours: float | None = None
+
+
+class AccountComparisonSummary(BaseModel):
+    account_count: int
+    total_followers: int | None = None
+    total_views: int | None = None
+    total_videos: int | None = None
+    best_followers_account_id: UUID | None = None
+    best_views_account_id: UUID | None = None
+    best_engagement_account_id: UUID | None = None
+
+
+class AccountComparisonResponse(BaseModel):
+    rows: list[AccountComparisonRow]
+    summary: AccountComparisonSummary
+
+
+# -- Adaptive sync interval ------------------------------------------------
+
+
+class SyncIntervalResponse(BaseModel):
+    account_id: UUID
+    sync_interval_seconds: int
+    basis: Literal["adaptive", "default"]
+    posting_median_gap_seconds: int | None = None
+
+
 class AccountSnapshotPage(BaseModel):
     items: list[AccountSnapshotRead]
     page: int
