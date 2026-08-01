@@ -20,7 +20,8 @@ class SyncRun(Base):
             name="sync_run_target_type",
         ),
         CheckConstraint(
-            "status IN ('queued', 'running', 'success', 'degraded', 'error', 'skipped')",
+            "status IN ('queued', 'running', 'success', 'degraded', "
+            "'error', 'skipped', 'cancelled')",
             name="sync_run_status",
         ),
         CheckConstraint("records_created >= 0", name="sync_run_created_nonnegative"),

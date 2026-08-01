@@ -1,12 +1,53 @@
 from typing import Annotated
+from uuid import UUID
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
-from app.api.dependencies import CurrentWorkspace, DatabaseSession
-from app.schemas.operations import AuditEntryPage, OperationTaskPage, SystemEventPage
-from app.services.operations import OperationsService
+from app.api.dependencies import (
+    CsrfProtectedAuth,
+    CurrentWorkspace,
+    DatabaseSession,
+    require_workspace_role,
+)
+from app.schemas.monitoring import SyncRunRead
+from app.schemas.operations import (
+    AuditEntryPage,
+    OperationTaskPage,
+    SystemEventPage,
+)
+from app.services.operations import OperationsService, UnsupportedTaskCancelError
 
 router = APIRouter(prefix="/operations", tags=["operations"])
+
+
+class CancelTaskRequest(BaseModel):
+    category: str
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=SyncRunRead)
+async def cancel_task(
+    task_id: UUID,
+    payload: CancelTaskRequest,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> SyncRunRead:
+    """Terminate a background task shown on the operations dashboard.
+
+    Only ``platform_sync`` tasks are cancellable today; other categories raise a
+    501 so the UI can disable the action instead of faking support.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    try:
+        return await OperationsService(db).cancel_task(
+            workspace.workspace_id, task_id, payload.category
+        )
+    except UnsupportedTaskCancelError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "unsupported_task_cancel", "detail": str(exc)},
+        ) from None
 Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=200)]
 

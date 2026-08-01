@@ -16,6 +16,8 @@
 > - **作品列表 / 详情升级（#55，已验证）**：作品列表接入全局 `TimeRangePicker` 并新增完播率列（可用性渲染）；单作品详情新增「互动拆解」（赞 / 评 / 藏 / 转各占播放比）、「流量来源占比」面板、平均观看时长卡，完播率与平均观看时长套用可用性渲染。
 > - **验证状态**：后端 Mypy（148 源文件）、Ruff 全绿；`test_account_content_summary.py` 5 passed、`test_monitoring_api.py` 6 passed（该文件单独运行约 107s，受沙箱单命令时长限制，完整 84 项后端套件改以后台任务执行，见下方"验证状态"表）。前端 TypeScript、`ESLint`（仅 0 error / 0 warning，清理了未用导入）、Vitest 47 passed（新增 `metric-availability.test.ts` 9 项覆盖契约与预设）。所有改动仅本地提交（`codex/full-repair-real-data` 分支），不推送。
 
+> - **延时类任务终止（红色终止按钮，#64，已验证）**：用户要求「所有延时类任务开始后按钮变为红色终止任务，样式参考行业优秀案例」。后端新增账号同步运行取消能力：`services/sync.py` 增加模块级 `cancel_sync_run` 与 `SyncService.cancel_sync_run`（幂等、释放 `lock_key`、账号置 `cancelled`、best-effort `sync_account.revoke(terminate=True)` 包裹于 try/except），并新增执行器 `_aborted(run)` 守卫在阶段边界（校验后 / 账号资料提交后 / 派生指标提交后）安全中止正在运行的同步；`models/sync.py` 与 `models/monitoring.py` 的 `sync_run_status` / `account_sync_status` CHECK 约束增加 `'cancelled'`，新增迁移 `20260801_0023_sync_run_cancelled_status.py`；`schemas/monitoring.py` 的 `AccountSyncStatus` 与 `SyncRunRead.status` Literal 同步增加 `'cancelled'`。新增两个端点：`POST /accounts/{account_id}/sync/{run_id}/cancel`（账号级）与 `POST /operations/tasks/{task_id}/cancel`（统一操作台，`category=platform_sync` 时复用同一取消逻辑，其余类别按项目"不伪造成功"红线返回 501 `unsupported_task_cancel`，而非伪装支持）。前端新增可复用两步确认 `TerminateButton` 组件（首次点击进入"确认终止？"武装态、3 秒自动复位、终止中显示旋转与"终止中…"，红色参考 Vercel / GitHub Actions / AWS 的 Stop/Cancel 行业范式），新增 `dangerButtonClass` 设计令牌；接入账号详情页头部（同步中/排队中显示红色终止）、同步进度面板、同步记录活动行，以及统一任务看板的"操作"列（`platform_sync` 活动任务显示红色终止按钮，非活动显示"—"，其他类别活动任务显示"暂不支持"）。新增契约/集成测试：`test_sync_cancel.py`（6 项，服务级取消幂等与执行器跳过）、`test_monitoring_api.py` 取消路由 3 项（含 501 路径）、`terminate-button.test.tsx`（4 项，RTL）。后端 Mypy strict、Ruff 全绿；前端 TypeScript、ESLint（0 error / 0 warning）、Vitest 全绿。
+
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 SQLite / Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。
@@ -327,12 +329,12 @@
 | 验证项 | 结果 |
 | --- | --- |
 | 后端 Ruff | 通过，应用、测试及验证脚本无错误 |
-| 后端 Mypy strict | 通过，150 个源文件无错误 |
-| 后端 Pytest | 监控相关 11 项通过（test_account_content_summary 5 + test_monitoring_api 6，后者单独运行约 107s）；完整 84 项套件因沙箱单命令时长限制改以后台任务执行，结果待回填（本次改动均为监控路径增量，未触及其他模块） |
+| 后端 Mypy strict | 通过，148 个源文件无错误 |
+| 后端 Pytest | 完整套件 101 passed、1 warning（后台重跑，932.70s，退出码 0）；本次新增延时任务终止相关 15 项（test_sync_cancel 6 + test_monitoring_api 取消路由 3，均随整文件运行通过） |
 | 仓库与验收脚本测试 | 通过，35 项测试（含安装器、Compose 配置传播与 URL 安全回归） |
 | 前端 TypeScript | 通过，3 个工作区包完成检查 |
 | 前端 ESLint | 通过，0 error / 0 warning（已清理未用导入） |
-| 前端 Vitest | 通过，47 项测试（新增 metric-availability 契约与 time-range 预设 9 项） |
+| 前端 Vitest | 通过，51 项测试（新增 metric-availability 契约与 time-range 预设 9 项 + terminate-button 组件 4 项） |
 | Prettier | 通过 |
 | Next.js production build | 通过，静态页面生成 22/22，动态路由编译成功 |
 | 本地 HTTP 冒烟 | FastAPI 健康检查与 Next 登录页均返回 200 |

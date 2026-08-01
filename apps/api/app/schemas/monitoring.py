@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 SourceKind = Literal["live", "imported"]
 AccountSyncStatus = Literal[
-    "never", "queued", "syncing", "success", "degraded", "error", "disabled"
+    "never", "queued", "syncing", "success", "degraded", "error", "disabled", "cancelled"
 ]
 SortOrder = Literal["asc", "desc"]
 AccountSort = Literal[
@@ -461,7 +461,7 @@ class SyncRunRead(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    status: Literal["queued", "running", "success", "degraded", "error", "skipped"]
+    status: Literal["queued", "running", "success", "degraded", "error", "skipped", "cancelled"]
     records_created: int
     records_updated: int
     progress_percent: int

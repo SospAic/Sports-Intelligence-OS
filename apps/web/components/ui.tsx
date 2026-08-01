@@ -154,6 +154,8 @@ export const buttonClass =
   "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-cyan-500 px-4 text-sm font-medium text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50";
 export const secondaryButtonClass =
   "inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-4 text-sm font-medium text-slate-200 transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-50";
+export const dangerButtonClass =
+  "inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-red-600 px-4 text-sm font-medium text-white transition hover:bg-red-500 active:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50";
 
 export function Tooltip({
   label,

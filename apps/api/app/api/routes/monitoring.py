@@ -316,6 +316,30 @@ async def request_account_sync(
     return run
 
 
+@router.post("/accounts/{account_id}/sync/{run_id}/cancel", response_model=SyncRunRead)
+async def cancel_account_sync(
+    account_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SyncRunRead:
+    """Terminate a queued or running account sync run.
+
+    Idempotent for runs that have already reached a terminal state. Honors the
+    project's no-fake-success rule: it only records the cancellation against the
+    persisted run and releases the account lock; it does not assert a successful
+    platform call.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    ).cancel_sync_run(workspace.workspace_id, account_id, run_id)
+
+
 @router.post("/accounts/{account_id}/sync-interval", response_model=SyncIntervalResponse)
 async def recompute_sync_interval(
     account_id: UUID,

@@ -70,7 +70,7 @@ class Account(TimestampMixin, Base):
         ),
         CheckConstraint(
             "sync_status IN ('never', 'queued', 'syncing', 'success', "
-            "'degraded', 'error', 'disabled')",
+            "'degraded', 'error', 'disabled', 'cancelled')",
             name="account_sync_status",
         ),
         Index("ix_accounts_workspace_platform_active", "workspace_id", "platform_id", "is_active"),

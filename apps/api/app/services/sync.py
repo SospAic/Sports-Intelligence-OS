@@ -254,6 +254,25 @@ class SyncService:
             total=total,
         )
 
+    async def cancel_sync_run(
+        self, workspace_id: UUID, account_id: UUID, run_id: UUID
+    ) -> SyncRunRead:
+        """Cancel a queued/running sync run for an account.
+
+        Validates that the run belongs to the account and workspace, then delegates
+        to the shared :func:`cancel_sync_run` helper which marks the run cancelled,
+        releases the account lock, and best-effort revokes the Celery task.
+        """
+        account = await self.repository.get_account(workspace_id, account_id)
+        if account is None:
+            raise SyncNotFoundError("account was not found")
+        run = await self.repository.get_run(run_id)
+        if run is None or run.workspace_id != workspace_id:
+            raise SyncNotFoundError("sync run was not found")
+        if run.target_id != account.id:
+            raise SyncValidationError("sync run does not belong to this account")
+        return await cancel_sync_run(self.session, workspace_id, run_id)
+
     async def recover_stale_runs(
         self, stale_before: datetime, dispatch_stale_before: datetime | None = None
     ) -> int:
@@ -337,6 +356,15 @@ class PlatformSyncExecutor:
         self.registry = registry
         self.settings = settings
 
+    async def _aborted(self, run: "SyncRun") -> bool:
+        """Return True if the run was cancelled by a user while executing.
+
+        Re-reads the persisted status because a concurrent cancel transaction
+        may have changed it after this worker loaded the row.
+        """
+        await self.session.refresh(run)
+        return run.status == "cancelled"
+
     async def _config_for(self, account: Account) -> dict[str, Any]:
         mode, config = await PlatformCredentialService(
             self.session, self.settings
@@ -351,6 +379,9 @@ class PlatformSyncExecutor:
         run = await self.repository.get_run(run_id)
         if run is None:
             raise SyncNotFoundError("sync run was not found")
+        if run.status == "cancelled":
+            logger.info("sync run %s was cancelled before execution; skipping", run_id)
+            return
         if run.status in ("success", "degraded"):
             return
         account = await self.repository.get_account(run.workspace_id, run.target_id)
@@ -366,6 +397,8 @@ class PlatformSyncExecutor:
         account.sync_status = "syncing"
         self._set_progress(run, 5, "validating", "正在验证采集方式与凭证")
         await self.session.commit()
+        if await self._aborted(run):
+            return
         attempt_started = datetime.now(UTC)
         attempt_number = int(run.metadata_json.get("retry_count", 0)) + 1
 
@@ -378,6 +411,8 @@ class PlatformSyncExecutor:
             await adapter.validate_config(ctx.config)
             self._set_progress(run, 12, "account_profile", "正在同步账号资料与公开指标")
             await self.session.commit()
+            if await self._aborted(run):
+                return
             created, updated, metrics_degraded = await self._sync_account(account, adapter, ctx)
             self._set_progress(run, 25, "content_list", "账号资料已完成，正在获取作品列表")
             await self.session.commit()
@@ -388,6 +423,8 @@ class PlatformSyncExecutor:
             updated += content_updated
             self._set_progress(run, 92, "derived_metrics", "正在计算增长与高潜指标")
             await self.session.commit()
+            if await self._aborted(run):
+                return
             await self._calculate_metrics(account, ctx.observed_at)
         except PlatformAdapterError as exc:
             self._record_external_attempt(
@@ -1182,3 +1219,41 @@ def enqueue_platform_sync(run_id: UUID) -> None:
     from app.tasks.monitoring import sync_account
 
     sync_account.delay(str(run_id))
+
+
+async def cancel_sync_run(
+    session: AsyncSession, workspace_id: UUID, run_id: UUID
+) -> SyncRunRead:
+    """Mark a queued/running sync run as cancelled and release its account lock.
+
+    Idempotent for runs that are already in a terminal state. Best-effort revokes
+    the Celery task so a queued-but-not-started run is not picked up by a worker.
+    The authoritative signal is the persisted ``cancelled`` status plus the lock
+    release; workers also early-exit when they observe the cancelled state.
+    """
+    run = await session.get(SyncRun, run_id)
+    if run is None or run.workspace_id != workspace_id:
+        raise SyncNotFoundError("sync run was not found")
+    if run.status not in ("queued", "running"):
+        return SyncRunRead.model_validate(run)
+    now = datetime.now(UTC)
+    run.status = "cancelled"
+    run.finished_at = now
+    run.progress_stage = "cancelled"
+    run.progress_message = "任务已被用户终止"
+    run.lock_key = None
+    account = await SyncRepository(session).get_account_unscoped(run.target_id)
+    if account is not None:
+        account.sync_status = "cancelled"
+        account.last_sync_error_code = None
+        account.last_sync_error_message = None
+    await session.commit()
+    try:
+        from app.tasks.monitoring import sync_account
+
+        sync_account.revoke(str(run.id), terminate=True)
+    except Exception:  # pragma: no cover - broker may be unavailable in dev/test
+        logger.warning(
+            "could not revoke celery task for cancelled sync run %s", run.id
+        )
+    return SyncRunRead.model_validate(run)

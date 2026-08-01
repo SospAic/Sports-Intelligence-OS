@@ -9,6 +9,7 @@ from app.models.generation import GenerationRun
 from app.models.news import NewsSyncRun
 from app.models.operations import AuditEntry, SystemEvent, TaskRun
 from app.models.sync import SyncRun
+from app.schemas.monitoring import SyncRunRead
 from app.schemas.operations import (
     AuditEntryPage,
     AuditEntryRead,
@@ -17,11 +18,32 @@ from app.schemas.operations import (
     SystemEventPage,
     SystemEventRead,
 )
+from app.services.sync import cancel_sync_run
+
+
+class UnsupportedTaskCancelError(Exception):
+    """Raised when a task category does not support in-UI cancellation yet."""
 
 
 class OperationsService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def cancel_task(
+        self, workspace_id: UUID, task_id: UUID, category: str
+    ) -> SyncRunRead:
+        """Terminate a background task listed on the operations dashboard.
+
+        Only ``platform_sync`` runs support in-UI cancellation today. Other
+        categories (news_sync, generation, worker) raise
+        :class:`UnsupportedTaskCancelError` rather than faking a success, per the
+        project's no-fake-success rule.
+        """
+        if category == "platform_sync":
+            return await cancel_sync_run(self.session, workspace_id, task_id)
+        raise UnsupportedTaskCancelError(
+            "该任务类型暂不支持在界面终止；当前仅平台同步（platform_sync）支持"
+        )
 
     async def tasks(
         self,

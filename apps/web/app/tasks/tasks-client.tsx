@@ -5,6 +5,8 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
+import { TerminateButton } from "@/components/terminate-button";
+import { useToast } from "@/components/toast";
 import {
   Badge,
   PageHeader,
@@ -21,9 +23,13 @@ import {
 } from "@/lib/operation-labels";
 export function TasksClient() {
   const { workspaceId } = useWorkspace();
+  const { notify } = useToast();
   const [page, setPage] = useState(1);
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
+  const [terminatingId, setTerminatingId] = useState<string | null>(null);
+  const ACTIVE_STATUSES = ["queued", "running", "syncing", "retrying"];
+
   const params = new URLSearchParams({ page: String(page), page_size: "30" });
   if (category) params.set("category", category);
   if (status) params.set("status", status);
@@ -36,6 +42,25 @@ export function TasksClient() {
     enabled: Boolean(workspaceId),
     refetchInterval: 10000,
   });
+
+  async function terminate(taskId: string, taskCategory: string) {
+    if (!workspaceId) return;
+    setTerminatingId(taskId);
+    try {
+      await apiRequest(`/operations/tasks/${taskId}/cancel`, {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ category: taskCategory }),
+      });
+      notify("已发送终止请求，任务将尽快停止");
+      await query.refetch();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "终止失败", "error");
+    } finally {
+      setTerminatingId(null);
+    }
+  }
   const columns: ColumnDef<OperationTaskRecord, unknown>[] = [
     {
       accessorKey: "started_at",
@@ -87,6 +112,36 @@ export function TasksClient() {
           {row.original.error_message || "—"}
         </span>
       ),
+    },
+    {
+      accessorKey: "id",
+      header: "操作",
+      cell: ({ row }) => {
+        const rec = row.original;
+        const active = ACTIVE_STATUSES.includes(rec.status);
+        if (!active) {
+          return <span className="text-xs text-slate-600">—</span>;
+        }
+        if (rec.category !== "platform_sync") {
+          return (
+            <span
+              className="text-xs text-slate-500"
+              title="该任务类型暂不支持在界面终止"
+            >
+              暂不支持
+            </span>
+          );
+        }
+        return (
+          <TerminateButton
+            size="sm"
+            onTerminate={() => terminate(rec.id, rec.category)}
+            busy={terminatingId === rec.id}
+            label="终止"
+            title="终止正在进行的任务"
+          />
+        );
+      },
     },
   ];
   return (

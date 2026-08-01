@@ -37,7 +37,7 @@ describe("字段可用性契约（数据采集基线）", () => {
     ]) {
       expect(metricAvailability(key, false)).toBe("needs-condition");
       expect(metricConditionText(key)).toContain("流量来源授权");
-      expect(METRIC_CONTRACT[key].method).toBe("api");
+      expect(METRIC_CONTRACT[key]?.method).toBe("api");
     }
   });
 

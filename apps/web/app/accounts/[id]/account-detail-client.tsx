@@ -35,6 +35,7 @@ import {
   metricCardNode,
 } from "@/components/metric-availability";
 import { TimeRangePicker } from "@/components/time-range-picker";
+import { TerminateButton } from "@/components/terminate-button";
 import { useToast } from "@/components/toast";
 import { TrendChart } from "@/components/trend-chart";
 import {
@@ -107,9 +108,13 @@ const SYNC_STAGE_SHORT: Record<string, string> = {
 function SyncProgressPanel({
   runs,
   syncStatus,
+  onTerminate,
+  cancelling,
 }: {
   runs: SyncRunPage["items"] | undefined;
   syncStatus: string;
+  onTerminate?: () => void;
+  cancelling?: boolean;
 }) {
   const currentRun =
     runs?.find((run) =>
@@ -131,9 +136,20 @@ function SyncProgressPanel({
             {syncStatus === "queued" ? "同步排队中" : "正在同步"}
           </h2>
         </div>
-        <span className="flex items-center gap-2 text-xs text-cyan-300">
-          <RefreshCw size={12} className="animate-spin" />
-          自动刷新中
+        <span className="flex items-center gap-3">
+          {onTerminate && (
+            <TerminateButton
+              size="sm"
+              onTerminate={onTerminate}
+              busy={cancelling}
+              label="终止任务"
+              title="终止正在进行的同步任务"
+            />
+          )}
+          <span className="flex items-center gap-2 text-xs text-cyan-300">
+            <RefreshCw size={12} className="animate-spin" />
+            自动刷新中
+          </span>
         </span>
       </div>
 
@@ -496,6 +512,7 @@ export function AccountDetailClient({ id }: { id: string }) {
   const [from, setFrom] = useUrlState("from", "");
   const [contentSort, setContentSort] = useUrlState("csort", "published_at");
   const publishedFrom = resolvePublishedFrom(range, from || null);
+  const [cancelling, setCancelling] = useState(false);
   const paths = buildAccountDetailPaths(id);
   const contentsPath = buildAccountDetailPaths(id, {
     sort: contentSort,
@@ -550,6 +567,10 @@ export function AccountDetailClient({ id }: { id: string }) {
       return status === "queued" || status === "syncing" ? 5000 : false;
     },
   });
+  const activeRun = runs.data?.items?.find((r) =>
+    ["queued", "running", "syncing"].includes(r.status),
+  );
+  const activeRunId = activeRun?.id;
   const automations = useQuery({
     queryKey: ["account-automations", workspaceId],
     queryFn: () =>
@@ -592,6 +613,24 @@ export function AccountDetailClient({ id }: { id: string }) {
       } else {
         notify("同步失败", "error");
       }
+    }
+  }
+  async function cancelSync(runId?: string) {
+    if (!workspaceId || !runId) return;
+    setCancelling(true);
+    try {
+      await apiRequest(`/accounts/${id}/sync/${runId}/cancel`, {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+      });
+      notify("已发送终止请求，任务将尽快停止");
+      await qc.invalidateQueries({ queryKey: ["account"] });
+      await qc.invalidateQueries({ queryKey: ["account-runs", id] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "终止失败", "error");
+    } finally {
+      setCancelling(false);
     }
   }
   async function deleteAccount() {
@@ -701,28 +740,32 @@ export function AccountDetailClient({ id }: { id: string }) {
                     <ExternalLink size={15} />
                   </a>
                 )}
-                <button
-                  className={buttonClass}
-                  onClick={sync}
-                  disabled={
-                    ["queued", "syncing"].includes(item.sync_status) ||
-                    !item.is_active ||
-                    item.platform.capabilities?.implementation_status !==
-                      "implemented"
-                  }
-                  title={
-                    item.platform.capabilities?.implementation_status !==
-                    "implemented"
-                      ? "该平台适配器暂未实现"
-                      : undefined
-                  }
-                >
-                  <RefreshCw size={15} />
-                  {item.platform.capabilities?.implementation_status !==
-                  "implemented"
-                    ? "不支持"
-                    : "立即同步"}
-                </button>
+                {item.platform.capabilities?.implementation_status !==
+                "implemented" ? (
+                  <button
+                    className={buttonClass}
+                    disabled
+                    title="该平台适配器暂未实现"
+                  >
+                    <RefreshCw size={15} />
+                    不支持
+                  </button>
+                ) : ["queued", "syncing"].includes(item.sync_status) ? (
+                  <TerminateButton
+                    onTerminate={() => cancelSync(activeRunId)}
+                    busy={cancelling}
+                    title="终止正在进行的同步任务"
+                  />
+                ) : (
+                  <button
+                    className={buttonClass}
+                    onClick={sync}
+                    disabled={!item.is_active}
+                  >
+                    <RefreshCw size={15} />
+                    立即同步
+                  </button>
+                )}
                 {["owner", "admin"].includes(role ?? "") && (
                   <button
                     className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-red-900/60 bg-slate-950 px-4 text-sm font-medium text-red-400 transition hover:bg-red-950/40"
@@ -738,7 +781,12 @@ export function AccountDetailClient({ id }: { id: string }) {
         </div>
       </div>
       {["queued", "syncing"].includes(item.sync_status) && (
-        <SyncProgressPanel runs={runs.data?.items} syncStatus={item.sync_status} />
+        <SyncProgressPanel
+          runs={runs.data?.items}
+          syncStatus={item.sync_status}
+          onTerminate={() => cancelSync(activeRunId)}
+          cancelling={cancelling}
+        />
       )}
       <div className="flex gap-1 overflow-x-auto border-b border-slate-800">
         {tabs.map((name) => (
@@ -884,10 +932,18 @@ export function AccountDetailClient({ id }: { id: string }) {
               action={
                 item.is_active &&
                 item.platform.capabilities?.implementation_status === "implemented" ? (
-                  <button className={buttonClass} onClick={sync}>
-                    <RefreshCw size={15} />
-                    立即同步
-                  </button>
+                  ["queued", "syncing"].includes(item.sync_status) ? (
+                    <TerminateButton
+                      onTerminate={() => cancelSync(activeRunId)}
+                      busy={cancelling}
+                      title="终止正在进行的同步任务"
+                    />
+                  ) : (
+                    <button className={buttonClass} onClick={sync}>
+                      <RefreshCw size={15} />
+                      立即同步
+                    </button>
+                  )
                 ) : undefined
               }
             />
@@ -988,6 +1044,15 @@ export function AccountDetailClient({ id }: { id: string }) {
                           ? `${duration}s`
                           : `${Math.floor(duration / 60)}m ${duration % 60}s`}
                       </span>
+                    )}
+                    {["queued", "running", "syncing"].includes(run.status) && (
+                      <TerminateButton
+                        size="sm"
+                        onTerminate={() => cancelSync(run.id)}
+                        busy={cancelling && activeRunId === run.id}
+                        label="终止"
+                        title="终止正在进行的同步任务"
+                      />
                     )}
                     <span className="ml-auto text-xs text-slate-500">
                       {operationTaskLabel(run.adapter_key)}

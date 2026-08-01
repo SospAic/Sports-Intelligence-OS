@@ -542,3 +542,78 @@ def test_account_view_preferences_route_is_not_shadowed_by_account_id(
     )
     assert put_response.status_code == 200
     assert put_response.json()["preferences"]["platform"] == "all"
+
+
+def test_cancel_sync_run_route_cancels_queued_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /accounts/{id}/sync/{run_id}/cancel terminates a queued run and flips
+    the account into the 'cancelled' state via the real HTTP surface.
+
+    The queued run is created through the real sync endpoint (with the background
+    broker monkeypatched to a no-op) instead of a separate synchronous engine, so
+    the async app and the test never hold conflicting SQLite locks on the same
+    file when the whole module is collected together.
+    """
+    dispatched: list[UUID] = []
+    monkeypatch.setattr(
+        "app.services.sync.enqueue_platform_sync",
+        lambda run_id: dispatched.append(run_id),
+    )
+
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+    account_id = account["id"]
+
+    queued = client.post(
+        f"/api/v1/accounts/{account_id}/sync",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["status"] == "queued"
+    run_id = queued.json()["id"]
+    assert len(dispatched) == 1
+
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/sync/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+
+    account_response = client.get(
+        f"/api/v1/accounts/{account_id}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert account_response.json()["sync_status"] == "cancelled"
+
+
+def test_cancel_sync_run_route_returns_404_for_missing_run(
+    client: TestClient,
+) -> None:
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+    account_id = account["id"]
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/sync/{uuid4()}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "sync_resource_not_found"
+
+
+def test_operations_cancel_unsupported_category_returns_501(
+    client: TestClient,
+) -> None:
+    """The unified operations cancel endpoint must NOT fake support for task
+    categories that cannot be cancelled yet; it returns 501 instead."""
+    from uuid import uuid4
+
+    csrf_token = authenticate(client)
+    response = client.post(
+        f"/api/v1/operations/tasks/{uuid4()}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"category": "generation"},
+    )
+    assert response.status_code == 501
+    assert response.json()["code"] == "unsupported_task_cancel"
