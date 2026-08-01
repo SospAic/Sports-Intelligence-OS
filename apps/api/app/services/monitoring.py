@@ -25,6 +25,7 @@ from app.schemas.monitoring import (
     AccountComparisonRow,
     AccountComparisonSnapshot,
     AccountComparisonSummary,
+    AccountContentSummary,
     AccountCreate,
     AccountMetricsHistory,
     AccountMetricsHistoryPoint,
@@ -546,6 +547,21 @@ class MonitoringService:
             page_size=page_size,
             total=total,
         )
+
+    async def summarize_account_contents(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> AccountContentSummary:
+        """Aggregated content-level overview for an account.
+
+        Builds on top of ``AccountContentSummary``: all numbers come from real
+        snapshots the adapter returned. Missing (API-gated) fields stay ``None``
+        and the UI renders the required acquisition condition instead of faking.
+        """
+        await self.get_account(workspace_id, account_id)
+        summary = await self._repository.summarize_account_contents(
+            workspace_id, account_id
+        )
+        return AccountContentSummary(account_id=account_id, **summary)
 
     @staticmethod
     def _validate_content_filters(filters: ContentFilters) -> None:

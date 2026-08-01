@@ -23,6 +23,11 @@ import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
+import {
+  AvailabilityValue,
+  NeedsConditionBadge,
+} from "@/components/metric-availability";
+import { TimeRangePicker } from "@/components/time-range-picker";
 import { useToast } from "@/components/toast";
 import {
   PageHeader,
@@ -34,6 +39,9 @@ import {
 } from "@/components/ui";
 import { apiRequest, downloadApiFile } from "@/lib/browser-api";
 import { buildContentListPath } from "@/lib/admin-queries";
+import { metricAvailability, metricConditionText } from "@/lib/metric-availability";
+import { resolvePublishedFrom } from "@/lib/time-range";
+import { useUrlState } from "@/lib/use-persisted-state";
 import {
   formatDate,
   formatNumber,
@@ -65,7 +73,9 @@ export function ContentsClient() {
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState(() => readSavedView().platform);
   const [minViews, setMinViews] = useState(() => readSavedView().minViews);
-  const [publishedFrom, setPublishedFrom] = useState("");
+  const [range, setRange] = useUrlState("range", "all");
+  const [from, setFrom] = useUrlState("from", "");
+  const publishedFrom = resolvePublishedFrom(range, from || null) ?? undefined;
   const [selected, setSelected] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
   const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
@@ -282,7 +292,7 @@ export function ContentsClient() {
           snapshot.like_count,
           snapshot.comment_count,
           snapshot.share_count,
-        ].filter((value): value is number => value !== null);
+        ].filter((value): value is number => value !== undefined && value !== null);
         return observed.length
           ? observed.reduce((sum, value) => sum + value, 0) /
               snapshot.view_count
@@ -291,6 +301,29 @@ export function ContentsClient() {
       id: "engagement",
       header: "互动率",
       cell: ({ getValue }) => formatPercent(getValue<number | null>()),
+    },
+    {
+      accessorFn: (item) => item.latest_snapshot?.completion_rate ?? -1,
+      id: "completion_rate",
+      header: "完播率",
+      cell: ({ row }) => {
+        const value = row.original.latest_snapshot?.completion_rate;
+        const status = metricAvailability(
+          "completion_rate",
+          value !== null && value !== undefined,
+        );
+        if (status === "needs-condition")
+          return (
+            <NeedsConditionBadge text={metricConditionText("completion_rate")} />
+          );
+        return (
+          <AvailabilityValue
+            metricKey="completion_rate"
+            value={value}
+            format={formatPercent}
+          />
+        );
+      },
     },
     ...(canEdit
       ? [
@@ -415,7 +448,15 @@ export function ContentsClient() {
           </>
         }
       />
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <TimeRangePicker
+          value={range}
+          onChange={setRange}
+          customFrom={from}
+          onCustomFromChange={setFrom}
+        />
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <label className="relative">
           <Search
             className="absolute top-1/2 left-3 -translate-y-1/2 text-slate-500"
@@ -453,12 +494,6 @@ export function ContentsClient() {
           type="number"
           onChange={(e) => setMinViews(e.target.value)}
           placeholder="最低播放量"
-        />
-        <input
-          className={inputClass}
-          value={publishedFrom}
-          type="date"
-          onChange={(e) => setPublishedFrom(e.target.value)}
         />
       </div>
       {creating && (

@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  AccountContentSummary,
   AccountMetricsHistory,
   AccountMetricsHistoryPoint,
   AccountRecord,
@@ -28,6 +29,12 @@ import { useMemo, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
+import {
+  NeedsConditionBadge,
+  TrafficSourceBreakdown,
+  metricCardNode,
+} from "@/components/metric-availability";
+import { TimeRangePicker } from "@/components/time-range-picker";
 import { useToast } from "@/components/toast";
 import { TrendChart } from "@/components/trend-chart";
 import {
@@ -43,6 +50,9 @@ import {
 } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { buildAccountDetailPaths } from "@/lib/admin-queries";
+import { metricConditionText, metricAvailability } from "@/lib/metric-availability";
+import { resolvePublishedFrom } from "@/lib/time-range";
+import { useUrlState } from "@/lib/use-persisted-state";
 import {
   formatDate,
   formatNumber,
@@ -282,6 +292,25 @@ function dominantTrafficSource(
   return { label: best.label, tone: best.tone };
 }
 
+function formatWatchTime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.round(seconds);
+  if (total < 60) return `${total}秒`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest ? `${minutes}分${rest}秒` : `${minutes}分`;
+}
+
+const CONTENT_SORT_OPTIONS: { key: string; label: string }[] = [
+  { key: "published_at", label: "发布时间" },
+  { key: "view_count", label: "播放量" },
+  { key: "like_count", label: "点赞" },
+  { key: "comment_count", label: "评论" },
+  { key: "share_count", label: "分享" },
+  { key: "completion_rate", label: "完播率" },
+  { key: "engagement_rate", label: "互动率" },
+];
+
 function ContentTable({
   rows,
 }: {
@@ -365,6 +394,14 @@ function ContentTable({
         accessorFn: (row) => row.latest_snapshot?.completion_rate ?? 0,
         cell: ({ row }) => {
           const value = row.original.latest_snapshot?.completion_rate;
+          const status = metricAvailability(
+            "completion_rate",
+            value !== null && value !== undefined,
+          );
+          if (status === "needs-condition")
+            return (
+              <NeedsConditionBadge text={metricConditionText("completion_rate")} />
+            );
           if (value === null || value === undefined)
             return <span className="text-xs text-slate-600">—</span>;
           const weak = value < 0.15;
@@ -399,13 +436,21 @@ function ContentTable({
         header: "主导流量",
         enableSorting: false,
         cell: ({ row }) => {
+          const snap = row.original.latest_snapshot;
+          const anyTraffic = [
+            snap?.recommendation_traffic_rate,
+            snap?.search_traffic_rate,
+            snap?.profile_traffic_rate,
+          ].some((v) => v !== null && v !== undefined);
+          if (!anyTraffic)
+            return (
+              <NeedsConditionBadge
+                text={metricConditionText("recommendation_traffic_rate")}
+              />
+            );
           const src = dominantTrafficSource(row.original);
           if (!src) return <span className="text-xs text-slate-600">—</span>;
-          return (
-            <Badge tone={src.tone}>
-              {src.label}
-            </Badge>
-          );
+          return <Badge tone={src.tone}>{src.label}</Badge>;
         },
       },
       {
@@ -447,7 +492,15 @@ export function AccountDetailClient({ id }: { id: string }) {
   const router = useRouter();
   const [tab, setTab] = useState<(typeof tabs)[number]>("概览");
   const [historyDays, setHistoryDays] = useState(30);
+  const [range, setRange] = useUrlState("range", "all");
+  const [from, setFrom] = useUrlState("from", "");
+  const [contentSort, setContentSort] = useUrlState("csort", "published_at");
+  const publishedFrom = resolvePublishedFrom(range, from || null);
   const paths = buildAccountDetailPaths(id);
+  const contentsPath = buildAccountDetailPaths(id, {
+    sort: contentSort,
+    publishedFrom,
+  }).contents;
   const account = useQuery({
     queryKey: ["account", id, workspaceId],
     queryFn: () =>
@@ -469,11 +522,20 @@ export function AccountDetailClient({ id }: { id: string }) {
     enabled: Boolean(workspaceId),
   });
   const contents = useQuery({
-    queryKey: ["account-contents", id],
+    queryKey: ["account-contents", id, contentsPath],
     queryFn: () =>
-      apiRequest<ContentRecordPage>(paths.contents, {
+      apiRequest<ContentRecordPage>(contentsPath, {
         workspaceId: workspaceId!,
       }),
+    enabled: Boolean(workspaceId),
+  });
+  const contentSummary = useQuery({
+    queryKey: ["account-content-summary", id],
+    queryFn: () =>
+      apiRequest<AccountContentSummary>(
+        `/accounts/${id}/content-summary`,
+        { workspaceId: workspaceId! },
+      ),
     enabled: Boolean(workspaceId),
   });
   const runs = useQuery({
@@ -710,6 +772,58 @@ export function AccountDetailClient({ id }: { id: string }) {
               value={formatPercent(engagementRate ?? snapshot?.engagement_rate)}
             />
           </div>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="平均完播率"
+              value={metricCardNode(
+                "completion_rate",
+                contentSummary.data?.avg_completion_rate,
+                formatPercent,
+              )}
+              hint="账号作品均值 · 需官方 API"
+            />
+            <MetricCard
+              label="平均观看时长"
+              value={metricCardNode(
+                "average_watch_time",
+                contentSummary.data?.avg_watch_time_seconds,
+                formatWatchTime,
+              )}
+              hint="账号作品均值 · 需官方 API"
+            />
+            <MetricCard
+              label="近 24h 作品播放增量"
+              value={
+                <span className="text-2xl font-semibold text-white">
+                  {contentSummary.data?.recent_24h_view_growth != null
+                    ? `+${formatNumber(contentSummary.data.recent_24h_view_growth)}`
+                    : "—"}
+                </span>
+              }
+            />
+            <MetricCard
+              label="总互动量"
+              value={
+                <span className="text-2xl font-semibold text-white">
+                  {contentSummary.data?.total_interactions != null
+                    ? formatNumber(contentSummary.data.total_interactions)
+                    : "—"}
+                </span>
+              }
+            />
+          </div>
+          <Panel className="p-5">
+            <h2 className="font-medium text-white">
+              流量来源占比（账号作品平均）
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API 或流量来源授权后才会返回真实值。
+            </p>
+            <TrafficSourceBreakdown
+              split={contentSummary.data?.traffic_source_split}
+              format={formatPercent}
+            />
+          </Panel>
           <Panel className="p-5">
             <h2 className="font-medium text-white">
               粉丝趋势（最近 {historyDays} 天）
@@ -737,6 +851,28 @@ export function AccountDetailClient({ id }: { id: string }) {
                 加载中
               </span>
             )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+            <TimeRangePicker
+              value={range}
+              onChange={setRange}
+              customFrom={from}
+              onCustomFromChange={setFrom}
+            />
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              排序
+              <select
+                className={`${inputClass} h-8 w-auto px-2 text-xs`}
+                value={contentSort}
+                onChange={(event) => setContentSort(event.target.value)}
+              >
+                {CONTENT_SORT_OPTIONS.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           {contents.data?.items.length ? (
             <ContentTable rows={contents.data.items} />

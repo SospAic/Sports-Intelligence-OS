@@ -471,6 +471,27 @@ export interface AccountMetricsHistory {
   points: AccountMetricsHistoryPoint[];
 }
 
+/**
+ * Aggregated content-level overview for an account (backend
+ * `GET /accounts/{id}/content-summary`). Every field is derived from real
+ * snapshots the adapter returned; API-dependent fields (completion rate,
+ * traffic split, watch time) come back as `null` when the account's adapter
+ * path could not obtain them, and the UI renders the required condition.
+ */
+export interface AccountContentSummary {
+  account_id: string;
+  content_count: number;
+  avg_completion_rate: number | null;
+  avg_watch_time_seconds: number | null;
+  avg_engagement_rate: number | null;
+  total_interactions: number | null;
+  traffic_source_split: Record<string, number | null>;
+  recent_24h_view_growth: number | null;
+  top_content_id: string | null;
+  top_content_title: string | null;
+  top_content_views: number | null;
+}
+
 export interface ContentSnapshot {
   id: string;
   content_item_id: string;

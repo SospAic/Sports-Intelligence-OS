@@ -19,6 +19,11 @@ import {
   StatePanel,
   secondaryButtonClass,
 } from "@/components/ui";
+import {
+  InteractionBreakdown,
+  TrafficSourceBreakdown,
+  metricCardNode,
+} from "@/components/metric-availability";
 import { apiRequest } from "@/lib/browser-api";
 import {
   DERIVED_METRIC_LABELS,
@@ -32,6 +37,15 @@ import {
   sourceKindLabel,
 } from "@/lib/format";
 import { buildChartSeries, latestObservedValue } from "@/lib/time-series";
+function formatWatchTime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "—";
+  const total = Math.round(seconds);
+  if (total < 60) return `${total}秒`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest ? `${minutes}分${rest}秒` : `${minutes}分`;
+}
+
 export function ContentDetailClient({ id }: { id: string }) {
   const { workspaceId, loading: workspaceLoading } = useWorkspace();
   const item = useQuery({
@@ -123,7 +137,7 @@ export function ContentDetailClient({ id }: { id: string }) {
           className="max-h-72 w-full rounded-2xl border border-slate-800 object-cover"
         />
       )}
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="播放量"
           value={formatNumber(
@@ -154,12 +168,54 @@ export function ContentDetailClient({ id }: { id: string }) {
           )}
         />
         <MetricCard
-          label="完播率"
-          value={formatPercent(
-            latestObservedValue(history, (point) => point.completion_rate) ??
-              snapshot?.completion_rate,
+          label="收藏"
+          value={formatNumber(
+            latestObservedValue(history, (point) => point.favorite_count) ??
+              snapshot?.favorite_count,
           )}
         />
+        <MetricCard
+          label="完播率"
+          value={metricCardNode(
+            "completion_rate",
+            latestObservedValue(history, (point) => point.completion_rate) ??
+              snapshot?.completion_rate,
+            formatPercent,
+          )}
+          hint="需官方 API / 私有分析授权"
+        />
+        <MetricCard
+          label="平均观看时长"
+          value={metricCardNode(
+            "average_watch_time",
+            snapshot?.average_watch_time,
+            formatWatchTime,
+          )}
+          hint="需官方 API / 私有分析授权"
+        />
+      </div>
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel className="p-5">
+          <h2 className="font-medium text-white">互动拆解</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            点赞 / 评论 / 收藏 / 分享各占播放量的比例（基于最新快照；公开可获取字段）。
+          </p>
+          <InteractionBreakdown snapshot={snapshot} format={formatPercent} />
+        </Panel>
+        <Panel className="p-5">
+          <h2 className="font-medium text-white">流量来源占比</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API 或流量来源授权后返回真实值。
+          </p>
+          <TrafficSourceBreakdown
+            split={{
+              recommendation_traffic_rate: snapshot?.recommendation_traffic_rate ?? null,
+              search_traffic_rate: snapshot?.search_traffic_rate ?? null,
+              profile_traffic_rate: snapshot?.profile_traffic_rate ?? null,
+            }}
+            format={formatPercent}
+          />
+        </Panel>
       </div>
       <div className="grid gap-5 xl:grid-cols-[2fr_1fr]">
         <Panel className="p-5">

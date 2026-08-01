@@ -1,6 +1,6 @@
 # 项目状态
 
-更新时间：2026-08-01
+更新时间：2026-08-01（续：账号监控基线升级与可用性渲染）
 
 ## 当前阶段
 
@@ -8,7 +8,15 @@
 
 > 本节是当前权威状态。本文后面的日期记录用于保留维护历史；若旧记录中的 WBI、默认浏览器抓取、明文 `metadata.adapter_config`、TikTok Research API、自动死信重放或趋势 Mock 种子描述与本节冲突，以本节及 `docs/PLATFORM_SYNC.md` 为准。
 
-> **2026-08-01 校对补充（纠正历史记录失真）**：
+> **2026-08-01 续（账号监控基线升级与字段可用性渲染）**：
+> - **最高优先级基线落地**：用户明确「账号 / 平台级数据，模拟浏览公开渠道能获取的必须上页；需 API / 登录授权的栏位若条件未满足，必须显式显示需要哪种条件」。据此新增 `AGENTS.md` 第 4.5 条、`docs/PROJECT_CONTEXT.md` 段落与 `docs/DATA_ACQUISITION_BASELINE.md`（字段级契约 + UI 渲染优先级 + 适配器能力边界）。基线高于内部自设限制，但不高于法律法规与平台条款。
+> - **后端聚合升级（#51，已验证）**：`ContentSort` 扩展 `like_count` / `comment_count` / `share_count` / `completion_rate` / `engagement_rate`；新增 `AccountContentSummary` schema / repository 聚合（`summarize_account_contents`：完播率均值、平均观看时长、互动率、总互动、流量来源加权占比、近 24h 作品播放增量、头部作品）/ service / route `GET /accounts/{id}/content-summary`。新增契约测试 `test_account_content_summary.py`（5 passed）。Mypy、Ruff 全绿。
+> - **前端字段可用性基础设施（#53，已验证）**：新增 `lib/metric-availability.ts`（字段→采集方式 / 所需条件契约与 `metricAvailability` 状态判定）、`components/metric-availability.tsx`（`AvailabilityValue` / `NeedsConditionBadge` / `TrafficSourceBreakdown` / `InteractionBreakdown`）、`lib/time-range.ts` + `components/time-range-picker.tsx`（全局复用、写 URL `range` / `from` 参数）。前端所有"需要条件"渲染均来自此单一契约，落实"数据栏位需显示需要哪种条件"。
+> - **账号详情升级（#52，已验证）**：概览新增「平均完播率」「平均观看时长」「近 24h 作品播放增量」「总互动量」四张 API 依赖卡片（缺失时渲染"需要：…"徽章）+「流量来源占比」面板；作品 tab 接入 `TimeRangePicker` 与按完播 / 互动 / 点赞 / 评论 / 分享排序（服务端 `sort` + `published_from`），作品表格的完播率与主导流量列改为按契约渲染"需要条件"徽章。
+> - **作品列表 / 详情升级（#55，已验证）**：作品列表接入全局 `TimeRangePicker` 并新增完播率列（可用性渲染）；单作品详情新增「互动拆解」（赞 / 评 / 藏 / 转各占播放比）、「流量来源占比」面板、平均观看时长卡，完播率与平均观看时长套用可用性渲染。
+> - **验证状态**：后端 Mypy（148 源文件）、Ruff 全绿；`test_account_content_summary.py` 5 passed、`test_monitoring_api.py` 6 passed（该文件单独运行约 107s，受沙箱单命令时长限制，完整 84 项后端套件改以后台任务执行，见下方"验证状态"表）。前端 TypeScript、`ESLint`（仅 0 error / 0 warning，清理了未用导入）、Vitest 47 passed（新增 `metric-availability.test.ts` 9 项覆盖契约与预设）。所有改动仅本地提交（`codex/full-repair-real-data` 分支），不推送。
+
+### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 SQLite / Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。
 > - **未提交工作**：本会话（2026-08-01 收尾）在 `codex/full-repair-real-data` 分支一次性新增了优化 D（play_follower_ratio 相对指标 + 迁移 + 测试）、P1-5 新闻预览 Drawer、P1-7 全局键盘快捷键、P2-3 新闻聚类视图，连同此前 2026-08-01 维护（适配器能力端点、账号历史曲线、错误徽章及对应前端/测试）共约 160 个文件变更，已全部通过 Ruff/Mypy/Pytest(81)/tsc/ESLint/Vitest(38) 质量门禁，并以**仅本地提交、不推送**的方式保护，避免丢失；推送前仍须按 `docs/FIRST_DELIVERY_REPORT.md` 在具备 Docker Compose v2 与目标凭证的环境做 PostgreSQL/Redis 实机验收。
@@ -320,11 +328,11 @@
 | --- | --- |
 | 后端 Ruff | 通过，应用、测试及验证脚本无错误 |
 | 后端 Mypy strict | 通过，150 个源文件无错误 |
-| 后端 Pytest | 通过，84 项测试；另有 1 条上游 TestClient/httpx 弃用警告 |
+| 后端 Pytest | 监控相关 11 项通过（test_account_content_summary 5 + test_monitoring_api 6，后者单独运行约 107s）；完整 84 项套件因沙箱单命令时长限制改以后台任务执行，结果待回填（本次改动均为监控路径增量，未触及其他模块） |
 | 仓库与验收脚本测试 | 通过，35 项测试（含安装器、Compose 配置传播与 URL 安全回归） |
 | 前端 TypeScript | 通过，3 个工作区包完成检查 |
-| 前端 ESLint | 通过 |
-| 前端 Vitest | 通过，38 项测试 |
+| 前端 ESLint | 通过，0 error / 0 warning（已清理未用导入） |
+| 前端 Vitest | 通过，47 项测试（新增 metric-availability 契约与 time-range 预设 9 项） |
 | Prettier | 通过 |
 | Next.js production build | 通过，静态页面生成 22/22，动态路由编译成功 |
 | 本地 HTTP 冒烟 | FastAPI 健康检查与 Next 登录页均返回 200 |

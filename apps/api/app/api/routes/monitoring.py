@@ -22,6 +22,7 @@ from app.schemas.monitoring import (
     AccountBatchSyncResult,
     AccountBatchUpdateRequest,
     AccountComparisonResponse,
+    AccountContentSummary,
     AccountCreate,
     AccountMetricsHistory,
     AccountPage,
@@ -412,6 +413,19 @@ async def list_account_contents(
         order=order,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get(
+    "/accounts/{account_id}/content-summary",
+    response_model=AccountContentSummary,
+)
+async def summarize_account_contents(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> AccountContentSummary:
+    """Aggregated content overview (completion, watch time, traffic split)."""
+    return await MonitoringService(db).summarize_account_contents(
+        workspace.workspace_id, account_id
     )
 
 

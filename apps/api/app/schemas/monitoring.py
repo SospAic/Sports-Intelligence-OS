@@ -25,6 +25,11 @@ ContentSort = Literal[
     "title",
     "view_count",
     "view_growth_24h",
+    "like_count",
+    "comment_count",
+    "share_count",
+    "completion_rate",
+    "engagement_rate",
 ]
 
 
@@ -349,6 +354,35 @@ class ContentPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+def _default_traffic_source_split() -> dict[str, float | None]:
+    return {"recommendation": None, "search": None, "profile": None}
+
+
+class AccountContentSummary(BaseModel):
+    """Aggregated content-level metrics for an account overview.
+
+    Mirrors the acquisition baseline: every field here is derived from real
+    observations that the account's adapter actually returned. Traffic source
+    proportions are view-weighted; fields the adapter could not obtain (e.g.
+    completion rate when only a public browse path is available) simply come
+    back as ``None`` and the UI renders the required condition instead.
+    """
+
+    account_id: UUID
+    content_count: int
+    avg_completion_rate: float | None = None
+    avg_watch_time_seconds: float | None = None
+    avg_engagement_rate: float | None = None
+    total_interactions: int | None = None
+    traffic_source_split: dict[str, float | None] = Field(
+        default_factory=_default_traffic_source_split
+    )
+    recent_24h_view_growth: int | None = None
+    top_content_id: UUID | None = None
+    top_content_title: str | None = None
+    top_content_views: int | None = None
 
 
 class ContentCreate(BaseModel):

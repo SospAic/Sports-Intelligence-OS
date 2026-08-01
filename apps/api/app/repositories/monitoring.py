@@ -283,6 +283,19 @@ class MonitoringRepository:
             "title": ContentItem.title,
             "view_count": ContentSnapshot.view_count,
             "view_growth_24h": view_growth,
+            "like_count": ContentSnapshot.like_count,
+            "comment_count": ContentSnapshot.comment_count,
+            "share_count": ContentSnapshot.share_count,
+            "completion_rate": ContentSnapshot.completion_rate,
+            "engagement_rate": (
+                (
+                    func.coalesce(ContentSnapshot.like_count, 0)
+                    + func.coalesce(ContentSnapshot.comment_count, 0)
+                    + func.coalesce(ContentSnapshot.share_count, 0)
+                    + func.coalesce(ContentSnapshot.favorite_count, 0)
+                )
+                / func.nullif(ContentSnapshot.view_count, 0)
+            ),
         }
         sort_column = sort_columns[sort]
         ordering = sort_column.asc() if order == "asc" else sort_column.desc()
@@ -302,6 +315,111 @@ class MonitoringRepository:
         )
         total = int((await self._session.scalar(count_statement)) or 0)
         return [(row[0], row[1], row[2]) for row in result.all()], total
+
+    async def summarize_account_contents(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> dict[str, Any]:
+        """Aggregate content-level metrics for an account overview.
+
+        Every value is computed from the latest snapshot the adapter actually
+        returned. Traffic-source proportions are view-weighted so a few viral
+        videos don't get drowned out by low-view catalogue items. Fields the
+        adapter could not obtain (e.g. completion rate via a public-browse only
+        path) come back as ``None`` and the UI shows the required condition.
+        """
+        latest_snapshot_id = self._latest_content_snapshot_id()
+        view_growth = self._latest_metric_value(
+            "content_item", ContentItem.id, "view_growth_24h"
+        )
+        interactions = (
+            func.coalesce(ContentSnapshot.like_count, 0)
+            + func.coalesce(ContentSnapshot.comment_count, 0)
+            + func.coalesce(ContentSnapshot.share_count, 0)
+            + func.coalesce(ContentSnapshot.favorite_count, 0)
+        )
+        statement = (
+            select(
+                func.count(ContentItem.id).label("content_count"),
+                func.avg(ContentSnapshot.completion_rate).label("avg_completion_rate"),
+                func.avg(ContentSnapshot.average_watch_time).label("avg_watch_time"),
+                func.avg(interactions / func.nullif(ContentSnapshot.view_count, 0)).label(
+                    "avg_engagement_rate"
+                ),
+                func.sum(interactions).label("total_interactions"),
+                func.sum(
+                    ContentSnapshot.view_count
+                    * func.coalesce(ContentSnapshot.recommendation_traffic_rate, 0)
+                ).label("rec_weighted"),
+                func.sum(
+                    ContentSnapshot.view_count
+                    * func.coalesce(ContentSnapshot.search_traffic_rate, 0)
+                ).label("search_weighted"),
+                func.sum(
+                    ContentSnapshot.view_count
+                    * func.coalesce(ContentSnapshot.profile_traffic_rate, 0)
+                ).label("profile_weighted"),
+                func.sum(func.coalesce(ContentSnapshot.view_count, 0)).label("view_sum"),
+                func.sum(view_growth).label("recent_view_growth"),
+            )
+            .select_from(ContentItem)
+            .join(Platform, ContentItem.platform_id == Platform.id)
+            .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
+            .where(
+                ContentItem.workspace_id == workspace_id,
+                ContentItem.account_id == account_id,
+            )
+        )
+        row = (await self._session.execute(statement)).one()
+        mapping = row._mapping
+        content_count = int(mapping["content_count"] or 0)
+        view_sum = float(mapping["view_sum"] or 0)
+
+        def weighted(column: str) -> float | None:
+            value = mapping[column]
+            if value is None or view_sum <= 0:
+                return None
+            return float(value) / view_sum
+
+        traffic_split = {
+            "recommendation": weighted("rec_weighted"),
+            "search": weighted("search_weighted"),
+            "profile": weighted("profile_weighted"),
+        }
+
+        top_statement = (
+            select(ContentItem.id, ContentItem.title, ContentSnapshot.view_count)
+            .select_from(ContentItem)
+            .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
+            .where(
+                ContentItem.workspace_id == workspace_id,
+                ContentItem.account_id == account_id,
+            )
+            .order_by(
+                ContentSnapshot.view_count.desc().nullslast(), ContentItem.id.asc()
+            )
+            .limit(1)
+        )
+        top_row = (await self._session.execute(top_statement)).one_or_none()
+        return {
+            "content_count": content_count,
+            "avg_completion_rate": mapping["avg_completion_rate"],
+            "avg_watch_time_seconds": mapping["avg_watch_time"],
+            "avg_engagement_rate": mapping["avg_engagement_rate"],
+            "total_interactions": (
+                int(mapping["total_interactions"])
+                if mapping["total_interactions"] is not None
+                else None
+            ),
+            "traffic_source_split": traffic_split,
+            "recent_24h_view_growth": (
+                int(mapping["recent_view_growth"])
+                if mapping["recent_view_growth"] is not None
+                else None
+            ),
+            "top_content_id": top_row[0] if top_row else None,
+            "top_content_title": top_row[1] if top_row else None,
+            "top_content_views": top_row[2] if top_row else None,
+        }
 
     async def get_content(self, workspace_id: UUID, content_id: UUID) -> ContentRow | None:
         latest_snapshot_id = self._latest_content_snapshot_id()

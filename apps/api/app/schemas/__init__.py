@@ -3,6 +3,7 @@
 from app.schemas.adapters import AdapterConfigFieldRead, AdapterDescriptorRead
 from app.schemas.editorial_rules import RuleSetRead, RuleSetVersionRead
 from app.schemas.monitoring import (
+    AccountContentSummary,
     AccountCreate,
     AccountPage,
     AccountRead,
@@ -19,6 +20,7 @@ from app.schemas.monitoring import (
 )
 
 __all__ = [
+    "AccountContentSummary",
     "AccountCreate",
     "AccountPage",
     "AccountRead",

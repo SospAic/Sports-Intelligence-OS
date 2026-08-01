@@ -38,12 +38,28 @@ export function buildAccountExportPath(input: {
   return withQuery("/accounts/export.csv", params);
 }
 
-export function buildAccountDetailPaths(accountId: string) {
+export function buildAccountDetailPaths(
+  accountId: string,
+  options: {
+    sort?: string;
+    order?: SortOrder;
+    publishedFrom?: string | null;
+  } = {},
+) {
   const encoded = encodeURIComponent(accountId);
+  const contentsParams = new URLSearchParams({
+    page: "1",
+    page_size: "20",
+    sort: options.sort ?? "published_at",
+    order: options.order ?? "desc",
+  });
+  if (options.publishedFrom) {
+    contentsParams.set("published_from", options.publishedFrom);
+  }
   return {
     account: `/accounts/${encoded}`,
     snapshots: `/accounts/${encoded}/snapshots?page=1&page_size=100`,
-    contents: `/accounts/${encoded}/contents?page=1&page_size=20`,
+    contents: `/accounts/${encoded}/contents?${contentsParams.toString()}`,
     syncRuns: `/accounts/${encoded}/sync-runs?page=1&page_size=20`,
     automations: "/automations?page=1&page_size=100&entity_type=account",
   } as const;
