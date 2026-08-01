@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -11,12 +9,14 @@ from app.models.operations import AuditEntry
 from app.models.workspace import WorkspaceMembership
 from app.services.bootstrap import bootstrap_admin
 
+from .conftest import PG_ASYNC_URL
+
 ADMIN_PASSWORD = "bootstrap-test-password"  # noqa: S105 - test fixture only
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_creates_owner_and_audit_entry(tmp_path: Path) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'bootstrap.db'}")
+async def test_bootstrap_creates_owner_and_audit_entry() -> None:
+    engine = create_async_engine(PG_ASYNC_URL)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 
@@ -58,8 +58,8 @@ async def test_bootstrap_creates_owner_and_audit_entry(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_rejects_invalid_email_before_writing(tmp_path: Path) -> None:
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'invalid.db'}")
+async def test_bootstrap_rejects_invalid_email_before_writing() -> None:
+    engine = create_async_engine(PG_ASYNC_URL)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 

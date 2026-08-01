@@ -48,6 +48,34 @@ from app.schemas.editorial_rules import (
 )
 
 
+def _sort_sections_parents_first(sections, *, key_of, parent_of):
+    """Order sections so every parent row precedes its children.
+
+    ``RuleSection`` carries a self-referential ``parent_id`` foreign key.
+    PostgreSQL enforces that constraint at insert time, so a child section must
+    be persisted after its parent. SQLite did not enforce foreign keys, which
+    masked this ordering requirement. Sorting by ancestor depth guarantees
+    parents are inserted first regardless of how deeply sections are nested.
+    """
+    by_key = {key_of(item): item for item in sections}
+    depth_cache: dict = {}
+
+    def depth(item) -> int:
+        key = key_of(item)
+        cached = depth_cache.get(key)
+        if cached is not None:
+            return cached
+        parent_key = parent_of(item)
+        if parent_key is None or parent_key not in by_key:
+            value = 0
+        else:
+            value = 1 + depth(by_key[parent_key])
+        depth_cache[key] = value
+        return value
+
+    return sorted(sections, key=lambda item: (depth(item), getattr(item, "sort_order", 0)))
+
+
 class EditorialRuleError(RuntimeError):
     def __init__(self, message: str, *, code: str, status_code: int = 400) -> None:
         super().__init__(message)
@@ -734,7 +762,9 @@ class EditorialRuleService:
                 description=item.description,
                 sort_order=item.sort_order,
             )
-            for item in source.sections
+            for item in _sort_sections_parents_first(
+                source.sections, key_of=lambda s: s.id, parent_of=lambda s: s.parent_id
+            )
         ]
         draft.rules = [
             Rule(
@@ -807,7 +837,9 @@ class EditorialRuleService:
                 description=item.description,
                 sort_order=item.sort_order,
             )
-            for item in document.sections
+            for item in _sort_sections_parents_first(
+                document.sections, key_of=lambda s: s.key, parent_of=lambda s: s.parent_key
+            )
         ]
         version.rules = [
             Rule(

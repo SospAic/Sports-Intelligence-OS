@@ -54,7 +54,7 @@ def upgrade() -> None:
     for table in ("trend_topics", "trend_videos", "trend_keyword_snapshots"):
         bind.execute(
             sa.text(
-                f"UPDATE {table} SET metadata = metadata || jsonb_build_object("
+                f"UPDATE {table} SET metadata = metadata::jsonb || jsonb_build_object("
                 "'source_kind', 'imported', "
                 "'provider', 'legacy_unverified', "
                 "'legacy_provider', metadata->>'provider', "
@@ -71,7 +71,7 @@ def downgrade() -> None:
         bind.execute(
             sa.text(
                 f"UPDATE {table} SET metadata = "
-                "(metadata - 'acceptance_excluded' - 'legacy_provider') || "
+                "(metadata::jsonb - 'acceptance_excluded' - 'legacy_provider') || "
                 "jsonb_build_object('source_kind', 'live', "
                 "'provider', metadata->>'legacy_provider') "
                 "WHERE metadata->>'provider' = 'legacy_unverified' "

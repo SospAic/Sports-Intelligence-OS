@@ -32,7 +32,7 @@ def _seed_account_with_two_contents(
     content_a = uuid4()
     content_b = uuid4()
 
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     with Session(engine) as session:
         assert session.get(Account, account_id) is not None
 

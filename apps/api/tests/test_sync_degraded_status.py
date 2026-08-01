@@ -15,9 +15,7 @@ performs no live requests — ends the sync in ``error`` and releases the accoun
 lock, i.e. the system never reports "success" when no real data could be fetched.
 """
 
-import os
 from datetime import UTC, datetime
-from tempfile import mkstemp
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -32,24 +30,16 @@ from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import RealShapedTestAdapter
+from .conftest import PG_ASYNC_URL, RealShapedTestAdapter
 
 ADAPTER_KEY = "test_sync_adapter"
 SKELETON_KEY = "skeleton_test"
 
 
-def _cleanup(path: str) -> None:
-    """Remove the temporary sqlite file (sync helper avoids ASYNC240)."""
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-
-
 def _build_settings() -> Settings:
     return Settings(
         environment="test",
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=PG_ASYNC_URL,
         redis_url="redis://127.0.0.1:6399/15",
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
@@ -71,39 +61,42 @@ async def _seed(
     adapter_key: str,
 ) -> None:
     s = session  # type: ignore[assignment]
-    s.add(
-        Workspace(
-            id=workspace_id,
-            name="ws",
-            slug="ws",
-            status="active",
-            default_timezone="UTC",
-            row_version=1,
-        )
+    # Stage 1: persist the parent rows (workspace/platform/account) first.
+    # PostgreSQL enforces foreign-key constraints (SQLite did not), so the
+    # SyncRun that references them must be inserted only after they exist.
+    s.add_all(
+        [
+            Workspace(
+                id=workspace_id,
+                name="ws",
+                slug="ws",
+                status="active",
+                default_timezone="UTC",
+                row_version=1,
+            ),
+            Platform(
+                id=platform_id,
+                key="test_platform",
+                name="Test",
+                category="video",
+                enabled=True,
+                adapter_key=adapter_key,
+                capabilities={},
+            ),
+            Account(
+                id=account_id,
+                workspace_id=workspace_id,
+                platform_id=platform_id,
+                external_id="external-001",
+                display_name="测试账号",
+                source_kind="imported",
+                source_provider="manual",
+                fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
+            ),
+        ]
     )
-    s.add(
-        Platform(
-            id=platform_id,
-            key="test_platform",
-            name="Test",
-            category="video",
-            enabled=True,
-            adapter_key=adapter_key,
-            capabilities={},
-        )
-    )
-    s.add(
-        Account(
-            id=account_id,
-            workspace_id=workspace_id,
-            platform_id=platform_id,
-            external_id="external-001",
-            display_name="测试账号",
-            source_kind="imported",
-            source_provider="manual",
-            fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
-        )
-    )
+    await s.commit()
+    # Stage 2: insert the sync run that references the rows above.
     s.add(
         SyncRun(
             id=run_id,
@@ -123,71 +116,61 @@ async def _seed(
 async def test_degraded_sync_account_status_is_degraded() -> None:
     """When account analytics are unavailable, account.sync_status must be the
     honest 'degraded' value (not a falsified 'success')."""
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
 
-        workspace_id = uuid4()
-        platform_id = uuid4()
-        account_id = uuid4()
-        run_id = uuid4()
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
 
-        registry = _build_registry(RealShapedTestAdapter(analytics_all_none=True))
+    registry = _build_registry(RealShapedTestAdapter(analytics_all_none=True))
 
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
 
-        settings = _build_settings()
-        async with maker() as session:
-            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
+    settings = _build_settings()
+    async with maker() as session:
+        await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
 
-        async with maker() as session:
-            account = await session.get(Account, account_id)
-            run = await session.get(SyncRun, run_id)
-            assert run.status == "degraded"
-            assert account.sync_status == "degraded", (
-                "degraded sync must not falsify account.sync_status as 'success'"
-            )
-            assert account.last_sync_error_code == "account_metrics_extraction_failed"
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        account = await session.get(Account, account_id)
+        run = await session.get(SyncRun, run_id)
+        assert run.status == "degraded"
+        assert account.sync_status == "degraded", (
+            "degraded sync must not falsify account.sync_status as 'success'"
+        )
+        assert account.last_sync_error_code == "account_metrics_extraction_failed"
+    await engine.dispose()
 
 
 async def test_successful_sync_account_status_is_success() -> None:
     """Sanity check: when analytics are available, the account ends in 'success'."""
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
 
-        workspace_id = uuid4()
-        platform_id = uuid4()
-        account_id = uuid4()
-        run_id = uuid4()
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
 
-        registry = _build_registry(RealShapedTestAdapter(analytics_all_none=False))
+    registry = _build_registry(RealShapedTestAdapter(analytics_all_none=False))
 
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
 
-        settings = _build_settings()
-        async with maker() as session:
-            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
+    settings = _build_settings()
+    async with maker() as session:
+        await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
 
-        async with maker() as session:
-            account = await session.get(Account, account_id)
-            assert account.sync_status == "success"
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        account = await session.get(Account, account_id)
+        assert account.sync_status == "success"
+    await engine.dispose()
 
 
 class _SkeletonTestAdapter(SkeletonPlatformAdapter):
@@ -206,35 +189,30 @@ async def test_skeleton_adapter_sync_ends_in_error_and_releases_lock() -> None:
     (never 'success'), and the account lock must be released so the account is
     not permanently stuck. This guards the real-data contract: no live data ->
     no fake success, and the lock is never held forever."""
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
 
-        workspace_id = uuid4()
-        platform_id = uuid4()
-        account_id = uuid4()
-        run_id = uuid4()
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
 
-        registry = _build_registry(_SkeletonTestAdapter())
+    registry = _build_registry(_SkeletonTestAdapter())
 
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id, SKELETON_KEY)
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id, SKELETON_KEY)
 
-        settings = _build_settings()
-        async with maker() as session:
-            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
+    settings = _build_settings()
+    async with maker() as session:
+        await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
 
-        async with maker() as session:
-            account = await session.get(Account, account_id)
-            run = await session.get(SyncRun, run_id)
-            assert run.status == "error", "skeleton adapter must not report success"
-            assert account.sync_status == "error"
-            assert run.lock_key is None, "account lock must be released after a failed sync"
-            assert account.last_sync_error_code is not None
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        account = await session.get(Account, account_id)
+        run = await session.get(SyncRun, run_id)
+        assert run.status == "error", "skeleton adapter must not report success"
+        assert account.sync_status == "error"
+        assert run.lock_key is None, "account lock must be released after a failed sync"
+        assert account.last_sync_error_code is not None
+    await engine.dispose()

@@ -19,7 +19,7 @@
 > - **延时类任务终止（红色终止按钮，#64，已验证）**：用户要求「所有延时类任务开始后按钮变为红色终止任务，样式参考行业优秀案例」。后端新增账号同步运行取消能力：`services/sync.py` 增加模块级 `cancel_sync_run` 与 `SyncService.cancel_sync_run`（幂等、释放 `lock_key`、账号置 `cancelled`、best-effort `sync_account.revoke(terminate=True)` 包裹于 try/except），并新增执行器 `_aborted(run)` 守卫在阶段边界（校验后 / 账号资料提交后 / 派生指标提交后）安全中止正在运行的同步；`models/sync.py` 与 `models/monitoring.py` 的 `sync_run_status` / `account_sync_status` CHECK 约束增加 `'cancelled'`，新增迁移 `20260801_0023_sync_run_cancelled_status.py`；`schemas/monitoring.py` 的 `AccountSyncStatus` 与 `SyncRunRead.status` Literal 同步增加 `'cancelled'`。新增两个端点：`POST /accounts/{account_id}/sync/{run_id}/cancel`（账号级）与 `POST /operations/tasks/{task_id}/cancel`（统一操作台，`category=platform_sync` 时复用同一取消逻辑，其余类别按项目"不伪造成功"红线返回 501 `unsupported_task_cancel`，而非伪装支持）。前端新增可复用两步确认 `TerminateButton` 组件（首次点击进入"确认终止？"武装态、3 秒自动复位、终止中显示旋转与"终止中…"，红色参考 Vercel / GitHub Actions / AWS 的 Stop/Cancel 行业范式），新增 `dangerButtonClass` 设计令牌；接入账号详情页头部（同步中/排队中显示红色终止）、同步进度面板、同步记录活动行，以及统一任务看板的"操作"列（`platform_sync` 活动任务显示红色终止按钮，非活动显示"—"，其他类别活动任务显示"暂不支持"）。新增契约/集成测试：`test_sync_cancel.py`（6 项，服务级取消幂等与执行器跳过）、`test_monitoring_api.py` 取消路由 3 项（含 501 路径）、`terminate-button.test.tsx`（4 项，RTL）。后端 Mypy strict、Ruff 全绿；前端 TypeScript、ESLint（0 error / 0 warning）、Vitest 全绿。
 
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
-> - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 SQLite / Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
+> - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。
 > - **未提交工作**：本会话（2026-08-01 收尾）在 `codex/full-repair-real-data` 分支一次性新增了优化 D（play_follower_ratio 相对指标 + 迁移 + 测试）、P1-5 新闻预览 Drawer、P1-7 全局键盘快捷键、P2-3 新闻聚类视图，连同此前 2026-08-01 维护（适配器能力端点、账号历史曲线、错误徽章及对应前端/测试）共约 160 个文件变更，已全部通过 Ruff/Mypy/Pytest(81)/tsc/ESLint/Vitest(38) 质量门禁，并以**仅本地提交、不推送**的方式保护，避免丢失；推送前仍须按 `docs/FIRST_DELIVERY_REPORT.md` 在具备 Docker Compose v2 与目标凭证的环境做 PostgreSQL/Redis 实机验收。
 
@@ -104,6 +104,24 @@
 - 本轮未实施、诚实列为下一迭代的 UX/架构项（未以静态页面、占位或硬编码冒充完成）：P1-1 Radix 弹窗/对话框重构（渐进替换手写弹窗）、P1-6 批量操作工具栏（需后端批量 API）、P1-8 虚拟滚动（依赖 `@tanstack/react-virtual`，当前前端镜像未安装，需装依赖并重建镜像）、P2-1 全局时间范围选择器（需统一各查询时间参数）、P2-2 平台对比模式（需后端对比聚合 API）、P2-4 亮/暗主题正式化（当前 light 以 CSS 覆盖，需重构为 CSS 变量设计令牌）、P2-5 内容日历视图（需新增日历数据模型）；优化 B 采集频率自适应（按视频发布时间动态调整 Celery Beat 间隔）仍为下一迭代。
 
 ---
+
+### 2026-08-01 SQLite 数据链移除与 PostgreSQL 唯一数据链路落地
+
+**目标**：按用户要求删除 SQLite 数据链，仅保留原计划的 PostgreSQL + Redis + Celery 正式数据链路；测试套件与数据库迁移全部改为在真实本地 Docker PostgreSQL 上验证。
+
+**范围与结果**
+- 测试套件（101 项）已全部从 SQLite（aiosqlite/sqlite）迁移到本地 Docker PostgreSQL（`sports_intelligence_test`）：conftest 改为会话级建库 + 函数级 `TRUNCATE ... RESTART IDENTITY CASCADE`（排除 `alembic_version`），所有测试使用 `postgresql+asyncpg` / `postgresql+psycopg` 连接串。
+- 生产代码移除 SQLite 适配分支（`app/db/session.py`、`search.py`、`settings.py` 等）；全局搜索在 PostgreSQL 下统一使用 `to_tsvector`/`plainto_tsquery`/`ts_rank`，中文查询因默认 tsvector 不支持分词回退到 `ilike`。
+- 删除废弃的 SQLite 验证脚本 `scripts/verify_sqlite_migration.py` 与孤立的 `data/local-runtime.sqlite3` 数据文件。
+
+**迁移过程中暴露并修复的生产级 PostgreSQL Bug（SQLite 不强制外键/类型而长期被掩盖）**
+- `rule_sections.parent_id` 自引用外键：批量插入须父节点先于子节点，否则 PostgreSQL 报外键违反。新增 `_sort_sections_parents_first` 拓扑排序，应用于 `_materialize_document`（导入，覆盖 txt 与 json）与 `_clone_version`（由已发布版本克隆草稿）。
+- Alembic 数据迁移 `20260729_0014`：`trend_topics` 等表的 `metadata` 为 `json` 类型，原 SQL 使用 `|| jsonb_build_object(...)`（`json || jsonb` 在 PostgreSQL 无对应操作符）。已对 `metadata` 增加 `::jsonb` 强制转换（upgrade 与 downgrade 同步修复）。
+- 模型/迁移漂移：模型声明了两个未被任何迁移创建的索引（`ix_notification_templates_workspace_category`、`ix_template_versions_template_status`）。新增迁移 `20260801_0024_add_notification_template_indexes.py` 补齐，使 `alembic upgrade head` 与 `Base.metadata.create_all` 产出的 schema 一致；已验证 `alembic upgrade head` 全链通过、`alembic check` 无漂移、0024/0023 可降级还原。
+
+**验证**
+- 完整后端测试套件在本地 Docker PostgreSQL 上 **101 passed, 0 failed**。
+- `alembic upgrade head` 在全新 PostgreSQL 数据库上 24 个迁移全部成功，`alembic check` 报 "No new upgrade operations detected"。
 
 ### 2026-07-31 清单全量闭环、LLM 网关与 E2E 基础设施
 
@@ -339,11 +357,11 @@
 | Next.js production build | 通过，静态页面生成 22/22，动态路由编译成功 |
 | 本地 HTTP 冒烟 | FastAPI 健康检查与 Next 登录页均返回 200 |
 | 浏览器可视化点击 | 通过本地登录后的设置中心与一键内容创作验收：素材、规则、LLM 配置和通知字段均由真实 API 驱动 |
-| Alembic | 临时 SQLite 完成 0001 → 0010 升级，并核对 40 张表；模型与迁移契约通过 |
+| Alembic | 本地 Docker PostgreSQL 完成 0001 → 0024 升级（24 个迁移），并核对 52 张表；模型与迁移契约通过（`alembic check` 无漂移） |
 | Compose 静态校验 | 通过，7 个服务、4 个健康检查、依赖门与数据卷符合约束 |
 | `docker compose config --quiet` | 本机现已安装 Docker v29.6.2，应在目标环境执行；CI 亦配置为强制执行 |
 
-本机也没有 `make`，因此 Make 目标通过静态契约检查；各目标所调用的底层命令已分别验证。PostgreSQL 容器上的迁移和整套 Compose 启动仍需在具有 Docker 的环境由 CI 或开发者复核，不能把 SQLite 迁移测试描述为 PostgreSQL 实机验证。
+本机也没有 `make`，因此 Make 目标通过静态契约检查；各目标所调用的底层命令已分别验证。Alembic 迁移（0001 → 0024）已在本地 Docker PostgreSQL 上 `upgrade head` 全链通过并 `alembic check` 无漂移；整套 Compose（含 Worker/Beat/Web/Caddy）启动仍建议在目标环境复核。
 
 ## 数据真实性声明
 
@@ -358,17 +376,17 @@ YouTube 官方 Data API Adapter 已实现，但本机没有 API Key，真实调�
 - 规则树已支持按需加载分页；数万规则规模的虚拟滚动尚未实现。
 - Research 首期只使用已持久化输入和来源，未实现通用联网搜索工具；OpenAI 兼容 Provider 已支持流式 SSE 预览，但生成工作流仍使用非流式批量调用。
 - 自动化首期为 30 秒级近实时扫描，不是消息总线级实时。
-- 全局搜索在 PostgreSQL 下使用 `to_tsvector` / `plainto_tsquery` / `ts_rank` 实现词干提取和相关性排序；SQLite 开发环境回退到 ilike 模式匹配。超大数据量场景的 GIN 索引和分区尚未实现。
-- 已具备 SQLite 隔离的 API/领域测试、React 组件测试和完整 Mock 垂直链路；PostgreSQL/Redis 容器集成已在 Docker 环境验证通过（2026-07-28）。
+- 全局搜索在 PostgreSQL 下使用 `to_tsvector` / `plainto_tsquery` / `ts_rank` 实现词干提取和相关性排序；中文查询因 PostgreSQL 默认 tsvector 不支持分词，回退到 ilike 模式匹配。超大数据量场景的 GIN 索引和分区尚未实现。
+- 后端测试套件（101 项）全部运行于本地 Docker PostgreSQL 隔离数据库；前端 React 组件测试与完整 Mock 垂直链路通过；PostgreSQL/Redis 容器集成已在 Docker 环境验证通过（2026-07-28 起，2026-08-01 完成 SQLite 全量迁移后转为 PostgreSQL 唯一数据链路）。
 
 ## 阶段结论
 
-Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一步不是继续增加首期功能，而是在具备 Docker Compose v2 和用户测试凭证的目标环境执行 `docs/FIRST_DELIVERY_REPORT.md` 中的实机验收；仍不把 SQLite、Mock 或静态 Compose 校验描述成 PostgreSQL/Redis/真实平台成功。
+Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一步不是继续增加首期功能，而是在具备 Docker Compose v2 和用户测试凭证的目标环境执行 `docs/FIRST_DELIVERY_REPORT.md` 中的实机验收；仍不把 Mock 或静态 Compose 校验描述成 PostgreSQL/Redis/真实平台成功。
 
 ## 2026-07-26 本地运行与行业对标补充
 
 - 当前 Windows 主机仍未安装 Docker/Podman、PostgreSQL、Redis、Make 和 GitHub CLI；因此不能执行完整 Compose、Worker 或 Beat 实机验收。
-- 使用独立 SQLite 开发数据库完成 0001–0010 迁移，并初始化本地管理员、平台目录、显式 Demo/Mock 监控数据、停用的新闻源示例、完整 7.9 规则、默认 Prompt/工作流和停用的自动化示例。
+- 使用独立 SQLite 开发数据库完成 0001–0010 迁移，并初始化本地管理员、平台目录、显式 Demo/Mock 监控数据、停用的新闻源示例、完整 7.9 规则、默认 Prompt/工作流和停用的自动化示例。（该 SQLite 开发数据库已于 2026-08-01 随 SQLite 数据链整体移除，系统现仅使用 PostgreSQL。）
 - FastAPI `/health/live`、Next `/login`、真实登录、`/api/v1/me`、Dashboard 和账号 API 均返回 200；账号响应保留 Mock 标记。Redis 缺失时 `/health/ready` 如实返回 503，未将降级开发模式描述为全栈就绪。
 - 行业官方产品资料对标与第二阶段建议见 `docs/INDUSTRY_BENCHMARK_AND_OPTIMIZATION.md`。优先级是表现归因闭环、趋势异常解释、跨语言事件与事实证据、人工审批，以及 Outbox/死信/重放可靠性。
 - 上传前全量检查通过：后端 45 项、前端 21 项、仓库与验收脚本 27 项测试通过；Ruff、Mypy、TypeScript、ESLint、Prettier 和 Compose 静态校验通过。验收脚本新增 HTTP(S) 同源限制，拒绝非 HTTP scheme、URL 明文凭证和跨源绝对路径。
@@ -388,7 +406,7 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 新增工作区 OpenAI 兼容 LLM 配置、默认模型与采样参数、成本、超时、重试、自定义请求头、真实连接测试和 SSRF 公网地址校验；API Key 与自定义头只在后端加密保存。手动生成、Worker 和自动化生成均读取同一生效配置。
 - Email、Generic Webhook、Telegram、Discord、飞书、钉钉和企业微信 Provider 均通过统一字段描述契约驱动前端，支持各自的超时、重试、签名、提及、解析模式等参数；编辑时空白 Secret 保留旧值，显式操作才能清除。
 - 登录失败限流改为数据库共享窗口，身份和客户端地址仅保存 HMAC；新增每小时会话/登录尝试清理任务。浏览器验收同时修复通知凭证表单被密码管理器误填的风险。
-- 当前全量结果：后端 52 项、前端 25 项、仓库契约 35 项测试通过；Ruff、Mypy strict（120 个源文件）、TypeScript、ESLint、Prettier、Next.js 生产构建和 Compose 静态校验通过；迁移 0001–0010 共 40 张表通过临时 SQLite 验证。
+- 当前全量结果：后端 52 项、前端 25 项、仓库契约 35 项测试通过；Ruff、Mypy strict（120 个源文件）、TypeScript、ESLint、Prettier、Next.js 生产构建和 Compose 静态校验通过；Alembic 迁移经 PostgreSQL 验证（系统已于 2026-08-01 移除 SQLite，仅保留 PostgreSQL 数据链路）。
 
 ## 2026-07-27 7.9 完整输出包扩展
 
@@ -558,7 +576,7 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 
 ### 全局搜索升级为 PostgreSQL tsvector
 
-- `SearchService` 运行时检测数据库方言：PostgreSQL 使用 `to_tsvector`/`plainto_tsquery`/`ts_rank`，SQLite 回退到 `ilike`。
+- `SearchService` 在 PostgreSQL 下使用 `to_tsvector` / `plainto_tsquery` / `ts_rank`；中文查询因默认 tsvector 不支持分词，回退到 `ilike`。系统已不再支持 SQLite 方言。
 - 9 类实体搜索全部升级为双路径实现，PostgreSQL 下支持词干提取和相关性排序。
 - 搜索响应新增 `search_backend` 字段标识当前使用的后端（`tsvector` 或 `ilike`）。
 

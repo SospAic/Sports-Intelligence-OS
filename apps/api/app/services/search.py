@@ -3,9 +3,11 @@
 Provides unified search across all major entity types in the Sports Intelligence OS
 platform, with relevance scoring, snippet highlighting, and pagination.
 
-PostgreSQL deployments use ``to_tsvector`` / ``plainto_tsquery`` / ``ts_rank`` for
-stemming, ranking and GIN-index utilisation.  Other dialects (SQLite, etc.) fall back
-to ``ilike '%query%'`` with the original heuristic scoring.
+PostgreSQL is the only supported database.  Search uses ``to_tsvector`` /
+``plainto_tsquery`` / ``ts_rank`` for stemming, ranking and GIN-index utilisation.
+Because PostgreSQL's built-in ``english`` dictionary does not segment CJK text,
+Chinese queries fall back to a literal ``ilike '%query%'`` match (the same
+heuristic scoring used for Latin queries when tsvector is unavailable).
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ class SearchPage(BaseModel):
     page_size: int = Field(default=20, ge=1, le=100)
     pages: int = Field(default=0, description="Total number of pages")
     query: str = Field(default="")
-    search_backend: str = Field(default="ilike", description="Active search backend")
+    search_backend: str = Field(default="tsvector", description="Active search backend")
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +145,6 @@ class _RawHit:
     sort_timestamp: Any
 
 
-def _is_postgres(session: AsyncSession) -> bool:
-    """Return True if the session is connected to PostgreSQL."""
-    return session.bind.dialect.name == "postgresql" if session.bind else False
-
-
 def _coalesce_text(column: Any) -> Any:
     """Coalesce a nullable column to empty string and cast to text for tsvector."""
     return func.coalesce(cast(column, String), "")
@@ -187,23 +184,24 @@ def _ts_rank(query: str, *columns: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 class SearchService:
-    """Cross-domain full-text search with PostgreSQL tsvector and ilike fallback."""
+    """Cross-domain full-text search backed by PostgreSQL tsvector (with an
+    ``ilike`` fallback for CJK queries that the English dictionary cannot segment).
+    """
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
-        self._pg = _is_postgres(db)
 
     @property
     def backend(self) -> str:
-        return "tsvector" if self._pg else "ilike"
+        return "tsvector"
 
     def _uses_tsvector(self, query: str) -> bool:
         """Use the English dictionary only when it can actually tokenize the query.
 
         PostgreSQL's built-in ``english`` configuration does not segment CJK text,
-        so Chinese queries need the literal ``ilike`` path even in production.
+        so Chinese queries need the literal ``ilike`` path.
         """
-        return self._pg and _CJK_PATTERN.search(query) is None
+        return _CJK_PATTERN.search(query) is None
 
     def _backend_for(self, query: str) -> str:
         return "tsvector" if self._uses_tsvector(query) else "ilike"

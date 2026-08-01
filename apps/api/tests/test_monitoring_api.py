@@ -145,7 +145,7 @@ async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
 
     settings = Settings(
         environment="test",
-        database_url=f"sqlite+aiosqlite:///{database_path}",
+        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
         redis_url="redis://127.0.0.1:6399/15",
         secret_key="test-only-secret-not-used-in-production",
         sync_page_limit=2,
@@ -205,7 +205,7 @@ def test_content_filters_history_metrics_and_csv_export(
     now = datetime.now(UTC)
     content_id = uuid4()
 
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     with Session(engine) as session:
         account = session.get(Account, UUID(account_id))
         assert account is not None
@@ -365,7 +365,7 @@ def test_account_metrics_history_returns_ascending_series_within_window(
     account_id = UUID(account["id"])
     now = datetime.now(UTC)
 
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     with Session(engine) as session:
         assert session.get(Account, account_id) is not None
         session.add_all(
@@ -449,7 +449,7 @@ def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
     csrf_token = authenticate(client)
     account_data = create_account(client, csrf_token)
     now = datetime.now(UTC)
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     with Session(engine) as session:
         account = session.get(Account, UUID(account_data["id"]))
         assert account is not None
@@ -551,9 +551,9 @@ def test_cancel_sync_run_route_cancels_queued_run(
     the account into the 'cancelled' state via the real HTTP surface.
 
     The queued run is created through the real sync endpoint (with the background
-    broker monkeypatched to a no-op) instead of a separate synchronous engine, so
-    the async app and the test never hold conflicting SQLite locks on the same
-    file when the whole module is collected together.
+    broker monkeypatched to a no-op) instead of a separate engine, so the async
+    app and the test never contend for the same connection/transaction when the
+    whole module is collected together.
     """
     dispatched: list[UUID] = []
     monkeypatch.setattr(

@@ -439,7 +439,7 @@ def test_notification_channel_edit_preserves_blank_secrets(
     )
     assert updated.status_code == 200, updated.text
 
-    sync_engine = create_engine(f"sqlite:///{database_path}")
+    sync_engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     try:
         with Session(sync_engine) as session:
             channel = session.scalar(

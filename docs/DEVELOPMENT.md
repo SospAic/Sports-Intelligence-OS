@@ -4,7 +4,7 @@
 
 - Python 3.12
 - Node.js 24、pnpm 11.9
-- PostgreSQL 17、Redis 7.4；单元测试可使用临时 SQLite
+- PostgreSQL 17、Redis 7.4；单元测试使用本地 Docker PostgreSQL 隔离数据库
 
 ```powershell
 python -m venv .venv
@@ -45,7 +45,7 @@ pnpm dev
 
 - 模型变更必须增加 Alembic 迁移，并执行 upgrade、downgrade、re-upgrade 与 `alembic check`。
 - 快照表 append-only，禁止更新历史行。
-- 时间写入 UTC；从 SQLite 或外部 Provider 读取的无时区时间必须在边界归一化。
+- 时间写入 UTC；从外部 Provider 读取的无时区时间必须在边界归一化。
 - 高频公共字段结构化，平台低频字段进入 `metadata`。
 
 ## 新接入边界

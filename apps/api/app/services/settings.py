@@ -287,7 +287,7 @@ class SettingsService:
                             database.database,
                             "text",
                             "SIO_DATABASE_URL",
-                            "数据库名或 SQLite 文件。",
+                            "数据库名（PostgreSQL 连接串中的数据库部分）。",
                         ),
                         self._field(
                             "database_username",

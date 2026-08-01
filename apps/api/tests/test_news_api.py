@@ -270,7 +270,7 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     )
     registry: ProviderRegistry[NewsProvider] = ProviderRegistry()
     registry.register(RSSProvider(client=http_client, max_attempts=1))
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    engine = create_async_engine(f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as session:

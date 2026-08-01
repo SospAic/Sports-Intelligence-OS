@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.adapters.platforms.base import (
@@ -42,15 +42,83 @@ from app.providers.llm.base import (
 TEST_PASSWORD = "correct-horse-battery-staple"  # noqa: S105 - test fixture only
 TEST_PLATFORM_ID = uuid4()
 
+# ---------------------------------------------------------------------------
+# PostgreSQL is the only supported database (Sports Intelligence OS "official"
+# data chain). Tests run against a dedicated test database so the development
+# database is never touched. Each test is isolated by truncating every table
+# before it runs (see the ``isolate_db`` autouse fixture).
+# ---------------------------------------------------------------------------
+POSTGRES_TEST_DB = "sports_intelligence_test"
+_PG_USER = "sio"
+_PG_PASSWORD = "sio-local-development-only"
+_PG_HOST = "127.0.0.1"
+_PG_PORT = 5432
+
+PG_ASYNC_URL = (
+    f"postgresql+asyncpg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{POSTGRES_TEST_DB}"
+)
+PG_SYNC_URL = (
+    f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{POSTGRES_TEST_DB}"
+)
+
+_TRUNCATE_ALL = (
+    "DO $$ DECLARE r RECORD; BEGIN "
+    "FOR r IN SELECT tablename FROM pg_tables "
+    "WHERE schemaname = 'public' AND tablename <> 'alembic_version' "
+    "LOOP EXECUTE format('TRUNCATE TABLE public.%I RESTART IDENTITY CASCADE', r.tablename); "
+    "END LOOP; END $$;"
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_test_db() -> Iterator[None]:
+    """Create the dedicated test database and schema once per session."""
+    admin_engine = create_engine(
+        f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/postgres",
+        isolation_level="AUTOCOMMIT",
+    )
+    with admin_engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM pg_database WHERE datname = :name"),
+            {"name": POSTGRES_TEST_DB},
+        ).scalar()
+        if not exists:
+            conn.execute(text(f'CREATE DATABASE "{POSTGRES_TEST_DB}"'))
+    admin_engine.dispose()
+
+    engine = create_engine(PG_SYNC_URL)
+    Base.metadata.create_all(engine)
+    engine.dispose()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def isolate_db() -> Iterator[None]:
+    """Truncate every table before each test so tests never leak state."""
+    engine = create_engine(PG_SYNC_URL)
+    with engine.connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text(_TRUNCATE_ALL))
+    engine.dispose()
+    yield
+
 
 @pytest.fixture
-def database_path(tmp_path: Path) -> Path:
-    return tmp_path / "test.db"
+def database_path() -> str:
+    """Name of the dedicated PostgreSQL test database (shared across tests).
+
+    Tests build their engine URLs from this name; per-test isolation is handled
+    by the ``isolate_db`` autouse fixture, mirroring the previous per-file
+    SQLite database behaviour.
+    """
+    return POSTGRES_TEST_DB
 
 
-def _seed_database(database_path: Path) -> None:
+def _seed_database(database_path: str) -> None:
     """Create tables and seed test data using a synchronous engine."""
-    sync_engine = create_engine(f"sqlite:///{database_path}")
+    sync_engine = create_engine(
+        f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{database_path}"
+    )
     Base.metadata.create_all(sync_engine)
 
     workspace_id = uuid4()
@@ -107,11 +175,13 @@ def _seed_database(database_path: Path) -> None:
     sync_engine.dispose()
 
 
-def _build_test_app(database_path: Path) -> FastAPI:
+def _build_test_app(database_path: str) -> FastAPI:
     """Build a configured FastAPI app pointing at the test database."""
     settings = Settings(
         environment="test",
-        database_url=f"sqlite+aiosqlite:///{database_path}",
+        database_url=(
+            f"postgresql+asyncpg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{database_path}"
+        ),
         redis_url="redis://127.0.0.1:6399/15",
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
@@ -122,7 +192,7 @@ def _build_test_app(database_path: Path) -> FastAPI:
 
 
 @pytest.fixture
-def client(database_path: Path) -> Iterator[TestClient]:
+def client(database_path: str) -> Iterator[TestClient]:
     """Synchronous test client (Starlette TestClient backed by httpx)."""
     _seed_database(database_path)
     app = _build_test_app(database_path)
@@ -131,7 +201,7 @@ def client(database_path: Path) -> Iterator[TestClient]:
 
 
 @pytest.fixture
-async def async_client(database_path: Path) -> AsyncIterator[httpx.AsyncClient]:
+async def async_client(database_path: str) -> AsyncIterator[httpx.AsyncClient]:
     """Async test client using httpx.AsyncClient with ASGITransport.
 
     This is the modern replacement for the deprecated ``app=`` shortcut on
@@ -370,7 +440,7 @@ class StubLLMProvider(LLMProvider):
             "tts_en": narration.replace("\n", " "),
             "translation_zh": "桩测试输出：该内容只用于验证工作流，不代表真实联网生成结果。",
             "video_title_en": "🏟️ STUB LLM — Sports Workflow Verification",
-            "video_title_zh": "🏟️ 桩测试｜体育工作流验证",
+            "video_title_zh": "🏟️ 桩流程验证",
             "search_keywords": ["STUB SPORTS WORKFLOW", "TEST EVENT TIMELINE"],
             "material_keywords": ["stub sports footage", "workflow test timeline"],
             "tags": ["STUB", "TEST_ONLY", "SPORTS_WORKFLOW"],

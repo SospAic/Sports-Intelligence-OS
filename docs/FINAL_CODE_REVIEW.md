@@ -15,7 +15,7 @@
 
 | 严重度 | 问题 | 处理结果 |
 | --- | --- | --- |
-| High | SQLite 返回无时区时间时，增量同步会与 UTC 时间直接比较并异常 | 已统一转换为 UTC；完整 Mock 垂直链路回归通过 |
+| High | 数据库或外部 Provider 返回无时区时间时，增量同步会与 UTC 时间直接比较并异常 | 已统一转换为 UTC（系统已移除 SQLite，连接层保证时区感知）；完整 Mock 垂直链路回归通过 |
 | High | 自动化模板的 `entity_id` 可与事实字段重复传参，导致动作链失败 | 已过滤保留模板键；端到端自动化链路通过 |
 | High | RSS/JSON 源只拦截字面私网 IP，公网域名解析到内网时仍可能 SSRF | 已在每次真实请求前解析全部地址并拒绝非公网地址；同时禁止新闻源 URL 明文凭证和敏感查询参数 |
 | High | 派生指标在缺少历史样本时写入零速度、零加速度；30 天中位数使用了全量作品 | 缺少样本时不再写入速度/加速度；基线只统计 30 天内发布且有播放快照的作品；不完整爆款评分写入组件说明 |
@@ -38,7 +38,7 @@
 - 账号/作品、新闻、规则、Prompt、自动化和运维记录按工作区隔离。
 - 作品和快照有唯一约束；账号与作品快照由 ORM 监听器禁止更新，只能追加。
 - 发布后的规则和 Prompt 通过创建草稿版本修改；生成运行固定记录规则版本和 Prompt 版本。
-- 计数使用 `BigInteger`，比例使用约束后的 `Numeric`；时间字段使用 UTC 语义，服务层兼容 SQLite 无时区返回。
+- 计数使用 `BigInteger`，比例使用约束后的 `Numeric`；时间字段使用 UTC 语义，服务层统一处理无时区输入。
 
 ### 安全
 
@@ -67,4 +67,4 @@
 - Caddy 统一入口；
 - 使用真实 YouTube、外部 RSS、真实 LLM 或真实通知凭证的调用。
 
-这些项目不能由 SQLite、Mock Transport 或静态 Compose 解析替代，目标环境必须按 `docs/DEPLOYMENT.md` 和 `docs/FIRST_DELIVERY_REPORT.md` 重新验收。
+这些项目不能由 Mock Transport 或静态 Compose 解析替代，目标环境必须按 `docs/DEPLOYMENT.md` 和 `docs/FIRST_DELIVERY_REPORT.md` 重新验收。

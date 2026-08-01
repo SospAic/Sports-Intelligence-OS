@@ -2,16 +2,14 @@
 
 These tests verify the *decision and audit* logic of cancelling a queued/running
 sync run: the run is marked ``cancelled``, the account lock is released, and an
-already-terminal run is left untouched (idempotent). They use an in-memory
-SQLite database with a seeded account and sync run — no live platform calls.
+already-terminal run is left untouched (idempotent). They use the shared
+PostgreSQL test database (``sports_intelligence_test``) — no live platform calls.
 
 Per the project's no-fake-success rule, cancellation only records intent against
 the persisted run; it never asserts a successful platform call.
 """
 
-import os
 from datetime import UTC, datetime
-from tempfile import mkstemp
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -29,18 +27,13 @@ from app.services.sync import (
     cancel_sync_run,
 )
 
-
-def _cleanup(path: str) -> None:
-    try:
-        os.remove(path)
-    except OSError:
-        pass
+from .conftest import PG_ASYNC_URL
 
 
 def _build_settings() -> Settings:
     return Settings(
         environment="test",
-        database_url="sqlite+aiosqlite:///:memory:",
+        database_url=PG_ASYNC_URL,
         redis_url="redis://127.0.0.1:6399/15",
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
@@ -62,40 +55,43 @@ async def _seed(
     lock_key: str | None = "account:acct",
 ) -> None:
     s = session  # type: ignore[assignment]
-    s.add(
-        Workspace(
-            id=workspace_id,
-            name="ws",
-            slug="ws",
-            status="active",
-            default_timezone="UTC",
-            row_version=1,
-        )
+    # Stage 1: persist the parent rows (workspace/platform/account) first.
+    # PostgreSQL enforces foreign-key constraints (SQLite did not), so the
+    # SyncRun that references them must be inserted only after they exist.
+    s.add_all(
+        [
+            Workspace(
+                id=workspace_id,
+                name="ws",
+                slug="ws",
+                status="active",
+                default_timezone="UTC",
+                row_version=1,
+            ),
+            Platform(
+                id=platform_id,
+                key="test_platform",
+                name="Test",
+                category="video",
+                enabled=True,
+                adapter_key="test_adapter",
+                capabilities={},
+            ),
+            Account(
+                id=account_id,
+                workspace_id=workspace_id,
+                platform_id=platform_id,
+                external_id="external-001",
+                display_name="测试账号",
+                source_kind="imported",
+                source_provider="manual",
+                sync_status="never",
+                fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
+            ),
+        ]
     )
-    s.add(
-        Platform(
-            id=platform_id,
-            key="test_platform",
-            name="Test",
-            category="video",
-            enabled=True,
-            adapter_key="test_adapter",
-            capabilities={},
-        )
-    )
-    s.add(
-        Account(
-            id=account_id,
-            workspace_id=workspace_id,
-            platform_id=platform_id,
-            external_id="external-001",
-            display_name="测试账号",
-            source_kind="imported",
-            source_provider="manual",
-            sync_status="never",
-            fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
-        )
-    )
+    await s.commit()
+    # Stage 2: insert the sync run that references the rows above.
     s.add(
         SyncRun(
             id=run_id,
@@ -114,173 +110,148 @@ async def _seed(
 
 
 async def test_cancel_queued_run_marks_cancelled_and_releases_lock() -> None:
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
-        )
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id)
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id)
 
-        async with maker() as session:
-            result = await cancel_sync_run(session, workspace_id, run_id)
+    async with maker() as session:
+        result = await cancel_sync_run(session, workspace_id, run_id)
 
-        async with maker() as session:
-            run = await session.get(SyncRun, run_id)
-            account = await session.get(Account, account_id)
-            assert run.status == "cancelled"
-            assert run.lock_key is None
-            assert run.finished_at is not None
-            assert run.progress_stage == "cancelled"
-            assert account.sync_status == "cancelled"
-            assert result.status == "cancelled"
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        account = await session.get(Account, account_id)
+        assert run.status == "cancelled"
+        assert run.lock_key is None
+        assert run.finished_at is not None
+        assert run.progress_stage == "cancelled"
+        assert account.sync_status == "cancelled"
+        assert result.status == "cancelled"
+    await engine.dispose()
 
 
 async def test_cancel_running_run_marks_cancelled() -> None:
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    async with maker() as session:
+        await _seed(
+            session, workspace_id, platform_id, account_id, run_id, run_status="running"
         )
-        async with maker() as session:
-            await _seed(
-                session, workspace_id, platform_id, account_id, run_id, run_status="running"
-            )
 
-        async with maker() as session:
-            await cancel_sync_run(session, workspace_id, run_id)
+    async with maker() as session:
+        await cancel_sync_run(session, workspace_id, run_id)
 
-        async with maker() as session:
-            run = await session.get(SyncRun, run_id)
-            assert run.status == "cancelled"
-            assert run.lock_key is None
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        assert run.status == "cancelled"
+        assert run.lock_key is None
+    await engine.dispose()
 
 
 async def test_cancel_terminal_run_is_idempotent() -> None:
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    async with maker() as session:
+        await _seed(
+            session, workspace_id, platform_id, account_id, run_id, run_status="success"
         )
-        async with maker() as session:
-            await _seed(
-                session, workspace_id, platform_id, account_id, run_id, run_status="success"
-            )
 
-        async with maker() as session:
-            result = await cancel_sync_run(session, workspace_id, run_id)
+    async with maker() as session:
+        result = await cancel_sync_run(session, workspace_id, run_id)
 
-        async with maker() as session:
-            run = await session.get(SyncRun, run_id)
-            assert run.status == "success", "terminal run must not be mutated"
-            assert result.status == "success"
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        assert run.status == "success", "terminal run must not be mutated"
+        assert result.status == "success"
+    await engine.dispose()
 
 
 async def test_cancel_missing_workspace_raises_not_found() -> None:
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
-        )
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id)
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id)
 
-        async with maker() as session:
-            try:
-                await cancel_sync_run(session, uuid4(), run_id)
-                raise AssertionError("expected SyncNotFoundError")
-            except SyncNotFoundError:
-                pass
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        try:
+            await cancel_sync_run(session, uuid4(), run_id)
+            raise AssertionError("expected SyncNotFoundError")
+        except SyncNotFoundError:
+            pass
+    await engine.dispose()
 
 
 async def test_service_cancel_rejects_run_not_belonging_to_account() -> None:
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
-        )
-        other_account_id = uuid4()
-        async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id)
-            # A real second account in the same workspace — exists, but is not the
-            # run's target. The cancel must be rejected with SyncValidationError.
-            session.add(
-                Account(
-                    id=other_account_id,
-                    workspace_id=workspace_id,
-                    platform_id=platform_id,
-                    external_id="external-002",
-                    display_name="其它账号",
-                    source_kind="imported",
-                    source_provider="manual",
-                    sync_status="never",
-                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
-                )
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    other_account_id = uuid4()
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id)
+        # A real second account in the same workspace — exists, but is not the
+        # run's target. The cancel must be rejected with SyncValidationError.
+        session.add(
+            Account(
+                id=other_account_id,
+                workspace_id=workspace_id,
+                platform_id=platform_id,
+                external_id="external-002",
+                display_name="其它账号",
+                source_kind="imported",
+                source_provider="manual",
+                sync_status="never",
+                fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
             )
-            await session.commit()
+        )
+        await session.commit()
 
-        async with maker() as session:
-            service = SyncService(session, _build_registry(), _build_settings())
-            try:
-                await service.cancel_sync_run(workspace_id, other_account_id, run_id)
-                raise AssertionError("expected SyncValidationError")
-            except SyncValidationError:
-                pass
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        service = SyncService(session, _build_registry(), _build_settings())
+        try:
+            await service.cancel_sync_run(workspace_id, other_account_id, run_id)
+            raise AssertionError("expected SyncValidationError")
+        except SyncValidationError:
+            pass
+    await engine.dispose()
 
 
 async def test_executor_skips_already_cancelled_run() -> None:
@@ -288,40 +259,35 @@ async def test_executor_skips_already_cancelled_run() -> None:
     must early-exit and must not flip the account into 'syncing'."""
     from app.services.sync import PlatformSyncExecutor
 
-    fd, path = mkstemp(suffix=".db")
-    os.close(fd)
-    try:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        workspace_id, platform_id, account_id, run_id = (
-            uuid4(),
-            uuid4(),
-            uuid4(),
-            uuid4(),
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    workspace_id, platform_id, account_id, run_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    async with maker() as session:
+        await _seed(
+            session,
+            workspace_id,
+            platform_id,
+            account_id,
+            run_id,
+            run_status="cancelled",
+            lock_key=None,
         )
-        async with maker() as session:
-            await _seed(
-                session,
-                workspace_id,
-                platform_id,
-                account_id,
-                run_id,
-                run_status="cancelled",
-                lock_key=None,
-            )
 
-        async with maker() as session:
-            await PlatformSyncExecutor(
-                session, _build_registry(), _build_settings()
-            ).execute_account_run(run_id)
+    async with maker() as session:
+        await PlatformSyncExecutor(
+            session, _build_registry(), _build_settings()
+        ).execute_account_run(run_id)
 
-        async with maker() as session:
-            run = await session.get(SyncRun, run_id)
-            account = await session.get(Account, account_id)
-            assert run.status == "cancelled", "cancelled run must not be executed"
-            assert account.sync_status == "never", "account must not enter 'syncing'"
-    finally:
-        await engine.dispose()
-        _cleanup(path)
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        account = await session.get(Account, account_id)
+        assert run.status == "cancelled", "cancelled run must not be executed"
+        assert account.sync_status == "never", "account must not enter 'syncing'"
+    await engine.dispose()
