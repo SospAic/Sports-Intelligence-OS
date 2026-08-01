@@ -113,11 +113,7 @@ export function TopicsClient() {
     {
       accessorKey: "source_type",
       header: "来源",
-      cell: ({ row }) => (
-        <Badge tone="info">
-          {row.original.source_type}
-        </Badge>
-      ),
+      cell: ({ row }) => <Badge tone="info">{row.original.source_type}</Badge>,
     },
     { accessorKey: "priority", header: "优先级" },
     {

@@ -19,7 +19,9 @@ describe("字段可用性契约（数据采集基线）", () => {
   });
 
   it("API 依赖字段缺失时要求明确条件", () => {
-    expect(metricAvailability("completion_rate", false)).toBe("needs-condition");
+    expect(metricAvailability("completion_rate", false)).toBe(
+      "needs-condition",
+    );
     expect(metricConditionText("completion_rate")).toContain("需要：");
     expect(metricConditionText("completion_rate")).toContain("完播率");
   });

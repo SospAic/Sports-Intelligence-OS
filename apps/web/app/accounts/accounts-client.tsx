@@ -180,7 +180,9 @@ function StageIcon({ state }: { state: "done" | "active" | "pending" }) {
   if (state === "done")
     return <CheckCircle2 size={15} className="shrink-0 text-emerald-400" />;
   if (state === "active")
-    return <Loader2 size={15} className="shrink-0 animate-spin text-cyan-400" />;
+    return (
+      <Loader2 size={15} className="shrink-0 animate-spin text-cyan-400" />
+    );
   return <Circle size={15} className="shrink-0 text-slate-600" />;
 }
 
@@ -205,9 +207,10 @@ function SyncDetailDrawer({
       : false,
   });
 
-  const currentRun = runs.data?.items.find((run) =>
-    ["syncing", "running", "queued"].includes(run.status),
-  ) ?? runs.data?.items[0];
+  const currentRun =
+    runs.data?.items.find((run) =>
+      ["syncing", "running", "queued"].includes(run.status),
+    ) ?? runs.data?.items[0];
 
   const currentStageIndex = currentRun
     ? SYNC_STAGE_ORDER.indexOf(
@@ -419,7 +422,9 @@ export function AccountsClient() {
   const client = useQueryClient();
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
-  const [platform, setPlatform] = useState(() => readLocalAccountView().platform);
+  const [platform, setPlatform] = useState(
+    () => readLocalAccountView().platform,
+  );
   const [activeState, setActiveState] = useState<ActiveState>(
     () => readLocalAccountView().activeState,
   );
@@ -446,7 +451,9 @@ export function AccountsClient() {
   useEffect(() => {
     if (serverPrefsApplied.current || !serverPrefs.data) return;
     serverPrefsApplied.current = true;
-    const prefs = serverPrefs.data.preferences as Partial<AccountViewPrefs> | undefined;
+    const prefs = serverPrefs.data.preferences as
+      | Partial<AccountViewPrefs>
+      | undefined;
     if (!prefs) return;
     // One-time application of server-stored view preferences; guarded by a ref
     // so it runs exactly once and cannot loop.
@@ -707,10 +714,7 @@ export function AccountsClient() {
           <div className="flex items-center gap-2 whitespace-nowrap">
             <button
               disabled={
-                !canEdit ||
-                !row.original.is_active ||
-                isSyncing ||
-                isSkeleton
+                !canEdit || !row.original.is_active || isSyncing || isSkeleton
               }
               onClick={() => sync(row.original.id)}
               title={

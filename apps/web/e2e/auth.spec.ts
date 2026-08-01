@@ -13,8 +13,7 @@ import { expect, test } from "@playwright/test";
 
 const ADMIN_EMAIL =
   process.env.E2E_ADMIN_EMAIL ?? "admin@sportsintelligence.local";
-const ADMIN_PASSWORD =
-  process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
+const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
 
 test.describe("Login flow", () => {
   test.beforeEach(async ({ page }) => {
@@ -29,9 +28,7 @@ test.describe("Login flow", () => {
     ).toBeVisible();
     await expect(page.getByLabel("邮箱")).toBeVisible();
     await expect(page.getByLabel("密码")).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: "登录" }),
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "登录" })).toBeVisible();
   });
 
   test("shows validation error for empty submission", async ({ page }) => {

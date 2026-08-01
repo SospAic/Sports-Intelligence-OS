@@ -3,7 +3,10 @@
 import type { ReactNode } from "react";
 
 import { formatNumber } from "@/lib/format";
-import { metricAvailability, metricConditionText } from "@/lib/metric-availability";
+import {
+  metricAvailability,
+  metricConditionText,
+} from "@/lib/metric-availability";
 
 /**
  * Amber badge rendered when a gated metric field has no value because the

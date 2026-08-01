@@ -49,7 +49,9 @@ export function RuleVersionViewer({
   versionId?: string;
   workspaceId?: string;
 }) {
-  const [view, setView] = useState<"structured" | "source" | "json">("structured");
+  const [view, setView] = useState<"structured" | "source" | "json">(
+    "structured",
+  );
   const jsonView = useMemo(() => JSON.stringify(tree, null, 2), [tree]);
 
   return (
@@ -64,7 +66,11 @@ export function RuleVersionViewer({
             onClick={() => setView(item)}
             type="button"
           >
-            {item === "structured" ? "结构化" : item === "source" ? "原文" : "JSON"}
+            {item === "structured"
+              ? "结构化"
+              : item === "source"
+                ? "原文"
+                : "JSON"}
           </button>
         ))}
         <span className="ml-auto text-xs text-slate-600">

@@ -632,15 +632,19 @@ function AutomationEditorForm({
                       >
                         <option value="">选择已发布通知模板</option>
                         {templates.data?.items
-                          .filter((template) => template.published_version !== null)
+                          .filter(
+                            (template) => template.published_version !== null,
+                          )
                           .map((template) => (
-                          <option key={template.id} value={template.id}>
-                            {template.name}（v{template.published_version}）
-                          </option>
+                            <option key={template.id} value={template.id}>
+                              {template.name}（v{template.published_version}）
+                            </option>
                           ))}
                       </select>
                     </div>
-                  ) : ["webhook", "external_api"].includes(action.action_type) ? (
+                  ) : ["webhook", "external_api"].includes(
+                      action.action_type,
+                    ) ? (
                     <select
                       className={inputClass}
                       value={action.channel_id ?? ""}

@@ -51,7 +51,10 @@ import {
 } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { buildAccountDetailPaths } from "@/lib/admin-queries";
-import { metricConditionText, metricAvailability } from "@/lib/metric-availability";
+import {
+  metricConditionText,
+  metricAvailability,
+} from "@/lib/metric-availability";
 import { resolvePublishedFrom } from "@/lib/time-range";
 import { useUrlState } from "@/lib/use-persisted-state";
 import {
@@ -281,7 +284,9 @@ function MetricTrendChart({
   );
 }
 
-function contentEngagementRate(content: ContentRecordPage["items"][number]): number | null {
+function contentEngagementRate(
+  content: ContentRecordPage["items"][number],
+): number | null {
   const snap = content.latest_snapshot;
   const views = snap?.view_count ?? 0;
   if (!snap || !views) return null;
@@ -299,9 +304,24 @@ function dominantTrafficSource(
   const snap = content.latest_snapshot;
   if (!snap) return null;
   const candidates = [
-    { key: "recommendation", value: snap.recommendation_traffic_rate ?? 0, label: "推荐", tone: "info" as const },
-    { key: "search", value: snap.search_traffic_rate ?? 0, label: "搜索", tone: "success" as const },
-    { key: "profile", value: snap.profile_traffic_rate ?? 0, label: "关注", tone: "warning" as const },
+    {
+      key: "recommendation",
+      value: snap.recommendation_traffic_rate ?? 0,
+      label: "推荐",
+      tone: "info" as const,
+    },
+    {
+      key: "search",
+      value: snap.search_traffic_rate ?? 0,
+      label: "搜索",
+      tone: "success" as const,
+    },
+    {
+      key: "profile",
+      value: snap.profile_traffic_rate ?? 0,
+      label: "关注",
+      tone: "warning" as const,
+    },
   ];
   const best = candidates.reduce((a, b) => (b.value > a.value ? b : a));
   if (best.value <= 0) return null;
@@ -327,12 +347,10 @@ const CONTENT_SORT_OPTIONS: { key: string; label: string }[] = [
   { key: "engagement_rate", label: "互动率" },
 ];
 
-function ContentTable({
-  rows,
-}: {
-  rows: ContentRecordPage["items"];
-}) {
-  const columns = useMemo<ColumnDef<ContentRecordPage["items"][number], unknown>[]>(
+function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
+  const columns = useMemo<
+    ColumnDef<ContentRecordPage["items"][number], unknown>[]
+  >(
     () => [
       {
         id: "cover",
@@ -416,7 +434,9 @@ function ContentTable({
           );
           if (status === "needs-condition")
             return (
-              <NeedsConditionBadge text={metricConditionText("completion_rate")} />
+              <NeedsConditionBadge
+                text={metricConditionText("completion_rate")}
+              />
             );
           if (value === null || value === undefined)
             return <span className="text-xs text-slate-600">—</span>;
@@ -436,7 +456,8 @@ function ContentTable({
         accessorFn: (row) => contentEngagementRate(row) ?? 0,
         cell: ({ row }) => {
           const value = contentEngagementRate(row.original);
-          if (value === null) return <span className="text-xs text-slate-600">—</span>;
+          if (value === null)
+            return <span className="text-xs text-slate-600">—</span>;
           const weak = value < 0.03;
           return (
             <span
@@ -549,10 +570,9 @@ export function AccountDetailClient({ id }: { id: string }) {
   const contentSummary = useQuery({
     queryKey: ["account-content-summary", id],
     queryFn: () =>
-      apiRequest<AccountContentSummary>(
-        `/accounts/${id}/content-summary`,
-        { workspaceId: workspaceId! },
-      ),
+      apiRequest<AccountContentSummary>(`/accounts/${id}/content-summary`, {
+        workspaceId: workspaceId!,
+      }),
     enabled: Boolean(workspaceId),
   });
   const runs = useQuery({
@@ -865,7 +885,8 @@ export function AccountDetailClient({ id }: { id: string }) {
               流量来源占比（账号作品平均）
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API 或流量来源授权后才会返回真实值。
+              推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API
+              或流量来源授权后才会返回真实值。
             </p>
             <TrafficSourceBreakdown
               split={contentSummary.data?.traffic_source_split}
@@ -890,7 +911,8 @@ export function AccountDetailClient({ id }: { id: string }) {
             <div>
               <h2 className="font-medium text-white">作品清单</h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                共 {contents.data?.total ?? contents.data?.items.length ?? 0} 条 · 点击标题查看单作品深度诊断
+                共 {contents.data?.total ?? contents.data?.items.length ?? 0} 条
+                · 点击标题查看单作品深度诊断
               </p>
             </div>
             {contents.isFetching && (
@@ -931,7 +953,8 @@ export function AccountDetailClient({ id }: { id: string }) {
               detail="运行一次账号同步（需该平台适配器已配置凭证）后，Adapter 返回的作品及播放、互动、完播、流量来源等指标会出现在这里。所有指标均标注数据来源（live / imported），不会用模拟数据冒充真实平台数据。"
               action={
                 item.is_active &&
-                item.platform.capabilities?.implementation_status === "implemented" ? (
+                item.platform.capabilities?.implementation_status ===
+                  "implemented" ? (
                   ["queued", "syncing"].includes(item.sync_status) ? (
                     <TerminateButton
                       onTerminate={() => cancelSync(activeRunId)}
@@ -960,7 +983,9 @@ export function AccountDetailClient({ id }: { id: string }) {
                   key={d}
                   type="button"
                   onClick={() => setHistoryDays(d)}
-                  className={historyDays === d ? buttonClass : secondaryButtonClass}
+                  className={
+                    historyDays === d ? buttonClass : secondaryButtonClass
+                  }
                 >
                   {d} 天
                 </button>
@@ -968,7 +993,8 @@ export function AccountDetailClient({ id }: { id: string }) {
             </div>
           </div>
           <p className="mt-1 text-xs text-slate-400">
-            共 {metricsHistory.data?.points.length ?? 0} 个快照（最近 {historyDays} 天）
+            共 {metricsHistory.data?.points.length ?? 0} 个快照（最近{" "}
+            {historyDays} 天）
           </p>
           <div className="mt-4 grid gap-4 lg:grid-cols-3">
             <MetricTrendChart

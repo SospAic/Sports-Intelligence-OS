@@ -179,7 +179,10 @@ const PLATFORM_ACCENT: Record<string, string> = {
 };
 
 /** Platform-specific sort options mapped to backend sort_by fields */
-const PLATFORM_SORT_OPTIONS: Record<Platform, { value: string; label: string }[]> = {
+const PLATFORM_SORT_OPTIONS: Record<
+  Platform,
+  { value: string; label: string }[]
+> = {
   all: [
     { value: "breakout_score", label: "热度" },
     { value: "view_count", label: "播放量" },
@@ -294,7 +297,8 @@ function formatDuration(duration: string | undefined): string {
     const hours = parseInt(isoMatch[1] || "0", 10);
     const minutes = parseInt(isoMatch[2] || "0", 10);
     const seconds = parseInt(isoMatch[3] || "0", 10);
-    if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    if (hours > 0)
+      return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
     return `${minutes}:${String(seconds).padStart(2, "0")}`;
   }
   const totalSeconds = parseInt(duration, 10);
@@ -302,7 +306,8 @@ function formatDuration(duration: string | undefined): string {
     const h = Math.floor(totalSeconds / 3600);
     const m = Math.floor((totalSeconds % 3600) / 60);
     const s = totalSeconds % 60;
-    if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    if (h > 0)
+      return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
     return `${m}:${String(s).padStart(2, "0")}`;
   }
   return duration;
@@ -332,7 +337,10 @@ function VideoStatItem({
   label: string;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 text-xs text-slate-400" title={label}>
+    <span
+      className="inline-flex items-center gap-1 text-xs text-slate-400"
+      title={label}
+    >
       {icon}
       <span>{formatNumber(value)}</span>
     </span>
@@ -342,15 +350,29 @@ function VideoStatItem({
 function YouTubeVideoStats({ video }: { video: BreakoutVideo }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <VideoStatItem icon={<Play size={12} />} value={video.view_count} label="播放量" />
-      <VideoStatItem icon={<ThumbsUp size={12} />} value={video.like_count} label="点赞" />
-      <VideoStatItem icon={<MessageCircle size={12} />} value={video.comment_count} label="评论" />
+      <VideoStatItem
+        icon={<Play size={12} />}
+        value={video.view_count}
+        label="播放量"
+      />
+      <VideoStatItem
+        icon={<ThumbsUp size={12} />}
+        value={video.like_count}
+        label="点赞"
+      />
+      <VideoStatItem
+        icon={<MessageCircle size={12} />}
+        value={video.comment_count}
+        label="评论"
+      />
       {video.metadata?.duration && (
         <span className="text-xs text-slate-500">
           {formatDuration(video.metadata.duration as string)}
         </span>
       )}
-      <span className="text-xs text-slate-500">{formatRelativeDate(video.observed_at)}</span>
+      <span className="text-xs text-slate-500">
+        {formatRelativeDate(video.observed_at)}
+      </span>
     </div>
   );
 }
@@ -358,10 +380,26 @@ function YouTubeVideoStats({ video }: { video: BreakoutVideo }) {
 function TikTokVideoStats({ video }: { video: BreakoutVideo }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <VideoStatItem icon={<Play size={12} />} value={video.view_count} label="播放量" />
-      <VideoStatItem icon={<Heart size={12} />} value={video.like_count} label="点赞" />
-      <VideoStatItem icon={<Share2 size={12} />} value={video.share_count} label="分享" />
-      <VideoStatItem icon={<MessageCircle size={12} />} value={video.comment_count} label="评论" />
+      <VideoStatItem
+        icon={<Play size={12} />}
+        value={video.view_count}
+        label="播放量"
+      />
+      <VideoStatItem
+        icon={<Heart size={12} />}
+        value={video.like_count}
+        label="点赞"
+      />
+      <VideoStatItem
+        icon={<Share2 size={12} />}
+        value={video.share_count}
+        label="分享"
+      />
+      <VideoStatItem
+        icon={<MessageCircle size={12} />}
+        value={video.comment_count}
+        label="评论"
+      />
     </div>
   );
 }
@@ -371,9 +409,21 @@ function DouyinVideoStats({ video }: { video: BreakoutVideo }) {
   const forwardCount = video.metadata?.forward_count ?? video.share_count;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <VideoStatItem icon={<Play size={12} />} value={video.view_count} label="播放量" />
-      <VideoStatItem icon={<Heart size={12} />} value={diggCount} label="点赞" />
-      <VideoStatItem icon={<Share2 size={12} />} value={forwardCount} label="转发" />
+      <VideoStatItem
+        icon={<Play size={12} />}
+        value={video.view_count}
+        label="播放量"
+      />
+      <VideoStatItem
+        icon={<Heart size={12} />}
+        value={diggCount}
+        label="点赞"
+      />
+      <VideoStatItem
+        icon={<Share2 size={12} />}
+        value={forwardCount}
+        label="转发"
+      />
     </div>
   );
 }
@@ -383,18 +433,41 @@ function BilibiliVideoStats({ video }: { video: BreakoutVideo }) {
   const coinCount = video.metadata?.coin_count;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-      <VideoStatItem icon={<Play size={12} />} value={video.view_count} label="播放量" />
-      <VideoStatItem icon={<MessageCircle size={12} />} value={danmakuCount} label="弹幕" />
-      <VideoStatItem icon={<ThumbsUp size={12} />} value={video.like_count} label="点赞" />
+      <VideoStatItem
+        icon={<Play size={12} />}
+        value={video.view_count}
+        label="播放量"
+      />
+      <VideoStatItem
+        icon={<MessageCircle size={12} />}
+        value={danmakuCount}
+        label="弹幕"
+      />
+      <VideoStatItem
+        icon={<ThumbsUp size={12} />}
+        value={video.like_count}
+        label="点赞"
+      />
       {coinCount != null && (
-        <VideoStatItem icon={<Zap size={12} />} value={coinCount} label="投币" />
+        <VideoStatItem
+          icon={<Zap size={12} />}
+          value={coinCount}
+          label="投币"
+        />
       )}
     </div>
   );
 }
 
-function PlatformVideoStats({ video, platform }: { video: BreakoutVideo; platform: Platform }) {
-  const effectivePlatform = platform === "all" ? video.platform.toLowerCase() : platform;
+function PlatformVideoStats({
+  video,
+  platform,
+}: {
+  video: BreakoutVideo;
+  platform: Platform;
+}) {
+  const effectivePlatform =
+    platform === "all" ? video.platform.toLowerCase() : platform;
   switch (effectivePlatform) {
     case "youtube":
       return <YouTubeVideoStats video={video} />;
@@ -407,8 +480,16 @@ function PlatformVideoStats({ video, platform }: { video: BreakoutVideo; platfor
     default:
       return (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <VideoStatItem icon={<Play size={12} />} value={video.view_count} label="播放量" />
-          <VideoStatItem icon={<ThumbsUp size={12} />} value={video.like_count} label="点赞" />
+          <VideoStatItem
+            icon={<Play size={12} />}
+            value={video.view_count}
+            label="播放量"
+          />
+          <VideoStatItem
+            icon={<ThumbsUp size={12} />}
+            value={video.like_count}
+            label="点赞"
+          />
         </div>
       );
   }
@@ -457,7 +538,8 @@ function VideoCard({
           </div>
         )}
         {/* Duration badge for YouTube */}
-        {(platform === "youtube" || (platform === "all" && video.platform.toLowerCase() === "youtube")) &&
+        {(platform === "youtube" ||
+          (platform === "all" && video.platform.toLowerCase() === "youtube")) &&
           video.metadata?.duration && (
             <div className="absolute bottom-1 left-1 rounded bg-black/80 px-1 py-0.5 text-[10px] font-medium text-white">
               {formatDuration(video.metadata.duration as string)}
@@ -572,7 +654,10 @@ function Pagination({
 
         {getPageNumbers().map((pageNum, idx) =>
           pageNum === "..." ? (
-            <span key={`ellipsis-${idx}`} className="px-1 text-sm text-slate-600">
+            <span
+              key={`ellipsis-${idx}`}
+              className="px-1 text-sm text-slate-600"
+            >
               …
             </span>
           ) : (
@@ -656,7 +741,9 @@ export function TrendsClient() {
   const [videoPage, setVideoPage] = useState(1);
   const [videoSort, setVideoSortParam] = useUrlState("sort", "breakout_score");
   // Accumulated videos for "load more" pattern
-  const [accumulatedVideos, setAccumulatedVideos] = useState<BreakoutVideo[]>([]);
+  const [accumulatedVideos, setAccumulatedVideos] = useState<BreakoutVideo[]>(
+    [],
+  );
   const [isLoadMore, setIsLoadMore] = useState(false);
 
   // Pagination state for topics
@@ -665,37 +752,43 @@ export function TrendsClient() {
   const platformParam = platform === "all" ? "" : platform;
 
   // Reset pagination when platform or sort changes
-  const handlePlatformChange = useCallback((newPlatform: Platform) => {
-    // Combined URL update for platform + sort to avoid race conditions
-    const params = new URLSearchParams(searchParams.toString());
-    if (newPlatform === "all") {
-      params.delete("platform");
-    } else {
-      params.set("platform", newPlatform);
-    }
-    // Reset sort to first option for the new platform
-    const opts = PLATFORM_SORT_OPTIONS[newPlatform];
-    const newSort = opts[0]?.value ?? "breakout_score";
-    if (newSort === "breakout_score") {
-      params.delete("sort");
-    } else {
-      params.set("sort", newSort);
-    }
-    const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  const handlePlatformChange = useCallback(
+    (newPlatform: Platform) => {
+      // Combined URL update for platform + sort to avoid race conditions
+      const params = new URLSearchParams(searchParams.toString());
+      if (newPlatform === "all") {
+        params.delete("platform");
+      } else {
+        params.set("platform", newPlatform);
+      }
+      // Reset sort to first option for the new platform
+      const opts = PLATFORM_SORT_OPTIONS[newPlatform];
+      const newSort = opts[0]?.value ?? "breakout_score";
+      if (newSort === "breakout_score") {
+        params.delete("sort");
+      } else {
+        params.set("sort", newSort);
+      }
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
 
-    setVideoPage(1);
-    setTopicPage(1);
-    setAccumulatedVideos([]);
-    setIsLoadMore(false);
-  }, [searchParams, router, pathname]);
+      setVideoPage(1);
+      setTopicPage(1);
+      setAccumulatedVideos([]);
+      setIsLoadMore(false);
+    },
+    [searchParams, router, pathname],
+  );
 
-  const handleSortChange = useCallback((newSort: string) => {
-    setVideoSortParam(newSort);
-    setVideoPage(1);
-    setAccumulatedVideos([]);
-    setIsLoadMore(false);
-  }, [setVideoSortParam]);
+  const handleSortChange = useCallback(
+    (newSort: string) => {
+      setVideoSortParam(newSort);
+      setVideoPage(1);
+      setAccumulatedVideos([]);
+      setIsLoadMore(false);
+    },
+    [setVideoSortParam],
+  );
 
   const handleVideoPageChange = useCallback((newPage: number) => {
     setVideoPage(newPage);
@@ -730,7 +823,13 @@ export function TrendsClient() {
   });
 
   const videos = useQuery({
-    queryKey: ["trends-videos", workspaceId, platformParam, videoSort, videoPage],
+    queryKey: [
+      "trends-videos",
+      workspaceId,
+      platformParam,
+      videoSort,
+      videoPage,
+    ],
     queryFn: () =>
       apiRequest<VideosPageResponse>(
         `/trends/videos?platform=${platformParam}&sort_by=${videoSort}&page=${videoPage}&page_size=${PAGE_SIZE}`,
@@ -754,8 +853,12 @@ export function TrendsClient() {
     ? [...accumulatedVideos, ...currentVideoItems]
     : currentVideoItems;
   // Extract error messages before JSX to avoid TS narrowing to 'never'
-  const videosErrorMsg = videos.isError ? String((videos as { error?: unknown }).error ?? "请求失败") : "";
-  const topicsErrorMsg = topics.isError ? String((topics as { error?: unknown }).error ?? "请求失败") : "";
+  const videosErrorMsg = videos.isError
+    ? String((videos as { error?: unknown }).error ?? "请求失败")
+    : "";
+  const topicsErrorMsg = topics.isError
+    ? String((topics as { error?: unknown }).error ?? "请求失败")
+    : "";
   // Pre-extract refetch to avoid 'never' type in JSX && guards
   const refetchVideos = videos.refetch;
   const refetchTopics = topics.refetch;
@@ -776,9 +879,7 @@ export function TrendsClient() {
       prevVideoPageRef.current === videoPage
     ) {
       setAccumulatedVideos((prev) => {
-        const newItems = items.filter(
-          (v) => !prev.some((p) => p.id === v.id),
-        );
+        const newItems = items.filter((v) => !prev.some((p) => p.id === v.id));
         return newItems.length > 0 ? [...prev, ...newItems] : prev;
       });
       setIsLoadMore(false);
@@ -965,9 +1066,7 @@ export function TrendsClient() {
         <StatePanel
           type="error"
           title="数据加载失败"
-          detail={
-            videosErrorMsg || topicsErrorMsg || "数据加载失败，请重试"
-          }
+          detail={videosErrorMsg || topicsErrorMsg || "数据加载失败，请重试"}
           onRetry={() => {
             refetchDashboard();
             refetchTopics();
@@ -1072,25 +1171,29 @@ export function TrendsClient() {
                   onRetry={() => refetchVideos()}
                 />
               )}
-              {!videos.isLoading && !videos.isError && visibleVideos.length > 0 && (
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                  {visibleVideos.map((video) => (
-                    <VideoCard
-                      key={video.id}
-                      video={video}
-                      platform={platform}
-                      workspaceId={workspaceId}
-                    />
-                  ))}
-                </div>
-              )}
-              {!videos.isLoading && !videos.isError && visibleVideos.length === 0 && (
-                <div className="grid min-h-40 place-items-center text-sm text-slate-500">
-                  {category === "全部"
-                    ? "暂无热门视频数据"
-                    : "当前分类暂无视频样本"}
-                </div>
-              )}
+              {!videos.isLoading &&
+                !videos.isError &&
+                visibleVideos.length > 0 && (
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {visibleVideos.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        platform={platform}
+                        workspaceId={workspaceId}
+                      />
+                    ))}
+                  </div>
+                )}
+              {!videos.isLoading &&
+                !videos.isError &&
+                visibleVideos.length === 0 && (
+                  <div className="grid min-h-40 place-items-center text-sm text-slate-500">
+                    {category === "全部"
+                      ? "暂无热门视频数据"
+                      : "当前分类暂无视频样本"}
+                  </div>
+                )}
             </div>
 
             {/* Pagination */}
@@ -1132,123 +1235,127 @@ export function TrendsClient() {
                   onRetry={() => refetchTopics()}
                 />
               )}
-              {!topics.isLoading && !topics.isError && visibleTopics.length > 0 && (
-                <div className="divide-y divide-slate-800/50">
-                  {visibleTopics.map((topic, index) => (
-                    <div
-                      key={topic.id}
-                      className="flex items-center gap-4 px-5 py-3 transition hover:bg-slate-900/50"
-                    >
-                      {/* Rank */}
+              {!topics.isLoading &&
+                !topics.isError &&
+                visibleTopics.length > 0 && (
+                  <div className="divide-y divide-slate-800/50">
+                    {visibleTopics.map((topic, index) => (
                       <div
-                        className={`grid size-8 shrink-0 place-items-center rounded-lg text-sm font-bold ${
-                          index < 3
-                            ? "bg-gradient-to-br from-amber-500 to-orange-600 text-white"
-                            : "bg-slate-800 text-slate-400"
-                        }`}
+                        key={topic.id}
+                        className="flex items-center gap-4 px-5 py-3 transition hover:bg-slate-900/50"
                       >
-                        {topic.rank || index + 1}
-                      </div>
+                        {/* Rank */}
+                        <div
+                          className={`grid size-8 shrink-0 place-items-center rounded-lg text-sm font-bold ${
+                            index < 3
+                              ? "bg-gradient-to-br from-amber-500 to-orange-600 text-white"
+                              : "bg-slate-800 text-slate-400"
+                          }`}
+                        >
+                          {topic.rank || index + 1}
+                        </div>
 
-                      {/* Content */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <h3 className="truncate text-sm font-medium text-slate-100">
-                            {topic.title}
-                          </h3>
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-xs">
-                          <Badge tone={getPlatformBadgeTone(topic.platform)}>
-                            {PLATFORM_LABELS[topic.platform.toLowerCase()] ??
-                              topic.platform}
-                          </Badge>
-                          {topic.metadata?.source_kind === "live" && (
-                            <span className="inline-flex items-center gap-1 text-emerald-400">
-                              <span className="size-1.5 rounded-full bg-emerald-400" />
-                              实时
-                            </span>
-                          )}
-                          <span
-                            title="按样本规模与字段覆盖度计算"
-                            className="text-slate-500"
-                          >
-                            {confidenceLabel(
-                              topic.metadata?.confidence_score,
-                            )}
-                          </span>
-                          <span className="text-slate-500">
-                            {CATEGORY_LABELS[topic.category] ??
-                              topic.category}
-                          </span>
-                        </div>
-                        {workspaceId && (
-                          <ScoreExplanationPanel
-                            entityType="topic"
-                            entityId={topic.id}
-                            apiPath={`/trends/topics/${topic.id}/explain`}
-                            workspaceId={workspaceId}
-                          />
-                        )}
-                      </div>
-
-                      {/* Heat Score Bar */}
-                      <div className="hidden w-32 sm:block">
-                        <div className="mb-1 flex justify-between text-xs">
-                          <span className="text-slate-500">派生热度</span>
-                          <span className="font-medium text-slate-300">
-                            {formatNumber(topic.heat_score)}
-                          </span>
-                        </div>
-                        <div className="h-1.5 rounded-full bg-slate-800">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400"
-                            style={{
-                              width: `${Math.min((topic.heat_score / 100) * 100, 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Growth Rate */}
-                      <div className="flex items-center gap-1 text-xs">
-                        {topic.growth_rate != null ? (
-                          <>
-                            {topic.growth_rate >= 0 ? (
-                              <ArrowUp
-                                size={12}
-                                className="text-emerald-400"
-                              />
-                            ) : (
-                              <ArrowDown
-                                size={12}
-                                className="text-rose-400"
-                              />
+                        {/* Content */}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <h3 className="truncate text-sm font-medium text-slate-100">
+                              {topic.title}
+                            </h3>
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-xs">
+                            <Badge tone={getPlatformBadgeTone(topic.platform)}>
+                              {PLATFORM_LABELS[topic.platform.toLowerCase()] ??
+                                topic.platform}
+                            </Badge>
+                            {topic.metadata?.source_kind === "live" && (
+                              <span className="inline-flex items-center gap-1 text-emerald-400">
+                                <span className="size-1.5 rounded-full bg-emerald-400" />
+                                实时
+                              </span>
                             )}
                             <span
-                              className={
-                                topic.growth_rate >= 0
-                                  ? "font-medium text-emerald-400"
-                                  : "font-medium text-rose-400"
-                              }
+                              title="按样本规模与字段覆盖度计算"
+                              className="text-slate-500"
                             >
-                              {formatGrowthRate(topic.growth_rate)}
+                              {confidenceLabel(
+                                topic.metadata?.confidence_score,
+                              )}
                             </span>
-                          </>
-                        ) : (
-                          <span className="text-slate-600">--</span>
-                        )}
+                            <span className="text-slate-500">
+                              {CATEGORY_LABELS[topic.category] ??
+                                topic.category}
+                            </span>
+                          </div>
+                          {workspaceId && (
+                            <ScoreExplanationPanel
+                              entityType="topic"
+                              entityId={topic.id}
+                              apiPath={`/trends/topics/${topic.id}/explain`}
+                              workspaceId={workspaceId}
+                            />
+                          )}
+                        </div>
+
+                        {/* Heat Score Bar */}
+                        <div className="hidden w-32 sm:block">
+                          <div className="mb-1 flex justify-between text-xs">
+                            <span className="text-slate-500">派生热度</span>
+                            <span className="font-medium text-slate-300">
+                              {formatNumber(topic.heat_score)}
+                            </span>
+                          </div>
+                          <div className="h-1.5 rounded-full bg-slate-800">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-emerald-400"
+                              style={{
+                                width: `${Math.min((topic.heat_score / 100) * 100, 100)}%`,
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Growth Rate */}
+                        <div className="flex items-center gap-1 text-xs">
+                          {topic.growth_rate != null ? (
+                            <>
+                              {topic.growth_rate >= 0 ? (
+                                <ArrowUp
+                                  size={12}
+                                  className="text-emerald-400"
+                                />
+                              ) : (
+                                <ArrowDown
+                                  size={12}
+                                  className="text-rose-400"
+                                />
+                              )}
+                              <span
+                                className={
+                                  topic.growth_rate >= 0
+                                    ? "font-medium text-emerald-400"
+                                    : "font-medium text-rose-400"
+                                }
+                              >
+                                {formatGrowthRate(topic.growth_rate)}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-slate-600">--</span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {!topics.isLoading && !topics.isError && visibleTopics.length === 0 && (
-                <div className="p-8 text-center text-sm text-slate-500">
-                  {category === "全部"
-                    ? "暂无热门话题数据"
-                    : "当前分类暂无话题样本"}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+              {!topics.isLoading &&
+                !topics.isError &&
+                visibleTopics.length === 0 && (
+                  <div className="p-8 text-center text-sm text-slate-500">
+                    {category === "全部"
+                      ? "暂无热门话题数据"
+                      : "当前分类暂无话题样本"}
+                  </div>
+                )}
             </div>
 
             {/* Topic Pagination */}

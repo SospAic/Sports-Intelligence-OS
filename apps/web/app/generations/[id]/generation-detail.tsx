@@ -326,10 +326,7 @@ export function GenerationDetail({
           </div>
 
           {/* ── B 组：7.9 完整叙事包 ────────────────────────────────────────── */}
-          <FullNarrativePackage
-            onCopy={copy}
-            output={output}
-          />
+          <FullNarrativePackage onCopy={copy} output={output} />
 
           {/* ── 重新生成 ─────────────────────────────────────────────────────── */}
           <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
@@ -496,7 +493,8 @@ function FullNarrativePackage({
         完整叙事包（7.9 Full Package）
       </summary>
       <p className="mt-2 text-xs text-slate-500">
-        包含故事架构、Hook 分析、CMSSML、EV3 和叙事决策说明。带 ⚠ 标注的字段来自原文不完整条目（ambiguous），为系统辅助生成。
+        包含故事架构、Hook 分析、CMSSML、EV3 和叙事决策说明。带 ⚠
+        标注的字段来自原文不完整条目（ambiguous），为系统辅助生成。
       </p>
 
       {/* 事件识别 */}
@@ -505,7 +503,9 @@ function FullNarrativePackage({
           <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
             EVENT IDENTITY
           </p>
-          <h3 className="mt-2 text-sm font-medium text-slate-100">事件精确识别</h3>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">
+            事件精确识别
+          </h3>
           <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
             {JSON.stringify(eventIdentity, null, 2)}
           </pre>
@@ -521,7 +521,9 @@ function FullNarrativePackage({
                 STORY FORMAT
               </p>
               <p className="mt-2 text-sm font-medium text-slate-100">
-                {typeof storyFormat === "string" ? storyFormat : JSON.stringify(storyFormat)}
+                {typeof storyFormat === "string"
+                  ? storyFormat
+                  : JSON.stringify(storyFormat)}
               </p>
               {storyFormatReason != null && (
                 <p className="mt-2 text-xs text-slate-400">
@@ -564,7 +566,9 @@ function FullNarrativePackage({
           )}
           {Array.isArray(hookCandidates) && hookCandidates.length > 0 && (
             <div className="mt-3">
-              <p className="text-[10px] text-slate-500">全部候选（{hookCandidates.length} 个）</p>
+              <p className="text-[10px] text-slate-500">
+                全部候选（{hookCandidates.length} 个）
+              </p>
               <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
                 {JSON.stringify(hookCandidates, null, 2)}
               </pre>
@@ -633,7 +637,9 @@ function FullNarrativePackage({
               </Badge>
               {lcrReason != null && (
                 <span className="text-xs text-slate-400">
-                  {typeof lcrReason === "string" ? lcrReason : JSON.stringify(lcrReason)}
+                  {typeof lcrReason === "string"
+                    ? lcrReason
+                    : JSON.stringify(lcrReason)}
                 </span>
               )}
             </div>
@@ -650,7 +656,9 @@ function FullNarrativePackage({
           <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
             ANSWER WORD MAP
           </p>
-          <h3 className="mt-2 text-sm font-medium text-slate-100">答案词与泄露映射</h3>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">
+            答案词与泄露映射
+          </h3>
           <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
             {JSON.stringify(answerWordMap, null, 2)}
           </pre>
@@ -658,16 +666,28 @@ function FullNarrativePackage({
       )}
 
       {/* RR / EER / EL / 对话说明 */}
-      {(reactionRelay != null || evidenceRewards != null || exclusionLadder != null || dialogueNotes != null) && (
+      {(reactionRelay != null ||
+        evidenceRewards != null ||
+        exclusionLadder != null ||
+        dialogueNotes != null) && (
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           {reactionRelay != null && (
-            <NarrativeDetail label="Reaction Relay 结构" value={reactionRelay} />
+            <NarrativeDetail
+              label="Reaction Relay 结构"
+              value={reactionRelay}
+            />
           )}
           {evidenceRewards != null && (
-            <NarrativeDetail label="证据奖励结构（EER）" value={evidenceRewards} />
+            <NarrativeDetail
+              label="证据奖励结构（EER）"
+              value={evidenceRewards}
+            />
           )}
           {exclusionLadder != null && (
-            <NarrativeDetail label="合理解释排除列表（EL）" value={exclusionLadder} />
+            <NarrativeDetail
+              label="合理解释排除列表（EL）"
+              value={exclusionLadder}
+            />
           )}
           {dialogueNotes != null && (
             <NarrativeDetail label="对话与心理说明" value={dialogueNotes} />
@@ -676,10 +696,14 @@ function FullNarrativePackage({
       )}
 
       {/* C 组：ambiguous 字段 */}
-      {(audioMap != null || ttsSettings != null || materialPlan != null || editMap != null) && (
+      {(audioMap != null ||
+        ttsSettings != null ||
+        materialPlan != null ||
+        editMap != null) && (
         <div className="mt-5 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
           <p className="text-xs text-slate-500">
-            ⚠ 以下字段来自 7.9 原文不完整条目（ambiguous），为系统辅助生成，不能作为完整规则依据。
+            ⚠ 以下字段来自 7.9
+            原文不完整条目（ambiguous），为系统辅助生成，不能作为完整规则依据。
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {audioMap != null && (
@@ -689,7 +713,10 @@ function FullNarrativePackage({
               <NarrativeDetail label="TTS 设置建议" value={ttsSettings} />
             )}
             {materialPlan != null && (
-              <NarrativeDetail label="视频素材逐 Beat 计划" value={materialPlan} />
+              <NarrativeDetail
+                label="视频素材逐 Beat 计划"
+                value={materialPlan}
+              />
             )}
             {editMap != null && (
               <NarrativeDetail label="剪辑 Map" value={editMap} />

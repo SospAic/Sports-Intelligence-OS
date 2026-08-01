@@ -6,12 +6,7 @@ import type {
   GenerationWorkflow,
   LLMProviderDescriptor,
 } from "@sio/shared-types";
-import {
-  Check,
-  ChevronRight,
-  History,
-  Sparkles,
-} from "lucide-react";
+import { Check, ChevronRight, History, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -64,8 +59,7 @@ export function GenerationForm({
     [workflows],
   );
   const provider = useMemo(
-    () =>
-      providers.find((item) => item.configured && !item.is_mock),
+    () => providers.find((item) => item.configured && !item.is_mock),
     [providers],
   );
   const initialType = normalizeSourceType(search.get("input_type"));

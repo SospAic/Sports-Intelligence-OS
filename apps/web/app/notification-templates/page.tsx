@@ -132,20 +132,18 @@ export default function NotificationTemplatesPage() {
   const templates = useQuery({
     queryKey: ["notification-templates", workspaceId],
     queryFn: () =>
-      apiRequest<TemplatePage>(
-        "/notification-templates?page=1&page_size=100",
-        { workspaceId: workspaceId! },
-      ),
+      apiRequest<TemplatePage>("/notification-templates?page=1&page_size=100", {
+        workspaceId: workspaceId!,
+      }),
     enabled: Boolean(workspaceId),
   });
 
   const detail = useQuery({
     queryKey: ["notification-template-detail", workspaceId, expandedId],
     queryFn: () =>
-      apiRequest<TemplateDetail>(
-        `/notification-templates/${expandedId}`,
-        { workspaceId: workspaceId! },
-      ),
+      apiRequest<TemplateDetail>(`/notification-templates/${expandedId}`, {
+        workspaceId: workspaceId!,
+      }),
     enabled: Boolean(workspaceId && expandedId),
   });
 
@@ -173,7 +171,13 @@ export default function NotificationTemplatesPage() {
   // -----------------------------------------------------------------------
 
   async function createTemplate() {
-    if (!workspaceId || !form.name.trim() || !form.subject_template.trim() || !form.body_template.trim()) return;
+    if (
+      !workspaceId ||
+      !form.name.trim() ||
+      !form.subject_template.trim() ||
+      !form.body_template.trim()
+    )
+      return;
     setSaving(true);
     try {
       await apiRequest<TemplateDetail>("/notification-templates", {
@@ -201,7 +205,11 @@ export default function NotificationTemplatesPage() {
   }
 
   async function deleteTemplate(tpl: TemplateSummary) {
-    if (!workspaceId || !window.confirm(`确定删除模板「${tpl.name}」及其所有版本？`)) return;
+    if (
+      !workspaceId ||
+      !window.confirm(`确定删除模板「${tpl.name}」及其所有版本？`)
+    )
+      return;
     try {
       await apiRequest<void>(`/notification-templates/${tpl.id}`, {
         method: "DELETE",
@@ -230,7 +238,10 @@ export default function NotificationTemplatesPage() {
     }
   }
 
-  async function rollbackToVersion(tpl: TemplateSummary, version: TemplateVersion) {
+  async function rollbackToVersion(
+    tpl: TemplateSummary,
+    version: TemplateVersion,
+  ) {
     if (
       !workspaceId ||
       !window.confirm(`将基于版本 ${version.version} 创建新草稿，确定继续？`)
@@ -266,19 +277,16 @@ export default function NotificationTemplatesPage() {
     if (!workspaceId) return;
     setDraftSaving(true);
     try {
-      await apiRequest<TemplateVersion>(
-        `/notification-templates/${tpl.id}`,
-        {
-          method: "PUT",
-          workspaceId,
-          csrf: true,
-          body: JSON.stringify({
-            subject_template: draftForm.subject_template || undefined,
-            body_template: draftForm.body_template || undefined,
-            change_notes: draftForm.change_notes || undefined,
-          }),
-        },
-      );
+      await apiRequest<TemplateVersion>(`/notification-templates/${tpl.id}`, {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({
+          subject_template: draftForm.subject_template || undefined,
+          body_template: draftForm.body_template || undefined,
+          change_notes: draftForm.change_notes || undefined,
+        }),
+      });
       notify("草稿已保存");
       setEditingDraft(false);
       await invalidateAll(tpl.id);
@@ -348,7 +356,9 @@ export default function NotificationTemplatesPage() {
                 className={inputClass}
                 placeholder="如：赛事比分提醒"
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, name: e.target.value }))
+                }
               />
             </label>
             <label className="grid gap-2 text-sm">
@@ -379,7 +389,7 @@ export default function NotificationTemplatesPage() {
               </span>
               <input
                 className={inputClass}
-                placeholder='如：{match_title} — {event_time}'
+                placeholder="如：{match_title} — {event_time}"
                 value={form.subject_template}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, subject_template: e.target.value }))
@@ -482,9 +492,7 @@ export default function NotificationTemplatesPage() {
                       </span>
                       <Badge tone="info">{tpl.category}</Badge>
                       {tpl.current_version !== null && (
-                        <Badge tone="neutral">
-                          v{tpl.current_version}
-                        </Badge>
+                        <Badge tone="neutral">v{tpl.current_version}</Badge>
                       )}
                     </div>
                     {tpl.description && (
@@ -500,7 +508,10 @@ export default function NotificationTemplatesPage() {
                   </div>
 
                   {/* Quick actions on the row */}
-                  <div className="flex shrink-0 gap-1" onClick={(e) => e.stopPropagation()}>
+                  <div
+                    className="flex shrink-0 gap-1"
+                    onClick={(e) => e.stopPropagation()}
+                  >
                     {canEdit && latestDraft && (
                       <button
                         className={`${secondaryButtonClass} h-8 px-2`}
@@ -653,19 +664,33 @@ export default function NotificationTemplatesPage() {
                             </span>
                           </h3>
                           {versions.length === 0 ? (
-                            <p className="text-sm text-slate-500">暂无版本记录。</p>
+                            <p className="text-sm text-slate-500">
+                              暂无版本记录。
+                            </p>
                           ) : (
                             <div className="overflow-x-auto">
                               <table className="w-full text-sm">
                                 <thead>
                                   <tr className="border-b border-slate-800 text-xs text-slate-500">
-                                    <th className="px-3 py-2 text-left font-medium">版本</th>
-                                    <th className="px-3 py-2 text-left font-medium">状态</th>
-                                    <th className="px-3 py-2 text-left font-medium">标题模板</th>
-                                    <th className="px-3 py-2 text-left font-medium">创建时间</th>
-                                    <th className="px-3 py-2 text-left font-medium">发布时间</th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      版本
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      状态
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      标题模板
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      创建时间
+                                    </th>
+                                    <th className="px-3 py-2 text-left font-medium">
+                                      发布时间
+                                    </th>
                                     {canEdit && (
-                                      <th className="px-3 py-2 text-right font-medium">操作</th>
+                                      <th className="px-3 py-2 text-right font-medium">
+                                        操作
+                                      </th>
                                     )}
                                   </tr>
                                 </thead>

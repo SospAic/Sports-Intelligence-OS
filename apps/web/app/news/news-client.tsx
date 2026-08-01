@@ -312,7 +312,11 @@ export function NewsClient() {
         metadataScore(item.metadata, "controversy_score") ?? 0,
       cell: ({ row }) => {
         const v = metadataScore(row.original.metadata, "controversy_score");
-        return <span className="text-xs tabular-nums">{v !== null ? v.toFixed(1) : "—"}</span>;
+        return (
+          <span className="text-xs tabular-nums">
+            {v !== null ? v.toFixed(1) : "—"}
+          </span>
+        );
       },
     },
     {
@@ -321,7 +325,11 @@ export function NewsClient() {
       accessorFn: (item) => metadataScore(item.metadata, "visual_score") ?? 0,
       cell: ({ row }) => {
         const v = metadataScore(row.original.metadata, "visual_score");
-        return <span className="text-xs tabular-nums">{v !== null ? v.toFixed(1) : "—"}</span>;
+        return (
+          <span className="text-xs tabular-nums">
+            {v !== null ? v.toFixed(1) : "—"}
+          </span>
+        );
       },
     },
     {
@@ -330,7 +338,11 @@ export function NewsClient() {
       accessorFn: (item) => metadataScore(item.metadata, "story_score") ?? 0,
       cell: ({ row }) => {
         const v = metadataScore(row.original.metadata, "story_score");
-        return <span className="text-xs tabular-nums">{v !== null ? v.toFixed(1) : "—"}</span>;
+        return (
+          <span className="text-xs tabular-nums">
+            {v !== null ? v.toFixed(1) : "—"}
+          </span>
+        );
       },
     },
     {
@@ -1048,7 +1060,9 @@ function ArticlePreviewDrawer({
                   热度 {formatNumber(article.heat_score)}
                 </Badge>
                 {article.author && (
-                  <span className="text-xs text-slate-500">{article.author}</span>
+                  <span className="text-xs text-slate-500">
+                    {article.author}
+                  </span>
                 )}
               </div>
               {article.summary && (

@@ -51,10 +51,14 @@ function confidenceText(value: number | null): string {
 
 function formatWindow(window: Record<string, string | null>): string {
   const parts: string[] = [];
-  if (window.start) parts.push(`开始: ${new Date(window.start).toLocaleString("zh-CN")}`);
-  if (window.end) parts.push(`结束: ${new Date(window.end).toLocaleString("zh-CN")}`);
-  if (window.observed_at) parts.push(`观测: ${new Date(window.observed_at).toLocaleString("zh-CN")}`);
-  if (window.freshness_basis) parts.push(`新鲜度基准: ${window.freshness_basis}`);
+  if (window.start)
+    parts.push(`开始: ${new Date(window.start).toLocaleString("zh-CN")}`);
+  if (window.end)
+    parts.push(`结束: ${new Date(window.end).toLocaleString("zh-CN")}`);
+  if (window.observed_at)
+    parts.push(`观测: ${new Date(window.observed_at).toLocaleString("zh-CN")}`);
+  if (window.freshness_basis)
+    parts.push(`新鲜度基准: ${window.freshness_basis}`);
   if (window.sample_size) parts.push(`样本量: ${window.sample_size}`);
   return parts.join(" · ") || "—";
 }
@@ -76,8 +80,7 @@ export function ScoreExplanationPanel({
 
   const explanation = useQuery({
     queryKey: [`explain-${entityType}`, entityId, workspaceId],
-    queryFn: () =>
-      apiRequest<ScoreExplanationData>(apiPath, { workspaceId }),
+    queryFn: () => apiRequest<ScoreExplanationData>(apiPath, { workspaceId }),
     enabled: open && Boolean(workspaceId),
   });
 
@@ -241,7 +244,9 @@ export function ScoreExplanationPanel({
 
               {/* Sample window */}
               <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                <span className="font-medium text-slate-400">样本时间范围:</span>
+                <span className="font-medium text-slate-400">
+                  样本时间范围:
+                </span>
                 <span>{formatWindow(explanation.data.sample_window)}</span>
               </div>
             </div>

@@ -154,7 +154,10 @@ export default function DeadLettersPage() {
       cell: ({ row }) => {
         const status = row.original.replay_status;
         if (!status) return <span className="text-slate-500">—</span>;
-        const toneMap: Record<string, "success" | "warning" | "info" | "danger" | "neutral"> = {
+        const toneMap: Record<
+          string,
+          "success" | "warning" | "info" | "danger" | "neutral"
+        > = {
           pending: "warning",
           replaying: "info",
           replayed: "success",

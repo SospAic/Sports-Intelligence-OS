@@ -13,8 +13,7 @@ import { expect, test } from "@playwright/test";
 
 const ADMIN_EMAIL =
   process.env.E2E_ADMIN_EMAIL ?? "admin@sportsintelligence.local";
-const ADMIN_PASSWORD =
-  process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
+const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
 
 /** Log in and land on the dashboard before each test. */
 async function login(page: import("@playwright/test").Page) {
@@ -41,7 +40,10 @@ test.describe("Keyboard navigation", () => {
     await expect(searchInput).toBeFocused();
   });
 
-  test("Tab through sidebar navigation links", async ({ page, browserName }) => {
+  test("Tab through sidebar navigation links", async ({
+    page,
+    browserName,
+  }) => {
     test.skip(
       browserName !== "chromium",
       "Sidebar layout differs; test targets chromium",

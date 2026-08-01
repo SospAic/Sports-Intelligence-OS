@@ -198,18 +198,21 @@ export function ContentDetailClient({ id }: { id: string }) {
         <Panel className="p-5">
           <h2 className="font-medium text-white">互动拆解</h2>
           <p className="mt-1 text-xs text-slate-500">
-            点赞 / 评论 / 收藏 / 分享各占播放量的比例（基于最新快照；公开可获取字段）。
+            点赞 / 评论 / 收藏 /
+            分享各占播放量的比例（基于最新快照；公开可获取字段）。
           </p>
           <InteractionBreakdown snapshot={snapshot} format={formatPercent} />
         </Panel>
         <Panel className="p-5">
           <h2 className="font-medium text-white">流量来源占比</h2>
           <p className="mt-1 text-xs text-slate-500">
-            推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API 或流量来源授权后返回真实值。
+            推荐 / 搜索 / 关注流量占比；需要配置该平台官方 API
+            或流量来源授权后返回真实值。
           </p>
           <TrafficSourceBreakdown
             split={{
-              recommendation_traffic_rate: snapshot?.recommendation_traffic_rate ?? null,
+              recommendation_traffic_rate:
+                snapshot?.recommendation_traffic_rate ?? null,
               search_traffic_rate: snapshot?.search_traffic_rate ?? null,
               profile_traffic_rate: snapshot?.profile_traffic_rate ?? null,
             }}

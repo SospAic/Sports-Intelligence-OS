@@ -111,7 +111,9 @@ describe("可视化自动化与通知配置", () => {
         { field: "view_count", operator: "gte", value: 1000000 },
         {
           operator: "NOT",
-          conditions: [{ field: "source_kind", operator: "eq", value: "imported" }],
+          conditions: [
+            { field: "source_kind", operator: "eq", value: "imported" },
+          ],
         },
       ],
     });

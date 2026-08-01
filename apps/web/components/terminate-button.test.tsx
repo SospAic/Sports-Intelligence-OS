@@ -16,9 +16,7 @@ describe("TerminateButton", () => {
     expect(screen.getByRole("button", { name: /终止任务/ })).toBeTruthy();
 
     await userEvent.click(screen.getByRole("button", { name: /终止任务/ }));
-    expect(
-      screen.getByRole("button", { name: /确认终止/ }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: /确认终止/ })).toBeTruthy();
     expect(onTerminate).not.toHaveBeenCalled();
   });
 

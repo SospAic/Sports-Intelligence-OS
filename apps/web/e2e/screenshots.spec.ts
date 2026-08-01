@@ -14,8 +14,7 @@ import { expect, test } from "@playwright/test";
 
 const ADMIN_EMAIL =
   process.env.E2E_ADMIN_EMAIL ?? "admin@sportsintelligence.local";
-const ADMIN_PASSWORD =
-  process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
+const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "CiOnly!Passw0rd#2026";
 
 /** Pages that require authentication. */
 const AUTHENTICATED_PAGES = [
@@ -57,7 +56,10 @@ test.describe("Visual regression screenshots", () => {
 
       // Wait for the app shell to settle (loading spinner gone)
       await page
-        .waitForSelector('[aria-busy="true"]', { state: "hidden", timeout: 10_000 })
+        .waitForSelector('[aria-busy="true"]', {
+          state: "hidden",
+          timeout: 10_000,
+        })
         .catch(() => {
           /* spinner may not appear for fast loads */
         });
@@ -72,9 +74,7 @@ test.describe("Visual regression screenshots", () => {
     });
   }
 
-  test("login page validation state screenshot", async ({
-    page,
-  }, testInfo) => {
+  test("login page validation state screenshot", async ({ page }, testInfo) => {
     await page.goto("/login");
     await page.getByRole("button", { name: "登录" }).click();
 

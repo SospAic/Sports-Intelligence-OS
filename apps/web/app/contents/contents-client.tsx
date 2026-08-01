@@ -39,7 +39,10 @@ import {
 } from "@/components/ui";
 import { apiRequest, downloadApiFile } from "@/lib/browser-api";
 import { buildContentListPath } from "@/lib/admin-queries";
-import { metricAvailability, metricConditionText } from "@/lib/metric-availability";
+import {
+  metricAvailability,
+  metricConditionText,
+} from "@/lib/metric-availability";
 import { resolvePublishedFrom } from "@/lib/time-range";
 import { useUrlState } from "@/lib/use-persisted-state";
 import {
@@ -292,7 +295,9 @@ export function ContentsClient() {
           snapshot.like_count,
           snapshot.comment_count,
           snapshot.share_count,
-        ].filter((value): value is number => value !== undefined && value !== null);
+        ].filter(
+          (value): value is number => value !== undefined && value !== null,
+        );
         return observed.length
           ? observed.reduce((sum, value) => sum + value, 0) /
               snapshot.view_count
@@ -314,7 +319,9 @@ export function ContentsClient() {
         );
         if (status === "needs-condition")
           return (
-            <NeedsConditionBadge text={metricConditionText("completion_rate")} />
+            <NeedsConditionBadge
+              text={metricConditionText("completion_rate")}
+            />
           );
         return (
           <AvailabilityValue

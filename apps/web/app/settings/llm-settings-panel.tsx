@@ -119,33 +119,159 @@ const LLM_PRESETS: Array<{
   default_model: string;
 }> = [
   // ─── 国际主流 ───────────────────────────────────────────────────────
-  { key: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", default_model: "gpt-4.1-mini" },
-  { key: "anthropic", label: "Anthropic (Claude)", base_url: "https://api.anthropic.com/v1", default_model: "claude-sonnet-4-20250514" },
-  { key: "gemini", label: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", default_model: "gemini-2.5-flash" },
-  { key: "mistral", label: "Mistral AI", base_url: "https://api.mistral.ai/v1", default_model: "mistral-large-latest" },
-  { key: "grok", label: "Grok (xAI)", base_url: "https://api.x.ai/v1", default_model: "grok-3" },
-  { key: "groq-lpu", label: "Groq (LPU)", base_url: "https://api.groq.com/openai/v1", default_model: "llama-3.3-70b-versatile" },
-  { key: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", default_model: "openai/gpt-4.1-mini" },
-  { key: "together", label: "Together AI", base_url: "https://api.together.xyz/v1", default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo" },
-  { key: "perplexity", label: "Perplexity", base_url: "https://api.perplexity.ai", default_model: "sonar-pro" },
-  { key: "cohere", label: "Cohere", base_url: "https://api.cohere.ai/compatibility/v1", default_model: "command-r-plus" },
-  { key: "bedrock", label: "AWS Bedrock (OpenAI 兼容)", base_url: "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse", default_model: "anthropic.claude-3-5-sonnet-20241022-v2:0" },
+  {
+    key: "openai",
+    label: "OpenAI",
+    base_url: "https://api.openai.com/v1",
+    default_model: "gpt-4.1-mini",
+  },
+  {
+    key: "anthropic",
+    label: "Anthropic (Claude)",
+    base_url: "https://api.anthropic.com/v1",
+    default_model: "claude-sonnet-4-20250514",
+  },
+  {
+    key: "gemini",
+    label: "Google Gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    default_model: "gemini-2.5-flash",
+  },
+  {
+    key: "mistral",
+    label: "Mistral AI",
+    base_url: "https://api.mistral.ai/v1",
+    default_model: "mistral-large-latest",
+  },
+  {
+    key: "grok",
+    label: "Grok (xAI)",
+    base_url: "https://api.x.ai/v1",
+    default_model: "grok-3",
+  },
+  {
+    key: "groq-lpu",
+    label: "Groq (LPU)",
+    base_url: "https://api.groq.com/openai/v1",
+    default_model: "llama-3.3-70b-versatile",
+  },
+  {
+    key: "openrouter",
+    label: "OpenRouter",
+    base_url: "https://openrouter.ai/api/v1",
+    default_model: "openai/gpt-4.1-mini",
+  },
+  {
+    key: "together",
+    label: "Together AI",
+    base_url: "https://api.together.xyz/v1",
+    default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  },
+  {
+    key: "perplexity",
+    label: "Perplexity",
+    base_url: "https://api.perplexity.ai",
+    default_model: "sonar-pro",
+  },
+  {
+    key: "cohere",
+    label: "Cohere",
+    base_url: "https://api.cohere.ai/compatibility/v1",
+    default_model: "command-r-plus",
+  },
+  {
+    key: "bedrock",
+    label: "AWS Bedrock (OpenAI 兼容)",
+    base_url:
+      "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
+    default_model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+  },
   // ─── 国内主流 ───────────────────────────────────────────────────────
-  { key: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-chat" },
-  { key: "moonshot", label: "Moonshot (Kimi)", base_url: "https://api.moonshot.cn/v1", default_model: "moonshot-v1-128k" },
-  { key: "zhipu", label: "智谱 AI (GLM)", base_url: "https://open.bigmodel.cn/api/paas/v4", default_model: "glm-4-plus" },
-  { key: "qwen", label: "通义千问 (Qwen)", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", default_model: "qwen-plus" },
-  { key: "doubao", label: "豆包 (Doubao)", base_url: "https://ark.cn-beijing.volces.com/api/v3", default_model: "doubao-1-5-pro-32k-250115" },
-  { key: "spark", label: "讯飞星火 (Spark)", base_url: "https://spark-api-open.xf-yun.com/v1", default_model: "generalv3.5" },
-  { key: "hunyuan", label: "腾讯混元 (Hunyuan)", base_url: "https://api.hunyuan.cloud.tencent.com/v1", default_model: "hunyuan-pro" },
-  { key: "wenxin", label: "百度文心 (ERNIE)", base_url: "https://qianfan.baidubce.com/v2", default_model: "ernie-4.0-8k-latest" },
-  { key: "minimax", label: "MiniMax", base_url: "https://api.minimax.chat/v1", default_model: "MiniMax-Text-01" },
-  { key: "step", label: "阶跃星辰 (Step)", base_url: "https://api.stepfun.com/v1", default_model: "step-2-16k" },
-  { key: "360", label: "360 智脑", base_url: "https://ai.360.cn/v1", default_model: "360gpt-pro" },
+  {
+    key: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com/v1",
+    default_model: "deepseek-chat",
+  },
+  {
+    key: "moonshot",
+    label: "Moonshot (Kimi)",
+    base_url: "https://api.moonshot.cn/v1",
+    default_model: "moonshot-v1-128k",
+  },
+  {
+    key: "zhipu",
+    label: "智谱 AI (GLM)",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    default_model: "glm-4-plus",
+  },
+  {
+    key: "qwen",
+    label: "通义千问 (Qwen)",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    default_model: "qwen-plus",
+  },
+  {
+    key: "doubao",
+    label: "豆包 (Doubao)",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    default_model: "doubao-1-5-pro-32k-250115",
+  },
+  {
+    key: "spark",
+    label: "讯飞星火 (Spark)",
+    base_url: "https://spark-api-open.xf-yun.com/v1",
+    default_model: "generalv3.5",
+  },
+  {
+    key: "hunyuan",
+    label: "腾讯混元 (Hunyuan)",
+    base_url: "https://api.hunyuan.cloud.tencent.com/v1",
+    default_model: "hunyuan-pro",
+  },
+  {
+    key: "wenxin",
+    label: "百度文心 (ERNIE)",
+    base_url: "https://qianfan.baidubce.com/v2",
+    default_model: "ernie-4.0-8k-latest",
+  },
+  {
+    key: "minimax",
+    label: "MiniMax",
+    base_url: "https://api.minimax.chat/v1",
+    default_model: "MiniMax-Text-01",
+  },
+  {
+    key: "step",
+    label: "阶跃星辰 (Step)",
+    base_url: "https://api.stepfun.com/v1",
+    default_model: "step-2-16k",
+  },
+  {
+    key: "360",
+    label: "360 智脑",
+    base_url: "https://ai.360.cn/v1",
+    default_model: "360gpt-pro",
+  },
   // ─── 本地 / 网关 ───────────────────────────────────────────────────
-  { key: "ollama", label: "Ollama（本地）", base_url: "http://localhost:11434/v1", default_model: "qwen3:8b" },
-  { key: "new-api", label: "New API 网关（本地）", base_url: "http://llm-gateway:3000/v1", default_model: "gpt-4o-mini" },
-  { key: "chat2api", label: "Chat2API 实验（本地）", base_url: "http://llm-experimental:8080/v1", default_model: "gpt-4o" },
+  {
+    key: "ollama",
+    label: "Ollama（本地）",
+    base_url: "http://localhost:11434/v1",
+    default_model: "qwen3:8b",
+  },
+  {
+    key: "new-api",
+    label: "New API 网关（本地）",
+    base_url: "http://llm-gateway:3000/v1",
+    default_model: "gpt-4o-mini",
+  },
+  {
+    key: "chat2api",
+    label: "Chat2API 实验（本地）",
+    base_url: "http://llm-experimental:8080/v1",
+    default_model: "gpt-4o",
+  },
 ];
 
 /** Detect which preset matches a saved base_url (by hostname). */
@@ -154,7 +280,10 @@ function detectPresetKey(baseUrl: string | undefined): string {
   const normalized = baseUrl.replace(/\/+$/, "").toLowerCase();
   for (const preset of LLM_PRESETS) {
     const presetNormalized = preset.base_url.replace(/\/+$/, "").toLowerCase();
-    if (normalized === presetNormalized || normalized.startsWith(presetNormalized.replace(/\/v\d+.*$/, ""))) {
+    if (
+      normalized === presetNormalized ||
+      normalized.startsWith(presetNormalized.replace(/\/v\d+.*$/, ""))
+    ) {
       return preset.key;
     }
   }
@@ -164,7 +293,9 @@ function detectPresetKey(baseUrl: string | undefined): string {
     for (const preset of LLM_PRESETS) {
       if (preset.base_url.toLowerCase().includes(host)) return preset.key;
     }
-  } catch { /* ignore invalid URLs */ }
+  } catch {
+    /* ignore invalid URLs */
+  }
   return "openai";
 }
 
@@ -355,7 +486,8 @@ export function LLMSettingsPanel() {
             <div>
               <h2 className="font-medium text-white">LLM Provider 配置</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                选择模型提供商，填写 API Key 后即可用于内容生成。所有提供商均通过 OpenAI 兼容接口对接。
+                选择模型提供商，填写 API Key
+                后即可用于内容生成。所有提供商均通过 OpenAI 兼容接口对接。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -365,7 +497,11 @@ export function LLMSettingsPanel() {
                 onClick={testConnection}
                 type="button"
               >
-                {busy ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />}
+                {busy ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <FlaskConical size={14} />
+                )}
                 测试连接
               </button>
               <button
@@ -374,13 +510,19 @@ export function LLMSettingsPanel() {
                 onClick={save}
                 type="button"
               >
-                {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                {busy ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Save size={14} />
+                )}
                 保存配置
               </button>
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <label className="text-sm font-medium text-slate-300">模型提供商</label>
+            <label className="text-sm font-medium text-slate-300">
+              模型提供商
+            </label>
             <select
               className={`${inputClass} max-w-xs`}
               onChange={(e) => applyPreset(e.target.value)}
@@ -442,7 +584,9 @@ export function LLMSettingsPanel() {
           </div>
           {form.call_mode === "browser_proxy" && (
             <p className="text-xs text-amber-300/80">
-              浏览器代理模式将通过 Chat2API / g4f 服务模拟浏览器请求，Base URL 已自动设为 http://llm-experimental:8080/v1。该模式可能不稳定，仅建议在测试环境使用。
+              浏览器代理模式将通过 Chat2API / g4f 服务模拟浏览器请求，Base URL
+              已自动设为
+              http://llm-experimental:8080/v1。该模式可能不稳定，仅建议在测试环境使用。
             </p>
           )}
         </div>

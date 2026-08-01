@@ -57,41 +57,72 @@ describe("generation presentation", () => {
 
   it("has a label for every A-group output field", () => {
     const aGroup: string[] = [
-      "event_fact_summary", "fact_sources", "story_value",
-      "tts_en", "translation_zh",
-      "video_title_en", "video_title_zh",
-      "search_keywords", "material_keywords", "tags",
-      "project_filename", "qa_report", "used_rules", "rewrite_reasons",
+      "event_fact_summary",
+      "fact_sources",
+      "story_value",
+      "tts_en",
+      "translation_zh",
+      "video_title_en",
+      "video_title_zh",
+      "search_keywords",
+      "material_keywords",
+      "tags",
+      "project_filename",
+      "qa_report",
+      "used_rules",
+      "rewrite_reasons",
     ];
     for (const key of aGroup) {
       expect(outputLabels).toHaveProperty(key);
-      expect(outputLabels[key as keyof typeof outputLabels].length).toBeGreaterThan(0);
+      expect(
+        outputLabels[key as keyof typeof outputLabels].length,
+      ).toBeGreaterThan(0);
     }
   });
 
   it("has a label for every B-group 7.9 full-package field", () => {
     const bGroup: string[] = [
-      "spoken_char_count", "event_identity", "story_format",
-      "story_format_reason", "central_question", "selected_hook",
-      "cmssml", "ev3", "story_architecture",
-      "lcr_enabled", "lcr_reason", "hook_candidates",
-      "answer_word_map", "reaction_relay", "evidence_rewards",
-      "exclusion_ladder", "dialogue_notes",
+      "spoken_char_count",
+      "event_identity",
+      "story_format",
+      "story_format_reason",
+      "central_question",
+      "selected_hook",
+      "cmssml",
+      "ev3",
+      "story_architecture",
+      "lcr_enabled",
+      "lcr_reason",
+      "hook_candidates",
+      "answer_word_map",
+      "reaction_relay",
+      "evidence_rewards",
+      "exclusion_ladder",
+      "dialogue_notes",
     ];
     for (const key of bGroup) {
       expect(outputLabels).toHaveProperty(key);
-      expect(outputLabels[key as keyof typeof outputLabels].length).toBeGreaterThan(0);
+      expect(
+        outputLabels[key as keyof typeof outputLabels].length,
+      ).toBeGreaterThan(0);
     }
   });
 
   it("has a label for every C-group ambiguous field", () => {
     const cGroup: string[] = [
-      "audio_performance_map", "tts_settings", "video_material_plan",
-      "edit_map", "caption_map", "original_audio_plan", "srt_output",
+      "audio_performance_map",
+      "tts_settings",
+      "video_material_plan",
+      "edit_map",
+      "caption_map",
+      "original_audio_plan",
+      "srt_output",
     ];
     for (const key of cGroup) {
       expect(outputLabels).toHaveProperty(key);
-      expect(outputLabels[key as keyof typeof outputLabels].length).toBeGreaterThan(0);
+      expect(
+        outputLabels[key as keyof typeof outputLabels].length,
+      ).toBeGreaterThan(0);
     }
   });
 
@@ -100,18 +131,25 @@ describe("generation presentation", () => {
       spoken_char_count: 1195,
       story_format: "consequence-first-decision",
       lcr_enabled: false,
-      story_architecture: { primary_format: "consequence-first-decision", lcr_enabled: false },
+      story_architecture: {
+        primary_format: "consequence-first-decision",
+        lcr_enabled: false,
+      },
       cmssml: "Single line CMSSML narration.",
       ev3: "Single line EV3 narration.",
     };
     // numeric → string
     expect(outputText(output, "spoken_char_count")).toBe("1195");
     // plain string passthrough
-    expect(outputText(output, "story_format")).toBe("consequence-first-decision");
+    expect(outputText(output, "story_format")).toBe(
+      "consequence-first-decision",
+    );
     // boolean → string
     expect(outputText(output, "lcr_enabled")).toBe("false");
     // object → pretty JSON
-    expect(outputText(output, "story_architecture")).toContain("primary_format");
+    expect(outputText(output, "story_architecture")).toContain(
+      "primary_format",
+    );
     // single-line TTS variants
     expect(outputText(output, "cmssml")).toBe("Single line CMSSML narration.");
     expect(outputText(output, "ev3")).toBe("Single line EV3 narration.");

@@ -42,10 +42,22 @@ interface MetricContract {
  */
 export const METRIC_CONTRACT: Record<string, MetricContract> = {
   // Public-browse fields: always available once the adapter returns them.
-  follower_count: { method: "public_browse", conditionText: "", label: "粉丝数" },
-  total_view_count: { method: "public_browse", conditionText: "", label: "总播放量" },
+  follower_count: {
+    method: "public_browse",
+    conditionText: "",
+    label: "粉丝数",
+  },
+  total_view_count: {
+    method: "public_browse",
+    conditionText: "",
+    label: "总播放量",
+  },
   video_count: { method: "public_browse", conditionText: "", label: "作品数" },
-  engagement_rate: { method: "public_browse", conditionText: "", label: "互动率" },
+  engagement_rate: {
+    method: "public_browse",
+    conditionText: "",
+    label: "互动率",
+  },
   view_count: { method: "public_browse", conditionText: "", label: "播放量" },
   like_count: { method: "public_browse", conditionText: "", label: "点赞" },
   comment_count: { method: "public_browse", conditionText: "", label: "评论" },
@@ -96,9 +108,7 @@ export const METRIC_CONTRACT: Record<string, MetricContract> = {
 };
 
 /** Returns true when the metric value is present (not null / undefined). */
-export function hasMetricValue(
-  value: number | null | undefined,
-): boolean {
+export function hasMetricValue(value: number | null | undefined): boolean {
   return value !== null && value !== undefined;
 }
 

@@ -5,9 +5,7 @@ import { normalizeExternalImageUrl } from "./media";
 describe("normalizeExternalImageUrl", () => {
   it("upgrades Bilibili media to HTTPS", () => {
     expect(
-      normalizeExternalImageUrl(
-        "http://i2.hdslb.com/bfs/archive/example.jpg",
-      ),
+      normalizeExternalImageUrl("http://i2.hdslb.com/bfs/archive/example.jpg"),
     ).toBe("https://i2.hdslb.com/bfs/archive/example.jpg");
   });
 

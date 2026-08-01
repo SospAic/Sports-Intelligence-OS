@@ -633,14 +633,18 @@ export function SettingsClient() {
             ))}
           </div>
           {platformAdapters.isLoading && (
-            <Panel className="p-5 text-sm text-slate-500">正在加载适配器能力…</Panel>
+            <Panel className="p-5 text-sm text-slate-500">
+              正在加载适配器能力…
+            </Panel>
           )}
           {platformAdapters.data && platformAdapters.data.length > 0 && (
             <PlatformAdapterMatrix
               adapters={platformAdapters.data}
               activeKeys={
                 new Set(
-                  (platforms.data ?? []).map((platform) => platform.adapter_key),
+                  (platforms.data ?? []).map(
+                    (platform) => platform.adapter_key,
+                  ),
                 )
               }
             />
@@ -697,7 +701,9 @@ function PlatformAdapterMatrix({
                     : "neutral"
                 }
               >
-                {adapter.implementation_status === "implemented" ? "已实现" : "骨架"}
+                {adapter.implementation_status === "implemented"
+                  ? "已实现"
+                  : "骨架"}
               </Badge>
               {activeKeys.has(adapter.key) && (
                 <Badge tone="info">已接入平台</Badge>

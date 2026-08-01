@@ -92,9 +92,7 @@ const CALL_TYPE_LABEL: Record<string, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function statusTone(
-  status: string,
-): "success" | "danger" | "warning" {
+function statusTone(status: string): "success" | "danger" | "warning" {
   if (status === "success") return "success";
   if (status === "timeout") return "warning";
   return "danger";
@@ -150,9 +148,7 @@ function DetailPanel({
       <div className="mb-4 flex items-center justify-between">
         <h3 className="text-sm font-semibold text-white">
           调用详情 &mdash;{" "}
-          <code className="text-cyan-400">
-            {attempt.id.slice(0, 8)}
-          </code>
+          <code className="text-cyan-400">{attempt.id.slice(0, 8)}</code>
         </h3>
         <button
           className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-800 hover:text-white"
@@ -184,11 +180,7 @@ function DetailPanel({
         <div>
           <p className="text-xs text-slate-500">可重试</p>
           <p className="mt-1 text-sm text-slate-300">
-            {attempt.retryable === null
-              ? "—"
-              : attempt.retryable
-                ? "是"
-                : "否"}
+            {attempt.retryable === null ? "—" : attempt.retryable ? "是" : "否"}
           </p>
         </div>
       </div>
@@ -204,9 +196,7 @@ function DetailPanel({
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div>
-          <p className="mb-2 text-xs font-medium text-slate-400">
-            请求摘要
-          </p>
+          <p className="mb-2 text-xs font-medium text-slate-400">请求摘要</p>
           {attempt.request_summary ? (
             <pre className="max-h-60 overflow-auto rounded-lg border border-slate-800 bg-slate-900/80 p-3 text-xs text-slate-300">
               {JSON.stringify(attempt.request_summary, null, 2)}
@@ -216,9 +206,7 @@ function DetailPanel({
           )}
         </div>
         <div>
-          <p className="mb-2 text-xs font-medium text-slate-400">
-            响应摘要
-          </p>
+          <p className="mb-2 text-xs font-medium text-slate-400">响应摘要</p>
           {attempt.response_summary ? (
             <pre className="max-h-60 overflow-auto rounded-lg border border-slate-800 bg-slate-900/80 p-3 text-xs text-slate-300">
               {JSON.stringify(attempt.response_summary, null, 2)}
@@ -344,10 +332,7 @@ export default function ExternalCallsPage() {
         const err = row.original.error_detail_safe;
         if (!err) return <span className="text-slate-500">—</span>;
         return (
-          <span
-            className="line-clamp-2 max-w-xs text-rose-300"
-            title={err}
-          >
+          <span className="line-clamp-2 max-w-xs text-rose-300" title={err}>
             {err}
           </span>
         );
