@@ -251,7 +251,8 @@ def test_platform_adapters_expose_capability_matrix(client: TestClient) -> None:
     assert isinstance(adapters, list)
     assert len(adapters) >= 1
     keys = {adapter["key"] for adapter in adapters}
-    assert "mock_platform" in keys or "youtube" in keys
+    assert "youtube" in keys
+    assert "mock_platform" not in keys
     for adapter in adapters:
         assert set(adapter) >= {
             "key",

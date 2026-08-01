@@ -6,18 +6,24 @@ rate-limited API). Previously the code forced ``account.sync_status = "success"`
 in that case, falsifying the monitoring state. We now persist the real
 ``degraded`` status and surface an error code, so the UI can show
 "部分同步（指标缺失）" instead of a misleading "监控中".
+
+These tests drive a REAL adapter shape (``source_kind="live"``) via a small
+test-only fixture adapter (``RealShapedTestAdapter`` in conftest) that is never
+registered in production. They assert the sync engine's status *decision* logic,
+not any live data. A separate test asserts that a skeleton adapter — which
+performs no live requests — ends the sync in ``error`` and releases the account
+lock, i.e. the system never reports "success" when no real data could be fetched.
 """
 
 import os
 from datetime import UTC, datetime
 from tempfile import mkstemp
-from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.adapters.platforms.base import PlatformAdapter, PlatformMetricsData
-from app.adapters.platforms.mock import MockPlatformAdapter
+from app.adapters.platforms.base import AdapterCapability, AdapterDescriptor
+from app.adapters.platforms.stubs import SkeletonPlatformAdapter
 from app.core.config import Settings
 from app.db.base import Base
 from app.models.monitoring import Account, Platform
@@ -25,6 +31,11 @@ from app.models.sync import SyncRun
 from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
 from app.services.sync import PlatformSyncExecutor
+
+from .conftest import RealShapedTestAdapter
+
+ADAPTER_KEY = "test_sync_adapter"
+SKELETON_KEY = "skeleton_test"
 
 
 def _cleanup(path: str) -> None:
@@ -45,56 +56,22 @@ def _build_settings() -> Settings:
     )
 
 
-def _empty_content_page() -> SimpleNamespace:
-    return SimpleNamespace(items=[], next_cursor=None)
-
-
-class DegradedMockAdapter(MockPlatformAdapter):
-    """Mock adapter whose account analytics are unavailable (all-None)."""
-
-    async def fetch_account_analytics(self, ctx, external_id):  # noqa: ANN001
-        return PlatformMetricsData(
-            external_id=external_id,
-            captured_at=ctx.observed_at,
-            metrics={
-                "follower_count": None,
-                "following_count": None,
-                "total_like_count": None,
-                "total_view_count": None,
-                "video_count": None,
-                "engagement_rate": None,
-            },
-            source_kind="mock",
-            provider=self.key,
-            fetched_at=ctx.observed_at,
-            metadata={"demo": True},
-        )
-
-    async def list_contents(self, ctx, external_id, **kwargs):  # noqa: ANN001, ARG001
-        return _empty_content_page()
-
-    async def fetch_content_analytics(self, ctx, external_ids):  # noqa: ANN001, ARG001
-        return ()
-
-
-class ProfileOnlyMockAdapter(MockPlatformAdapter):
-    """Mock adapter with working analytics so the account ends in 'success'."""
-
-    async def list_contents(self, ctx, external_id, **kwargs):  # noqa: ANN001, ARG001
-        return _empty_content_page()
-
-    async def fetch_content_analytics(self, ctx, external_ids):  # noqa: ANN001, ARG001
-        return ()
-
-
-def _build_registry(adapter: PlatformAdapter) -> ProviderRegistry[PlatformAdapter]:
-    registry: ProviderRegistry[PlatformAdapter] = ProviderRegistry()
-    registry.register(adapter)
+def _build_registry(adapter: object) -> ProviderRegistry:
+    registry: ProviderRegistry = ProviderRegistry()
+    registry.register(adapter)  # type: ignore[arg-type]
     return registry
 
 
-async def _seed(session, workspace_id, platform_id, account_id, run_id) -> None:
-    session.add(
+async def _seed(
+    session: object,
+    workspace_id: object,
+    platform_id: object,
+    account_id: object,
+    run_id: object,
+    adapter_key: str,
+) -> None:
+    s = session  # type: ignore[assignment]
+    s.add(
         Workspace(
             id=workspace_id,
             name="ws",
@@ -104,18 +81,18 @@ async def _seed(session, workspace_id, platform_id, account_id, run_id) -> None:
             row_version=1,
         )
     )
-    session.add(
+    s.add(
         Platform(
             id=platform_id,
             key="test_platform",
             name="Test",
             category="video",
             enabled=True,
-            adapter_key="mock_platform",
+            adapter_key=adapter_key,
             capabilities={},
         )
     )
-    session.add(
+    s.add(
         Account(
             id=account_id,
             workspace_id=workspace_id,
@@ -127,20 +104,20 @@ async def _seed(session, workspace_id, platform_id, account_id, run_id) -> None:
             fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
         )
     )
-    session.add(
+    s.add(
         SyncRun(
             id=run_id,
             workspace_id=workspace_id,
             target_type="account",
             target_id=account_id,
-            adapter_key="mock_platform",
+            adapter_key=adapter_key,
             request_id="req-degraded",
             queued_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
             status="queued",
             metadata_json={},
         )
     )
-    await session.commit()
+    await s.commit()
 
 
 async def test_degraded_sync_account_status_is_degraded() -> None:
@@ -159,15 +136,14 @@ async def test_degraded_sync_account_status_is_degraded() -> None:
         account_id = uuid4()
         run_id = uuid4()
 
-        registry = _build_registry(DegradedMockAdapter())
+        registry = _build_registry(RealShapedTestAdapter(analytics_all_none=True))
 
         async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id)
+            await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
 
         settings = _build_settings()
         async with maker() as session:
-            executor = PlatformSyncExecutor(session, registry, settings)
-            await executor.execute_account_run(run_id)
+            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
 
         async with maker() as session:
             account = await session.get(Account, account_id)
@@ -197,19 +173,68 @@ async def test_successful_sync_account_status_is_success() -> None:
         account_id = uuid4()
         run_id = uuid4()
 
-        registry = _build_registry(ProfileOnlyMockAdapter())
+        registry = _build_registry(RealShapedTestAdapter(analytics_all_none=False))
 
         async with maker() as session:
-            await _seed(session, workspace_id, platform_id, account_id, run_id)
+            await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
 
         settings = _build_settings()
         async with maker() as session:
-            executor = PlatformSyncExecutor(session, registry, settings)
-            await executor.execute_account_run(run_id)
+            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
 
         async with maker() as session:
             account = await session.get(Account, account_id)
             assert account.sync_status == "success"
+    finally:
+        await engine.dispose()
+        _cleanup(path)
+
+
+class _SkeletonTestAdapter(SkeletonPlatformAdapter):
+    descriptor = AdapterDescriptor(
+        key=SKELETON_KEY,
+        name="Skeleton Test",
+        implementation_status="skeleton",
+        capabilities={capability: False for capability in AdapterCapability},
+        config_fields=(),
+        source_kinds=frozenset({"live"}),
+    )
+
+
+async def test_skeleton_adapter_sync_ends_in_error_and_releases_lock() -> None:
+    """A skeleton adapter performs no live requests. The sync must end in 'error'
+    (never 'success'), and the account lock must be released so the account is
+    not permanently stuck. This guards the real-data contract: no live data ->
+    no fake success, and the lock is never held forever."""
+    fd, path = mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        workspace_id = uuid4()
+        platform_id = uuid4()
+        account_id = uuid4()
+        run_id = uuid4()
+
+        registry = _build_registry(_SkeletonTestAdapter())
+
+        async with maker() as session:
+            await _seed(session, workspace_id, platform_id, account_id, run_id, SKELETON_KEY)
+
+        settings = _build_settings()
+        async with maker() as session:
+            await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
+
+        async with maker() as session:
+            account = await session.get(Account, account_id)
+            run = await session.get(SyncRun, run_id)
+            assert run.status == "error", "skeleton adapter must not report success"
+            assert account.sync_status == "error"
+            assert run.lock_key is None, "account lock must be released after a failed sync"
+            assert account.last_sync_error_code is not None
     finally:
         await engine.dispose()
         _cleanup(path)

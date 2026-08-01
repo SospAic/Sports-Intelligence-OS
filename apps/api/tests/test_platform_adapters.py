@@ -11,7 +11,6 @@ from app.adapters.platforms.base import (
     RateLimitError,
 )
 from app.adapters.platforms.douyin import DouyinAdapter
-from app.adapters.platforms.mock import MockPlatformAdapter
 from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.adapters.platforms.tiktok import TikTokAdapter
 from app.adapters.platforms.youtube import YouTubeAdapter
@@ -246,29 +245,14 @@ def test_tiktok_string_scope_error_maps_without_integer_conversion() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mock_is_deterministic_and_skeletons_fail_explicitly() -> None:
-    adapter = MockPlatformAdapter()
-    ctx = context(seed="stable", snapshot_index=2)
-    first = await adapter.resolve_account(ctx, "creator")
-    second = await adapter.resolve_account(ctx, "creator")
-    metrics = await adapter.fetch_account_analytics(ctx, first.external_id)
-    assert first == second
-    assert first.source_kind == "mock"
-    assert first.metadata["is_mock"] is True
-    assert metrics.metadata["snapshot_index"] == 2
-
+async def test_registry_excludes_mock_adapters_and_all_are_implemented() -> None:
+    """The production adapter registry must never contain a 'mock' adapter, and
+    every registered adapter must be a real, implemented adapter (not a skeleton
+    that would falsify monitoring state)."""
     registry = build_platform_adapter_registry()
     try:
-        assert set(registry.keys()) == {
-            "bilibili_browser",
-            "douyin",
-            "douyin_browser",
-            "mock_platform",
-            "tiktok",
-            "tiktok_browser",
-            "youtube",
-            "youtube_browser",
-        }
+        assert "mock_platform" not in registry.keys()
+        assert all(not key.startswith("mock") for key in registry.keys())
         assert all(
             registry.get(key).descriptor.implementation_status == "implemented"
             for key in registry.keys()

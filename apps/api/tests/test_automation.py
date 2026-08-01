@@ -17,7 +17,7 @@ from app.automations.conditions import (
 )
 from app.core.config import Settings
 from app.models.automation import NotificationChannel
-from app.providers.notifications.base import NotificationMessage
+from app.providers.notifications.base import NotificationMessage, NotificationReceipt
 from app.providers.notifications.crypto import NotificationConfigCipher, mask_notification_config
 from app.providers.notifications.http import (
     DingTalkProvider,
@@ -99,7 +99,6 @@ def test_notification_config_encryption_masking_and_provider_contracts() -> None
     settings = Settings(environment="test", secret_key="test-notification-registry-secret")
     registry = build_notification_provider_registry(settings)
     assert set(registry.keys()) == {
-        "mock_notification",
         "email",
         "generic_webhook",
         "telegram",
@@ -189,7 +188,9 @@ def test_http_notification_providers_emit_channel_specific_payloads(
     assert captured[5][1]["msgtype"] == "text"
 
 
-def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestClient) -> None:
+def test_automation_api_cooldown_dedup_and_delivery(
+    client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
     csrf = authenticate(client)
     headers = {"X-CSRF-Token": csrf}
 
@@ -210,13 +211,21 @@ def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestCl
     assert {"host", "port", "use_tls", "use_ssl", "timeout_seconds"} <= email_fields
     assert {"url", "headers", "signing_secret", "max_attempts"} <= webhook_fields
 
+    # The test-delivery endpoint performs a real send. Stub the provider's I/O
+    # so the test runs offline without faking any data provenance.
+    async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
+        del config, message, idempotency_key
+        return NotificationReceipt(status="delivered", external_id="stub-test-1")
+
+    monkeypatch.setattr(GenericWebhookProvider, "send", fake_send)
+
     channel_response = client.post(
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "provider_key": "mock_notification",
-            "name": "仅测试 Mock 渠道",
-            "config": {},
+            "provider_key": "generic_webhook",
+            "name": "仅测试 Webhook 渠道",
+            "config": {"url": "https://hooks.example.test/notify"},
             "enabled": True,
         },
     )
@@ -258,22 +267,6 @@ def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestCl
     rule_id = rule_response.json()["id"]
 
     entity_id = str(uuid4())
-    blocked = client.post(
-        "/api/v1/automations/evaluate",
-        headers=headers,
-        json={
-            "entity_type": "content",
-            "entity_id": entity_id,
-            "facts": {"view_count": 1_200_000},
-            "event_key": "mock-production-boundary",
-            "source_kind": "mock",
-        },
-    )
-    assert blocked.status_code == 200, blocked.text
-    assert blocked.json()[0]["matched"] is False
-    assert blocked.json()[0]["execution_status"] == "suppressed"
-    assert blocked.json()[0]["condition_result"]["reason"] == "mock_source_blocked"
-
     live = client.post(
         "/api/v1/automations/evaluate",
         headers=headers,
@@ -315,11 +308,11 @@ def test_automation_api_cooldown_dedup_mock_boundary_and_delivery(client: TestCl
     test_delivery = client.post(
         f"/api/v1/notification-channels/{channel['id']}/test",
         headers=headers,
-        json={"title": "测试通知", "body": "仅验证 Mock 通知契约"},
+        json={"title": "测试通知", "body": "仅验证 Webhook 通知契约"},
     )
     assert test_delivery.status_code == 200, test_delivery.text
     assert test_delivery.json()["status"] == "delivered"
-    assert test_delivery.json()["provider_message_id"].startswith("mock-")
+    assert test_delivery.json()["provider_message_id"] == "stub-test-1"
 
 
 def test_automation_notification_uses_published_template(client: TestClient) -> None:
@@ -354,9 +347,9 @@ def test_automation_notification_uses_published_template(client: TestClient) -> 
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "provider_key": "mock_notification",
+            "provider_key": "generic_webhook",
             "name": "Template test channel",
-            "config": {},
+            "config": {"url": "https://hooks.example.test/template"},
             "enabled": True,
         },
     )
@@ -469,21 +462,32 @@ def test_automation_routes_require_authentication(client: TestClient) -> None:
     assert client.get("/api/v1/notification-channels").status_code == 401
 
 
-def test_generation_failure_does_not_block_following_notification(client: TestClient) -> None:
+def test_generation_failure_does_not_block_following_notification(
+    client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
     csrf = authenticate(client)
     headers = {"X-CSRF-Token": csrf}
     channel_response = client.post(
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "provider_key": "mock_notification",
+            "provider_key": "generic_webhook",
             "name": "AI 失败降级测试渠道",
-            "config": {},
+            "config": {"url": "https://hooks.example.test/ai-fallback"},
             "enabled": True,
         },
     )
     assert channel_response.status_code == 201
     channel_id = channel_response.json()["id"]
+
+    # The notification action performs a real send. Stub the provider's I/O
+    # offline so the test runs without faking any data provenance.
+    async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
+        del config, message, idempotency_key
+        return NotificationReceipt(status="delivered", external_id="stub-fallback-1")
+
+    monkeypatch.setattr(GenericWebhookProvider, "send", fake_send)
+
     rule_response = client.post(
         "/api/v1/automations",
         headers=headers,
@@ -502,8 +506,8 @@ def test_generation_failure_does_not_block_following_notification(client: TestCl
                     "sort_order": 0,
                     "config": {
                         "workflow_id": str(uuid4()),
-                        "provider": "mock_llm",
-                        "model": "mock-sports-writer-v1",
+                        "provider": "unconfigured_llm",
+                        "model": "nonexistent-model",
                     },
                 },
                 {
