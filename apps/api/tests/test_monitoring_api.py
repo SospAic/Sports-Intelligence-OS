@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
@@ -19,10 +19,9 @@ from app.models.monitoring import (
     ContentSnapshot,
     DerivedMetric,
 )
-from app.models.workspace import Workspace
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import RealShapedTestAdapter, TEST_PASSWORD, TEST_PLATFORM_ID
+from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter
 
 
 def authenticate(client: TestClient) -> str:
@@ -155,7 +154,7 @@ async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     registry = build_platform_adapter_registry(settings)
     # Real-shaped, test-local adapter (source_kind='live'); never a mock.
-    registry.register(RealShapedTestAdapter(key="youtube_browser", content_count=12))
+    registry.replace(RealShapedTestAdapter(key="youtube_browser", content_count=12))
     try:
         async with session_factory() as session:
             await PlatformSyncExecutor(session, registry, settings).execute_account_run(
@@ -172,7 +171,7 @@ async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
     assert refreshed.status_code == 200
     assert refreshed.json()["sync_status"] == "success"
     assert refreshed.json()["source_kind"] == "live"
-    assert refreshed.json()["source_provider"] == "test_sync_adapter"
+    assert refreshed.json()["source_provider"] == "youtube_browser"
     assert refreshed.json()["last_sync_error_code"] is None
     assert refreshed.json()["next_sync_at"] is not None
 

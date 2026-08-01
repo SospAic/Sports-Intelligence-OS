@@ -287,13 +287,19 @@ class SyncService:
                 if _utc(last_active) >= _utc(dispatch_stale_before):
                     continue
                 await self._release_stuck_run(
-                    run, now, "dispatch_timeout", "Sync task was queued but never picked up by a worker"
+                    run,
+                    now,
+                    "dispatch_timeout",
+                    "Sync task was queued but never picked up by a worker",
                 )
             else:
                 if _utc(last_active) >= _utc(stale_before):
                     continue
                 await self._release_stuck_run(
-                    run, now, "stale_task_recovered", "Task exceeded its execution lease and was released"
+                    run,
+                    now,
+                    "stale_task_recovered",
+                    "Task exceeded its execution lease and was released",
                 )
             recovered += 1
         if recovered:

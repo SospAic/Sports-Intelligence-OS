@@ -23,7 +23,7 @@ from app.workflows.generation import (
     validate_final_bundle,
 )
 
-from .conftest import StubLLMProvider, TEST_PASSWORD
+from .conftest import TEST_PASSWORD, StubLLMProvider
 
 RULE_SOURCE = (
     Path(__file__).parents[3]
@@ -173,7 +173,7 @@ async def _execute(database_path: Path, run_id: UUID) -> None:
     )
     engine, session_factory = create_engine_and_session(settings)
     providers = build_llm_provider_registry(settings)
-    providers.register(StubLLMProvider(key="openai_compatible"))
+    providers.replace(StubLLMProvider(key="openai_compatible"))
     try:
         async with session_factory() as session:
             await GenerationService(session, providers).execute_run(run_id)
@@ -191,7 +191,7 @@ def test_generation_api_runs_ten_step_stub_workflow_without_fake_verification(
     csrf = authenticate(client)
     # Real-shaped, test-local provider (source_kind='live'); never in production.
     # Registered under the real key so the schema stays honest.
-    client.app.state.llm_providers.register(StubLLMProvider(key="openai_compatible"))
+    client.app.state.llm_providers.replace(StubLLMProvider(key="openai_compatible"))
     import_rules(client, csrf)
     asyncio.run(_seed_defaults(database_path))
     monkeypatch.setattr(generation_module, "enqueue_generation", lambda _run_id: None)

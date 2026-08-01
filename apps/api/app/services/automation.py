@@ -372,7 +372,7 @@ class AutomationService:
             event_key=event_key,
             execution_status=(
                 "suppressed"
-                if suppression or mock_blocked
+                if suppression
                 else "queued"
                 if matched
                 else "not_matched"

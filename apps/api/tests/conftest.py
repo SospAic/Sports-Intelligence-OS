@@ -1,7 +1,7 @@
+import json
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-import json
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -25,6 +25,12 @@ from app.adapters.platforms.base import (
     PlatformMetricsData,
 )
 from app.core.config import Settings
+from app.core.security import hash_password
+from app.db.base import Base
+from app.main import create_app
+from app.models.monitoring import Platform
+from app.models.user import User
+from app.models.workspace import Workspace, WorkspaceMembership
 from app.providers.llm.base import (
     LLMHealth,
     LLMProvider,
@@ -32,12 +38,6 @@ from app.providers.llm.base import (
     LLMResponse,
     LLMUsage,
 )
-from app.core.security import hash_password
-from app.db.base import Base
-from app.main import create_app
-from app.models.monitoring import Platform
-from app.models.user import User
-from app.models.workspace import Workspace, WorkspaceMembership
 
 TEST_PASSWORD = "correct-horse-battery-staple"  # noqa: S105 - test fixture only
 TEST_PLATFORM_ID = uuid4()
@@ -328,6 +328,9 @@ class StubLLMProvider(LLMProvider):
     name = "Stub LLM (test fixture)"
     is_mock = False
     supports_streaming = True
+
+    def __init__(self, *, key: str = "stub_llm") -> None:
+        self.key = key
 
     @property
     def configured(self) -> bool:

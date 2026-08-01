@@ -14,8 +14,8 @@ from app.services.automation_seed import seed_automation_examples
 from app.services.bootstrap import bootstrap_admin
 from app.services.editorial_rules import EditorialRuleService
 from app.services.generation_seed import seed_generation_defaults
-from app.services.platform_catalog_seed import seed_platform_catalog
 from app.services.news_seed import seed_news_source_examples
+from app.services.platform_catalog_seed import seed_platform_catalog
 
 
 async def run_bootstrap(args: argparse.Namespace) -> None:

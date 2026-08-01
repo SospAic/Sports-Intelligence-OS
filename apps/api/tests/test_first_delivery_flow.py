@@ -19,10 +19,10 @@ from app.services.generation_seed import seed_generation_defaults
 from app.services.sync import PlatformSyncExecutor
 
 from .conftest import (
-    RealShapedTestAdapter,
-    StubLLMProvider,
     TEST_PASSWORD,
     TEST_PLATFORM_ID,
+    RealShapedTestAdapter,
+    StubLLMProvider,
 )
 
 RULE_SOURCE = (
@@ -65,7 +65,7 @@ async def _execute_sync(
     registry = build_platform_adapter_registry(settings)
     if adapter is not None:
         # Drive the sync with a real-shaped, test-local adapter (source_kind='live').
-        registry.register(adapter)
+        registry.replace(adapter)
     try:
         async with session_factory() as session:
             await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
@@ -125,7 +125,7 @@ def test_real_shaped_vertical_slice_keeps_every_step_auditable(
     monkeypatch.setattr("app.services.sync.enqueue_platform_sync", lambda _run_id: None)
     # Real LLM stub (source_kind='live') for the synchronous generation execution.
     # Registered under the real key so the request schema stays honest.
-    client.app.state.llm_providers.register(StubLLMProvider(key="openai_compatible"))
+    client.app.state.llm_providers.replace(StubLLMProvider(key="openai_compatible"))
 
     # Stub the webhook provider's I/O offline so delivery runs without faking provenance.
     async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
