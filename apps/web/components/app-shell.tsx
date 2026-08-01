@@ -49,6 +49,7 @@ import {
 
 import { apiRequest } from "@/lib/browser-api";
 import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Tooltip } from "@/components/ui";
 
 type WorkspaceValue = {
@@ -438,7 +439,10 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="hidden w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-slate-400 hover:bg-slate-900 lg:flex"
             onClick={() => setCollapsed((value) => !value)}
           >
-            <PanelLeftClose size={17} className={collapsed ? "rotate-180" : ""} />
+            <PanelLeftClose
+              size={17}
+              className={collapsed ? "rotate-180" : ""}
+            />
             {!collapsed && "收起导航"}
           </button>
         </Tooltip>
@@ -510,9 +514,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   if (event.key === "ArrowUp") {
                     event.preventDefault();
                     setActiveSearchIndex((index) =>
-                      index <= 0
-                        ? searchResults.length - 1
-                        : index - 1,
+                      index <= 0 ? searchResults.length - 1 : index - 1,
                     );
                     return;
                   }
@@ -601,6 +603,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
+            <ThemeToggle />
             <div className="relative hidden md:block">
               <button
                 aria-label={`同步状态：${queueHealth.label}`}
@@ -678,18 +681,15 @@ export function AppShell({ children }: { children: ReactNode }) {
                               </div>
                               {run?.progress_stage && (
                                 <p className="mt-1.5 text-[11px] text-slate-500">
-                                  {
-                                    {
-                                      queued: "排队",
-                                      validating: "校验",
-                                      account_profile: "账号资料",
-                                      content_list: "作品列表",
-                                      content_metrics: "指标",
-                                      derived_metrics: "派生",
-                                      completed: "完成",
-                                    }[run.progress_stage] ??
-                                      run.progress_stage
-                                  }
+                                  {{
+                                    queued: "排队",
+                                    validating: "校验",
+                                    account_profile: "账号资料",
+                                    content_list: "作品列表",
+                                    content_metrics: "指标",
+                                    derived_metrics: "派生",
+                                    completed: "完成",
+                                  }[run.progress_stage] ?? run.progress_stage}
                                   {account.sync_status === "queued"
                                     ? " · 排队中"
                                     : ""}
