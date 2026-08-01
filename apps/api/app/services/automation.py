@@ -503,8 +503,8 @@ class AutomationService:
                 ),
                 "rule_set_version_id": config.get("rule_set_version_id"),
                 "prompt_version_id": config.get("prompt_version_id"),
-                "provider": config.get("provider", "mock_llm"),
-                "model": config.get("model", "mock-sports-writer-v1"),
+                "provider": config.get("provider", "openai_compatible"),
+                "model": config.get("model", "gpt-4o-mini"),
                 "model_config": config.get("model_config", {}),
             }
         )

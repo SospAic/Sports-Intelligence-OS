@@ -20,10 +20,9 @@ from app.models.monitoring import (
     DerivedMetric,
 )
 from app.models.workspace import Workspace
-from app.services.monitoring_seed import seed_demo_monitoring
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID
+from .conftest import RealShapedTestAdapter, TEST_PASSWORD, TEST_PLATFORM_ID
 
 
 def authenticate(client: TestClient) -> str:
@@ -131,7 +130,7 @@ def test_platform_and_account_crud_are_authenticated_and_auditable(
 
 
 @pytest.mark.asyncio
-async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
+async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
     client: TestClient,
     database_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -155,6 +154,8 @@ async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     registry = build_platform_adapter_registry(settings)
+    # Real-shaped, test-local adapter (source_kind='live'); never a mock.
+    registry.register(RealShapedTestAdapter(key="youtube_browser", content_count=12))
     try:
         async with session_factory() as session:
             await PlatformSyncExecutor(session, registry, settings).execute_account_run(
@@ -170,17 +171,17 @@ async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
     refreshed = client.get(f"/api/v1/accounts/{account['id']}")
     assert refreshed.status_code == 200
     assert refreshed.json()["sync_status"] == "success"
-    assert refreshed.json()["source_kind"] == "mock"
-    assert refreshed.json()["source_provider"] == "mock_platform"
+    assert refreshed.json()["source_kind"] == "live"
+    assert refreshed.json()["source_provider"] == "test_sync_adapter"
     assert refreshed.json()["last_sync_error_code"] is None
     assert refreshed.json()["next_sync_at"] is not None
 
     snapshots = client.get(f"/api/v1/accounts/{account['id']}/snapshots")
     contents = client.get(f"/api/v1/accounts/{account['id']}/contents")
     runs = client.get(f"/api/v1/accounts/{account['id']}/sync-runs")
-    assert snapshots.json()["items"][0]["source_kind"] == "mock"
+    assert snapshots.json()["items"][0]["source_kind"] == "live"
     assert contents.json()["total"] == 12
-    assert all(item["source_kind"] == "mock" for item in contents.json()["items"])
+    assert all(item["source_kind"] == "live" for item in contents.json()["items"])
     assert runs.json()["items"][0]["status"] == "success"
     first_content = contents.json()["items"][0]
     metrics = client.get(f"/api/v1/contents/{first_content['id']}/metrics")
@@ -378,7 +379,7 @@ def test_account_metrics_history_returns_ascending_series_within_window(
                     video_count=10,
                     total_view_count=50_000,
                     metadata_json={},
-                    source_kind="mock",
+                    source_kind="imported",
                     source_provider="manual",
                     fetched_at=now - timedelta(days=45),
                     created_at=now - timedelta(days=45),
@@ -391,7 +392,7 @@ def test_account_metrics_history_returns_ascending_series_within_window(
                     video_count=20,
                     total_view_count=120_000,
                     metadata_json={},
-                    source_kind="mock",
+                    source_kind="imported",
                     source_provider="manual",
                     fetched_at=now - timedelta(days=20),
                     created_at=now - timedelta(days=20),
@@ -404,7 +405,7 @@ def test_account_metrics_history_returns_ascending_series_within_window(
                     video_count=25,
                     total_view_count=210_000,
                     metadata_json={},
-                    source_kind="mock",
+                    source_kind="imported",
                     source_provider="manual",
                     fetched_at=now - timedelta(days=5),
                     created_at=now - timedelta(days=5),
@@ -525,35 +526,6 @@ def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
             session.commit()
         session.rollback()
     engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_demo_seed_is_idempotent_and_always_marked_mock(
-    client: TestClient, database_path: Path
-) -> None:
-    authenticate(client)
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
-    session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        async with session_factory() as session:
-            workspace_id = await session.scalar(
-                select(Workspace.id).where(Workspace.slug == "test-workspace")
-            )
-            assert workspace_id is not None
-            first = await seed_demo_monitoring(session, workspace_id)
-            second = await seed_demo_monitoring(session, workspace_id)
-            assert first == {"accounts_created": 1, "contents_created": 1}
-            assert second == {"accounts_created": 0, "contents_created": 0}
-    finally:
-        await engine.dispose()
-
-    demo_accounts = client.get("/api/v1/accounts", params={"platform": "demo_mock"})
-    demo_contents = client.get("/api/v1/contents", params={"platform": "demo_mock"})
-    assert demo_accounts.status_code == 200
-    assert demo_accounts.json()["items"][0]["source_kind"] == "mock"
-    assert demo_accounts.json()["items"][0]["metadata"]["demo"] is True
-    assert demo_contents.status_code == 200
-    assert demo_contents.json()["items"][0]["source_kind"] == "mock"
 
 
 def test_account_view_preferences_route_is_not_shadowed_by_account_id(

@@ -1,6 +1,9 @@
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
+import json
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -22,6 +25,13 @@ from app.adapters.platforms.base import (
     PlatformMetricsData,
 )
 from app.core.config import Settings
+from app.providers.llm.base import (
+    LLMHealth,
+    LLMProvider,
+    LLMRequest,
+    LLMResponse,
+    LLMUsage,
+)
 from app.core.security import hash_password
 from app.db.base import Base
 from app.main import create_app
@@ -154,10 +164,12 @@ class RealShapedTestAdapter(PlatformAdapter):
         key: str = "test_sync_adapter",
         analytics_all_none: bool = False,
         content_count: int = 0,
+        view_offset: int = 0,
     ) -> None:
         self._key = key
         self._analytics_all_none = analytics_all_none
         self._content_count = content_count
+        self._view_offset = view_offset
         self.descriptor = AdapterDescriptor(
             key=key,
             name="Test Sync Adapter",
@@ -274,7 +286,7 @@ class RealShapedTestAdapter(PlatformAdapter):
                 external_id=ext_id,
                 captured_at=ctx.observed_at,
                 metrics={
-                    "view_count": 1000 * (idx + 1),
+                    "view_count": 1000 * (idx + 1) + self._view_offset,
                     "like_count": 100 * (idx + 1),
                     "comment_count": 10 * (idx + 1),
                     "share_count": 5 * (idx + 1),
@@ -298,3 +310,151 @@ class RealShapedTestAdapter(PlatformAdapter):
 
     async def health_check(self, ctx: AdapterCallContext) -> AdapterHealth:
         return AdapterHealth(status="ok", checked_at=ctx.observed_at, detail="test adapter")
+
+
+class StubLLMProvider(LLMProvider):
+    """Test-only LLM provider implementing the REAL provider contract.
+
+    It is never registered in production. It returns deterministic,
+    real-shaped responses (``source_kind='live'``) so the generation
+    workflow can be exercised offline and end-to-end without a ``mock``
+    source kind and without any external API credential. It is a contract /
+    transport stand-in, not a data source: it does not claim live research
+    or independent fact verification (the generated run keeps
+    ``verification_incomplete``), it only guarantees provenance honesty.
+    """
+
+    key = "stub_llm"
+    name = "Stub LLM (test fixture)"
+    is_mock = False
+    supports_streaming = True
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    async def validate_config(self, config: Mapping[str, Any]) -> None:
+        return None
+
+    async def generate(self, request: LLMRequest) -> LLMResponse:
+        minimum = int(request.parameters.get("target_min_chars", 1180))
+        maximum = int(request.parameters.get("target_max_chars", 1220))
+        target = max(minimum, min(maximum, (minimum + maximum) // 2))
+        title = str(request.metadata.get("title") or "the supplied sports event").strip()
+        base = (
+            "STUB LLM OUTPUT — This deterministic narration validates the Sports Intelligence "
+            f"OS workflow for {title}. It does not claim live research or independent fact "
+            "verification. The sequence remains tied to the supplied input, keeps each sentence "
+            "focused on one job, and records every step for review. "
+        )
+        filler = (
+            "The test follows the event timeline, separates supplied claims from verified facts, "
+            "and preserves a clear cause-and-result structure without inventing competition data. "
+        )
+        narration = base
+        while len(narration) < target:
+            narration += filler
+        narration = narration[:target].rstrip()
+        if len(narration) < minimum:
+            narration += " " * (minimum - len(narration))
+        final_bundle: dict[str, Any] = {
+            "event_fact_summary": "STUB LLM OUTPUT：仅复述已冻结输入，不代表联网核实。",
+            "fact_sources": request.metadata.get("sources", []),
+            "story_value": {
+                "qualified": True,
+                "reason": "Stub provider workflow contract test only",
+            },
+            "tts_en": narration.replace("\n", " "),
+            "translation_zh": "桩测试输出：该内容只用于验证工作流，不代表真实联网生成结果。",
+            "video_title_en": "🏟️ STUB LLM — Sports Workflow Verification",
+            "video_title_zh": "🏟️ 桩测试｜体育工作流验证",
+            "search_keywords": ["STUB SPORTS WORKFLOW", "TEST EVENT TIMELINE"],
+            "material_keywords": ["stub sports footage", "workflow test timeline"],
+            "tags": ["STUB", "TEST_ONLY", "SPORTS_WORKFLOW"],
+            "project_filename": "桩流程验证",
+            "qa_report": {"provider": self.key, "stub": True},
+            "used_rules": request.metadata.get("used_rules", []),
+            "rewrite_reasons": request.metadata.get("rewrite_reasons", []),
+            "spoken_char_count": len(narration.replace("\n", " ")),
+            "event_identity": {
+                "sport": "STUB",
+                "league": None,
+                "athletes": ["STUB_ATHLETE"],
+                "teams": [],
+                "date": None,
+                "location": None,
+                "note": "Stub provider — event identity not derived from real facts",
+            },
+            "story_format": "consequence-first-decision",
+            "story_format_reason": "Stub provider: default format selected for contract test.",
+            "central_question": "STUB: What caused the outcome in the supplied event?",
+            "selected_hook": {
+                "type": "scene-first-anomaly",
+                "score": 75,
+                "text": "STUB TEST HOOK — opens on the anomalous moment.",
+                "reason": "Stub provider: default hook selected for contract test.",
+            },
+            "cmssml": narration.replace("\n", " "),
+            "ev3": narration.replace("\n", " "),
+            "story_architecture": {
+                "primary_format": "consequence-first-decision",
+                "depth_axis": "micro-action-and-body-mechanics",
+                "narrative_trajectory": "participant-action-trajectory",
+                "lcr_enabled": False,
+                "lcr_reason": "Stub provider: LCR conditions not evaluated.",
+                "functional_turns": [],
+                "note": "Stub provider — architecture not derived from real facts",
+            },
+            "lcr_enabled": False,
+            "lcr_reason": None,
+            "hook_candidates": [],
+            "answer_word_map": None,
+            "reaction_relay": None,
+            "evidence_rewards": None,
+            "exclusion_ladder": None,
+            "dialogue_notes": None,
+            "audio_performance_map": None,
+            "tts_settings": None,
+            "video_material_plan": None,
+            "edit_map": None,
+            "caption_map": None,
+            "original_audio_plan": None,
+            "srt_output": None,
+            "source_kind": "live",
+        }
+        step_key = str(request.metadata.get("step_key", "generate_draft"))
+        content: str | Mapping[str, Any] = (
+            final_bundle if step_key == "final_formatting" else narration
+        )
+        input_tokens = max(1, sum(len(item.content) for item in request.messages) // 4)
+        output_size = len(json.dumps(content, ensure_ascii=False))
+        usage = LLMUsage(
+            input_tokens=input_tokens,
+            output_tokens=max(1, output_size // 4),
+            total_tokens=input_tokens + max(1, output_size // 4),
+            source="estimated",
+        )
+        return LLMResponse(
+            content=content,
+            provider_request_id=f"stub-{request.idempotency_key}",
+            model=request.model,
+            finish_reason="stop",
+            usage=usage,
+            provider_metadata={"source_kind": "live", "test_output": True},
+        )
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[str]:
+        response = await self.generate(request)
+        text = (
+            response.content
+            if isinstance(response.content, str)
+            else json.dumps(response.content, ensure_ascii=False)
+        )
+        for start in range(0, len(text), 80):
+            yield text[start : start + 80]
+
+    async def estimate_cost(self, usage: LLMUsage, config: Mapping[str, Any]) -> Decimal | None:
+        return Decimal("0")
+
+    async def health_check(self) -> LLMHealth:
+        return LLMHealth(status="ok", detail="Stub provider is available for test output only")

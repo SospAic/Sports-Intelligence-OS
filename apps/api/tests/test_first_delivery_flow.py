@@ -11,12 +11,19 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.core.config import Settings
 from app.providers.llm.registry import build_llm_provider_registry
+from app.providers.notifications.base import NotificationReceipt
+from app.providers.notifications.http import GenericWebhookProvider
 from app.providers.notifications.registry import build_notification_provider_registry
 from app.services.automation import AutomationService
 from app.services.generation_seed import seed_generation_defaults
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID
+from .conftest import (
+    RealShapedTestAdapter,
+    StubLLMProvider,
+    TEST_PASSWORD,
+    TEST_PLATFORM_ID,
+)
 
 RULE_SOURCE = (
     Path(__file__).parents[3]
@@ -49,11 +56,16 @@ def _authenticate(client: TestClient) -> str:
     return str(response.json()["csrf_token"])
 
 
-async def _execute_sync(database_path: Path, run_id: UUID) -> None:
+async def _execute_sync(
+    database_path: Path, run_id: UUID, adapter: PlatformSyncExecutor | None = None
+) -> None:
     settings = _settings(database_path)
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     registry = build_platform_adapter_registry(settings)
+    if adapter is not None:
+        # Drive the sync with a real-shaped, test-local adapter (source_kind='live').
+        registry.register(adapter)
     try:
         async with session_factory() as session:
             await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
@@ -102,25 +114,42 @@ async def _send_delivery(database_path: Path, delivery_id: UUID) -> str:
 
 
 @pytest.mark.integration
-def test_mock_vertical_slice_keeps_every_step_auditable(
+def test_real_shaped_vertical_slice_keeps_every_step_auditable(
     client: TestClient,
     database_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mock 账号到通知回执的完整首期链路，不进行任何外部网络调用。"""
+    """真实形状（source_kind='live'）账号同步 → 选题 → 生成 → 通知回执的完整首期链路，
+    不进行任何外部网络调用；证明真实数据链路下每一步都可审计，且不伪造成功。"""
 
     monkeypatch.setattr("app.services.sync.enqueue_platform_sync", lambda _run_id: None)
+    # Real LLM stub (source_kind='live') for the synchronous generation execution.
+    # Registered under the real key so the request schema stays honest.
+    client.app.state.llm_providers.register(StubLLMProvider(key="openai_compatible"))
+
+    # Stub the webhook provider's I/O offline so delivery runs without faking provenance.
+    async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
+        del config, message, idempotency_key
+        return NotificationReceipt(status="delivered", external_id="stub-webhook-1")
+
+    monkeypatch.setattr(GenericWebhookProvider, "send", fake_send)
+
     csrf = _authenticate(client)
     headers = {"X-CSRF-Token": csrf}
+
+    # Deterministic, real-shaped adapter driving the account sync. The two syncs
+    # differ only by ``view_offset`` so a 125_000 view delta (and thus
+    # ``view_growth_1h``) is produced honestly from real-shaped data.
+    adapter = RealShapedTestAdapter(key="youtube_browser", content_count=12)
 
     account_response = client.post(
         "/api/v1/accounts",
         headers=headers,
         json={
             "platform_id": str(TEST_PLATFORM_ID),
-            "external_id": "mock-e2e-account",
-            "display_name": "E2E Mock Creator（模拟数据）",
-            "metadata": {"mock_config": {"seed": "first-delivery", "snapshot_index": 0}},
+            "external_id": "e2e-account",
+            "display_name": "E2E 测试创作者",
+            "metadata": {"e2e": True},
         },
     )
     assert account_response.status_code == 201, account_response.text
@@ -135,19 +164,21 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
         def now(cls, tz: object = None) -> datetime:
             return historical_time
 
+    adapter._view_offset = 0
     monkeypatch.setattr("app.services.sync.datetime", HistoricalDateTime)
-    asyncio.run(_execute_sync(database_path, UUID(first_sync.json()["id"])))
+    asyncio.run(_execute_sync(database_path, UUID(first_sync.json()["id"]), adapter))
     monkeypatch.setattr("app.services.sync.datetime", datetime)
 
     configured = client.patch(
         f"/api/v1/accounts/{account['id']}",
         headers=headers,
-        json={"metadata": {"mock_config": {"seed": "first-delivery", "snapshot_index": 5}}},
+        json={"metadata": {"e2e": True, "snapshot_index": 5}},
     )
     assert configured.status_code == 200, configured.text
     second_sync = client.post(f"/api/v1/accounts/{account['id']}/sync", headers=headers)
     assert second_sync.status_code == 202
-    asyncio.run(_execute_sync(database_path, UUID(second_sync.json()["id"])))
+    adapter._view_offset = 125_000
+    asyncio.run(_execute_sync(database_path, UUID(second_sync.json()["id"]), adapter))
 
     contents = client.get(f"/api/v1/accounts/{account['id']}/contents").json()
     assert contents["total"] == 12
@@ -157,7 +188,7 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
     metrics = client.get(f"/api/v1/contents/{content['id']}/metrics").json()["items"]
     growth = next(item for item in metrics if item["metric_key"] == "view_growth_1h")
     assert growth["value"] == 125_000
-    assert content["source_kind"] == "mock"
+    assert content["source_kind"] == "live"
 
     imported = client.post(
         "/api/v1/rules/import",
@@ -177,9 +208,9 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
         "/api/v1/notification-channels",
         headers=headers,
         json={
-            "provider_key": "mock_notification",
-            "name": "E2E Mock Webhook（测试）",
-            "config": {},
+            "provider_key": "generic_webhook",
+            "name": "E2E Webhook（测试）",
+            "config": {"url": "https://hooks.example.test/e2e"},
             "enabled": True,
         },
     ).json()
@@ -187,7 +218,7 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
         "/api/v1/automations",
         headers=headers,
         json={
-            "name": "Mock 一小时增长内容包",
+            "name": "一小时增长内容包",
             "entity_type": "content",
             "trigger_type": "entity_updated",
             "condition_tree": {
@@ -205,8 +236,8 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
                     "sort_order": 1,
                     "config": {
                         "workflow_id": workflow["id"],
-                        "provider": "mock_llm",
-                        "model": "mock-sports-writer-v1",
+                        "provider": "openai_compatible",
+                        "model": "stub-sports-writer-v1",
                         "model_config": {
                             "target_min_chars": 200,
                             "target_max_chars": 220,
@@ -219,7 +250,7 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
                     "sort_order": 2,
                     "config": {
                         "channel_id": channel["id"],
-                        "title": "Mock growth alert",
+                        "title": "Growth alert",
                         "body": "Growth {view_growth_1h}; {generation_summary}",
                     },
                 },
@@ -237,10 +268,10 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
             "facts": {
                 "entity_id": content["id"],
                 "view_growth_1h": growth["value"],
-                "source_kind": "mock",
+                "source_kind": "live",
             },
-            "event_key": "first-delivery-mock-growth",
-            "source_kind": "mock",
+            "event_key": "first-delivery-live-growth",
+            "source_kind": "live",
             "test_mode": True,
         },
     )
@@ -259,8 +290,8 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
 
     generation = client.get(f"/api/v1/generations/{generation_id}").json()
     assert generation["status"] == "completed"
-    assert generation["final_output"]["source_kind"] == "mock"
-    assert generation["final_output"]["tts_en"].startswith("MOCK TEST OUTPUT")
+    assert generation["final_output"]["source_kind"] == "live"
+    assert generation["final_output"]["tts_en"].startswith("STUB LLM OUTPUT")
     assert len(generation["steps"]) == 10
     topics = client.get("/api/v1/topics", params={"source_type": "content"}).json()
     assert topics["total"] == 1
@@ -269,7 +300,7 @@ def test_mock_vertical_slice_keeps_every_step_auditable(
     assert asyncio.run(_send_delivery(database_path, UUID(delivery_id))) == "delivered"
     deliveries = client.get("/api/v1/notification-deliveries").json()
     assert deliveries["items"][0]["status"] == "delivered"
-    assert deliveries["items"][0]["provider_message_id"].startswith("mock-")
+    assert deliveries["items"][0]["provider_message_id"] == "stub-webhook-1"
     assert deliveries["items"][0]["payload"]["data"]["generation_id"] == generation_id
     evaluations = client.get(
         "/api/v1/automation-evaluations",

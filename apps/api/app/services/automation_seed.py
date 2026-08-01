@@ -42,8 +42,8 @@ async def seed_automation_examples(
                     "create_generation",
                     {
                         "workflow_id": str(workflow_id) if workflow_id else None,
-                        "provider": "mock_llm",
-                        "model": "mock-sports-writer-v1",
+                        "provider": "openai_compatible",
+                        "model": "gpt-4o-mini",
                     },
                 ),
                 (
