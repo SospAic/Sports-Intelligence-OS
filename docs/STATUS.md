@@ -1,6 +1,6 @@
 # 项目状态
 
-更新时间：2026-08-01（续：账号监控基线升级与可用性渲染）
+更新时间：2026-08-02（续：全量质量门禁复跑、过期断言修复与亮/暗主题切换）
 
 ## 当前阶段
 
@@ -17,6 +17,17 @@
 > - **验证状态**：后端 Mypy（148 源文件）、Ruff 全绿；`test_account_content_summary.py` 5 passed、`test_monitoring_api.py` 6 passed（该文件单独运行约 107s，受沙箱单命令时长限制，完整 84 项后端套件改以后台任务执行，见下方"验证状态"表）。前端 TypeScript、`ESLint`（仅 0 error / 0 warning，清理了未用导入）、Vitest 47 passed（新增 `metric-availability.test.ts` 9 项覆盖契约与预设）。所有改动仅本地提交（`codex/full-repair-real-data` 分支），不推送。
 
 > - **延时类任务终止（红色终止按钮，#64，已验证）**：用户要求「所有延时类任务开始后按钮变为红色终止任务，样式参考行业优秀案例」。后端新增账号同步运行取消能力：`services/sync.py` 增加模块级 `cancel_sync_run` 与 `SyncService.cancel_sync_run`（幂等、释放 `lock_key`、账号置 `cancelled`、best-effort `sync_account.revoke(terminate=True)` 包裹于 try/except），并新增执行器 `_aborted(run)` 守卫在阶段边界（校验后 / 账号资料提交后 / 派生指标提交后）安全中止正在运行的同步；`models/sync.py` 与 `models/monitoring.py` 的 `sync_run_status` / `account_sync_status` CHECK 约束增加 `'cancelled'`，新增迁移 `20260801_0023_sync_run_cancelled_status.py`；`schemas/monitoring.py` 的 `AccountSyncStatus` 与 `SyncRunRead.status` Literal 同步增加 `'cancelled'`。新增两个端点：`POST /accounts/{account_id}/sync/{run_id}/cancel`（账号级）与 `POST /operations/tasks/{task_id}/cancel`（统一操作台，`category=platform_sync` 时复用同一取消逻辑，其余类别按项目"不伪造成功"红线返回 501 `unsupported_task_cancel`，而非伪装支持）。前端新增可复用两步确认 `TerminateButton` 组件（首次点击进入"确认终止？"武装态、3 秒自动复位、终止中显示旋转与"终止中…"，红色参考 Vercel / GitHub Actions / AWS 的 Stop/Cancel 行业范式），新增 `dangerButtonClass` 设计令牌；接入账号详情页头部（同步中/排队中显示红色终止）、同步进度面板、同步记录活动行，以及统一任务看板的"操作"列（`platform_sync` 活动任务显示红色终止按钮，非活动显示"—"，其他类别活动任务显示"暂不支持"）。新增契约/集成测试：`test_sync_cancel.py`（6 项，服务级取消幂等与执行器跳过）、`test_monitoring_api.py` 取消路由 3 项（含 501 路径）、`terminate-button.test.tsx`（4 项，RTL）。后端 Mypy strict、Ruff 全绿；前端 TypeScript、ESLint（0 error / 0 warning）、Vitest 全绿。
+
+### 2026-08-02 全量质量门禁复跑、过期断言修复与亮/暗主题切换
+
+- **全量质量门禁复跑（全绿）**：在 `codex/full-repair-real-data` 分支执行"全量测试 + 修复所有问题"完整门禁。后端：托管 venv 下 `ruff check .` 全绿、`mypy --no-incremental app` 0 错误（148 源文件）、`pytest -q` **101 passed**（本地 Docker PostgreSQL `sports_intelligence_test`）。根契约测试 **35 passed**。前端（apps/web）：`tsc --noEmit` / `eslint .` / `vitest run` **51 passed** / `next build` **39 路由 BUILD_EXIT=0** / `prettier --check .` 全绿。
+- **误删 scripts/ 恢复**：整个 `scripts/`（11 文件）曾被本地误删但未提交，已 `git checkout HEAD -- scripts/` 恢复；该目录被测试/CI/Makefile/README/docs 引用，删除会破坏测试与 CI，**未提交删除**。
+- **后端修复**：`editorial_rules.py` 的 `_sort_sections_parents_first` 补齐类型注解（PEP 695 泛型），消除 SQLite→PG 迁移引入的 6 个 mypy 错误；`conftest.py` 删除未用 `Path` 导入、测试库密码加 `# noqa: S105`；`test_metric_calculations.py` 排序导入。
+- **契约测试修复（4 项）**：`test_infrastructure_contract.py` 的 `test_prompt_03/07/10` 与 `test_project_context.py` 的 `test_current_stage` 去掉对已删除 `providers/llm/mock.py`、不存在 `services/monitoring_seed.py` 及 `mock_llm`/`Mock Webhook` 的过期断言，改为当前真实形态（`StubLLMProvider` / `GenericWebhookProvider` / STATUS「Prompt 11 后续维护」阶段），保持"不伪造成功"契约。
+- **Prettier 规范化**：新增 `apps/web/.prettierignore`（排除 `.next`/`node_modules`/`next-env.d.ts`/`pnpm-lock.yaml`）；对 apps/web 全量 `prettier --write`（约 490 个源文件，纯格式，无逻辑改动），使 `format:check` 门禁通过。
+- **亮/暗主题切换（#28，已落地）**：`app/globals.css` 早已定义 `:root[data-theme="light"]` 令牌与核心表面覆盖（bg-slate-950→白、text-white/slate-100/200→深、border-slate-800/700→浅、header 白）。真正缺口是 `data-theme` 从未被设置。新增 `components/theme-toggle.tsx`（`useSyncExternalStore` 读 DOM/localStorage + 切换并持久化）、`app/layout.tsx` 注入无闪烁内联脚本（首屏前按 localStorage 设 `data-theme`）、`components/app-shell.tsx` 头部接入切换按钮。`tsc`/`eslint`/`prettier`/`next build` 均通过。
+- **未完成任务核对（纠正）**：#26 前端批量操作工具栏**经核查已实现**（`app/contents/contents-client.tsx` 行多选 + 「批量创建选题」「批量添加监控规则」），任务列表陈旧，已标记 completed；#29 内容日历视图仍缺（ContentItem 有 `published_at` 索引，可按月聚合，但属新页面+聚合，待设计确认）；#76 外部授权 P0（`docs/NEXT_TASKS.md`）仍阻塞，需用户凭证。
+- 验证状态：所有改动仅本地提交（不推送，排除 `.workbuddy/`）。
 
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
