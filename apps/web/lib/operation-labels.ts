@@ -13,6 +13,7 @@ export const OPERATION_STATUS_LABELS: Record<string, string> = {
   syncing: "同步中",
   retrying: "等待重试",
   success: "成功",
+  degraded: "部分同步",
   completed: "完成",
   failed: "失败",
   error: "错误",

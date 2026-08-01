@@ -40,6 +40,7 @@ DERIVED_METRIC_KEYS = (
     "view_acceleration",
     "median_views_30d",
     "account_baseline_ratio",
+    "play_follower_ratio",
     "viral_score",
 )
 
@@ -68,7 +69,8 @@ class Account(TimestampMixin, Base):
             name="account_source_kind",
         ),
         CheckConstraint(
-            "sync_status IN ('never', 'queued', 'syncing', 'success', 'error', 'disabled')",
+            "sync_status IN ('never', 'queued', 'syncing', 'success', "
+            "'degraded', 'error', 'disabled')",
             name="account_sync_status",
         ),
         Index("ix_accounts_workspace_platform_active", "workspace_id", "platform_id", "is_active"),

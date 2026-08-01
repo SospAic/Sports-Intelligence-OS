@@ -43,6 +43,7 @@ export type AccountSyncStatus =
   | "queued"
   | "syncing"
   | "success"
+  | "degraded"
   | "error"
   | "disabled";
 

@@ -128,6 +128,8 @@ function SyncStatusBadge({ status }: { status: string }) {
       return <Badge tone="warning">排队中</Badge>;
     case "success":
       return <Badge tone="success">监控中</Badge>;
+    case "degraded":
+      return <Badge tone="warning">部分同步（指标缺失）</Badge>;
     case "error":
       return <Badge tone="danger">错误</Badge>;
     case "disabled":

@@ -304,7 +304,15 @@
 - P1-5（新闻预览 Drawer）：`news-client.tsx` 卡片与表格操作区新增「预览」按钮，点击无需跳转即可在右侧滑出面板查看全文（`GET /news/articles/{id}`），支持遮罩点击与 Esc 关闭、`role=dialog` 可访问性。
 - P1-7（全局键盘快捷键）：`app-shell.tsx` 注册全局 `keydown`——`/` 聚焦全局搜索、`?` 开关快捷键帮助弹窗、Esc 关闭弹窗/清空搜索；输入框内按键不触发；新增 `ShortcutsHelp` 对话框。
 - P2-3（新闻聚类视图）：`news-client.tsx` 新增「聚合」视图，按需拉取 `GET /news/events` 并按事件聚合展示（标题、运动/联赛、热度、来源数、文章数、状态），卡片链接到事件详情页。
-- 验证状态表已同步刷新（Pytest 81、Vitest 38、Mypy 150 源文件）。
+- 验证状态表已同步刷新（Pytest 84、Vitest 38、Mypy 150 源文件）。
+
+### 账户监控与路由修复（2026-08-01 续，本轮）
+
+- **修复降级同步伪造 `success`（HIGH）**：新增 Alembic 迁移 `20260801_0021_account_degraded_status.py`，`accounts.sync_status` CHECK 约束新增 `'degraded'`；`sync.py` 在指标提取降级时把 `account.sync_status` 置为真实 `degraded`，并写入 `last_sync_error_code="account_metrics_extraction_failed"`（此前一律伪装成 `success`，违反"不得伪造平台真实成功"红线）。外部调用审计行 `external_call_attempts.status` 仍记 `success`（外部调用本身成功，仅下游指标缺失），避免写入非法状态。后端 `AccountSyncStatus` Literal、前端 `AccountSyncStatus` 联合类型、`SyncStatusBadge`、`operation-labels` 均补充 `degraded` 渲染为「部分同步（指标缺失）」。
+- **修复 `GET /accounts/view-preferences` 返回 422（HIGH）**：`view_preferences.router` 原先注册晚于 `monitoring.router`，`/accounts/{account_id}`(UUID 参数) 抢先匹配 `/accounts/view-preferences`，把 `view-preferences` 当作 UUID 解析失败。已将 `view_preferences.router` 提前注册，新增回归测试断言该路由返回 200。
+- **修复内容快照虚增 `records_created`（MEDIUM）**：`sync.py` 原先把内容快照写入也计入 `created`，导致创建数翻倍；已移除该累加，快照仅作追加式审计。
+- **`DERIVED_METRIC_KEYS` 补齐 `play_follower_ratio`**：与迁移/模型/前端标签保持一致。
+- 新增回归测试：`tests/test_sync_degraded_status.py`（降级→`degraded` + 成功→`success`）、`test_monitoring_api.py::test_account_view_preferences_route_is_not_shadowed_by_account_id`（替换 `/api/v1/accounts/view-preferences` 现在返回 200 而非 422）。
 
 ## 验证状态
 
@@ -312,7 +320,7 @@
 | --- | --- |
 | 后端 Ruff | 通过，应用、测试及验证脚本无错误 |
 | 后端 Mypy strict | 通过，150 个源文件无错误 |
-| 后端 Pytest | 通过，81 项测试；另有 1 条上游 TestClient/httpx 弃用警告 |
+| 后端 Pytest | 通过，84 项测试；另有 1 条上游 TestClient/httpx 弃用警告 |
 | 仓库与验收脚本测试 | 通过，35 项测试（含安装器、Compose 配置传播与 URL 安全回归） |
 | 前端 TypeScript | 通过，3 个工作区包完成检查 |
 | 前端 ESLint | 通过 |

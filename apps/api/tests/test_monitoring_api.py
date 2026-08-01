@@ -554,3 +554,20 @@ async def test_demo_seed_is_idempotent_and_always_marked_mock(
     assert demo_accounts.json()["items"][0]["metadata"]["demo"] is True
     assert demo_contents.status_code == 200
     assert demo_contents.json()["items"][0]["source_kind"] == "mock"
+
+
+def test_account_view_preferences_route_is_not_shadowed_by_account_id(
+    client: TestClient,
+) -> None:
+    """GET /accounts/view-preferences must resolve to the view-preferences route,
+    not be captured by GET /accounts/{account_id} (which would 422 on the UUID)."""
+    csrf_token = authenticate(client)
+    get_response = client.get("/api/v1/accounts/view-preferences")
+    assert get_response.status_code == 200
+    put_response = client.put(
+        "/api/v1/accounts/view-preferences",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"preferences": {"platform": "all", "activeState": "all", "visibility": {}}},
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()["preferences"]["platform"] == "all"

@@ -5,7 +5,9 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 SourceKind = Literal["live", "imported", "mock"]
-AccountSyncStatus = Literal["never", "queued", "syncing", "success", "error", "disabled"]
+AccountSyncStatus = Literal[
+    "never", "queued", "syncing", "success", "degraded", "error", "disabled"
+]
 SortOrder = Literal["asc", "desc"]
 AccountSort = Literal[
     "created_at",

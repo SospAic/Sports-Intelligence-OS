@@ -393,12 +393,17 @@ class PlatformSyncExecutor:
 
         finished = datetime.now(UTC)
         final_status = "degraded" if metrics_degraded else "success"
+        # The external call itself succeeded (the profile was fetched); only the
+        # downstream metric extraction failed. Record the audit row as success and
+        # keep the higher-level "degraded" status on the run/account instead of
+        # falsifying either, or writing an invalid external_call status.
+        attempt_status = "success" if final_status == "degraded" else final_status
         self._record_external_attempt(
             run,
             account,
             attempt_started,
             attempt_number,
-            status=final_status,
+            status=attempt_status,
             response_summary={
                 "records_created": created,
                 "records_updated": updated,
@@ -423,11 +428,15 @@ class PlatformSyncExecutor:
             else "同步完成"
         )
         run.items_total = run.items_processed
-        account.sync_status = "success"
+        account.sync_status = final_status
         account.last_synced_at = finished
         account.next_sync_at = finished + timedelta(seconds=account.sync_interval_seconds)
-        account.last_sync_error_code = None
-        account.last_sync_error_message = None
+        if metrics_degraded:
+            account.last_sync_error_code = "account_metrics_extraction_failed"
+            account.last_sync_error_message = "指标提取失败，仅更新了账号资料"
+        else:
+            account.last_sync_error_code = None
+            account.last_sync_error_message = None
         await self.session.commit()
 
     async def mark_retry_exhausted(self, run_id: UUID, message: str) -> None:
@@ -652,7 +661,6 @@ class PlatformSyncExecutor:
                 matched_content = by_external_id.get(analytics_data.external_id)
                 if matched_content is not None and analytics_data.metrics:
                     self.session.add(self._content_snapshot(matched_content.id, analytics_data))
-                    created += 1
             run.items_processed += len(page.items)
             run.records_created = created
             run.records_updated = updated
