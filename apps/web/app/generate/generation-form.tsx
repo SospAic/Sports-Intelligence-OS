@@ -10,7 +10,6 @@ import {
   Check,
   ChevronRight,
   History,
-  Settings2,
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
