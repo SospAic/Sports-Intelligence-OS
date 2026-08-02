@@ -50,6 +50,7 @@ from app.schemas.monitoring import (
     SyncIntervalResponse,
 )
 from app.services.adaptive_sync import compute_adaptive_interval
+from app.services.platform_detect import detect_platform_key_from_url
 
 RESERVED_METADATA_KEYS = {
     "source_kind",
@@ -152,9 +153,24 @@ class MonitoringService:
     async def create_account(
         self, workspace_id: UUID, actor_id: UUID, payload: AccountCreate
     ) -> AccountRead:
-        platform = await self._repository.get_platform(payload.platform_id)
-        if platform is None or not platform.enabled:
-            raise MonitoringValidationError("platform does not exist or is disabled")
+        # Resolve the platform: prefer an explicit choice, otherwise infer it
+        # from the profile URL so the operator only needs to paste a link.
+        if payload.platform_id is not None:
+            platform = await self._repository.get_platform(payload.platform_id)
+            if platform is None or not platform.enabled:
+                raise MonitoringValidationError("platform does not exist or is disabled")
+        else:
+            detected_key = detect_platform_key_from_url(str(payload.external_id))
+            if detected_key is None:
+                raise MonitoringValidationError(
+                    "无法从网址识别平台，请确认链接来自 YouTube / TikTok / 抖音 / Bilibili，"
+                    "或直接选择平台后重试。"
+                )
+            platform = await self._repository.get_platform_by_key(detected_key)
+            if platform is None or not platform.enabled:
+                raise MonitoringValidationError(
+                    f"识别到的平台「{detected_key}」未启用或不存在，请在平台管理中启用后重试。"
+                )
         duplicate = await self._repository.get_account_by_external_id(
             workspace_id, platform.id, payload.external_id
         )

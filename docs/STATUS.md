@@ -876,3 +876,40 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 真实 YouTube/TikTok/抖音 抓取仍需本机可用 `yt-dlp` 与出网环境；离线单测已覆盖适配器分页/配置逻辑，但端到端量级需在可出网容器中验证。
 - `max_contents_per_sync` 仅约束单次同步抓取量，不删除历史已抓取作品；如需清理存量需在业务层另行处理。
 - 浏览器兜底适配器不受 `playlist_start/end` 翻页控制，仅 yt-dlp 主路径支持窗口翻页。
+
+### 2026-08-02（续续续）：补齐用户反馈中"仍没解决"的三项 — 强制全量回填 / 平台自动识别 / 报错双详情
+
+本轮直接回应用户「以下问题依然没解决」清单中的 #1、#4，以及新增的「对所有报错给出代码级 + 业务层错误详情」要求。代码已落地并通过 ruff / mypy / tsc / 单测，镜像已重建部署（api / worker / beat / web）。
+
+#### #1 作品获取不全（仍 ~20 条）— 根因是增量窗口永不回填，新增「全量重新同步」
+
+- **根因（关键）**：上一轮虽然把 yt-dlp 改成了游标窗口翻页，但 `_sync_contents` 在**每次同步都传入 `published_after=newest_seen`**（纯增量模式）。早期由旧单窗口代码播种的账号 `newest_seen` 被永久定格在首屏 ~20 条，之后每次增量都只抓比这 20 条更新的作品，旧历史永远无法补回 → 账号始终只有 ~20 条。
+- **修复**：`SyncService.request_account_sync` 新增 `force_full: bool`；`POST /accounts/{id}/sync` 接受可选请求体 `{"force_full": true}`。当 `force_full=True` 时 `_sync_contents` 把 `published_after` 置为 `None`，走「全量回填」路径，把账号历史作品一次性补齐（仍受 `max_contents_per_sync` 与 yt-dlp 窗口翻页约束，最多 1000 条）。
+- **前端**：账号详情页「立即同步」旁新增「全量重新同步」按钮，调用 `POST /accounts/{id}/sync` 带 `force_full: true`。被旧代码卡住、长期只有 20 条的账号，点一次「全量重新同步」即可补齐历史。
+
+#### #4 添加账号简化 — 首次只需网址，去掉平台下拉，新增自动识别
+
+- **纠正上一轮偏差**：上一轮「账号监控增强」小节仍保留了「平台 + 网址」的表单（平台 `<select required>`）。用户明确要求**不需要选择平台、由系统自动判断**。本轮已删除平台下拉框。
+- **实现**：新增 `app/services/platform_detect.py` 的 `detect_platform_key_from_url(raw_url)`，依据 URL 主机名（含 `youtube.com`/`youtu.be`/`tiktok.com`/`douyin.com`/`v.douyin.com`/`bilibili.com`/`b23.tv` 及 `@platform/...` 句柄、短链）自动映射平台 key；无法识别时返回 `None`，`create_account` 抛出中文校验错误「无法从网址识别平台…」。
+- **后端**：`AccountCreate.platform_id` 改为 `UUID | None = None`；`create_account` 在 `platform_id is None` 时自动探测，找不到平台或平台未启用则给出清晰中文报错。`repositories/monitoring.py` 新增 `get_platform_by_key`。
+- **前端**：`accounts-client.tsx` 添加账号表单移除平台下拉，仅保留「账号主页网址（全宽，placeholder 提示 YouTube / TikTok / 抖音 / Bilibili）」+ 可选显示名称；`createAccount` 不再发送 `platform_id`。名称、同步周期等可在同步后于详情页编辑。离线单测 `test_platform_detect.py` 6 passed。
+
+#### 全量报错双详情 — 代码级 + 业务层（新增要求）
+
+- **数据层**：`sync_runs` 新增两列 `error_detail`（代码级：`ExceptionType: msg | adapter=X | run=Y | request_id=Z`）与 `error_hint`（业务层：按 `error_code` 映射的中文说明 + 处置建议）。新增迁移 `20260802_0030_sync_run_error_detail.py`（`down_revision=20260802_0025`）。
+- **填充点（覆盖所有报错路径）**：`services/sync.py` 新增 `code_level_detail(exc, *, run, adapter_key)` 与 `business_hint_for(code, adapter_key)`（15 个语义错误码 → 中文业务解释与修复动作），并在 `_terminal_error`、重试分支 `except PlatformAdapterError`、兜底 `except Exception`、以及 `mark_dispatch_failure` / `_release_stuck_run` 全部写入 `error_detail` + `error_hint`。
+- **Schema / 前端**：`SyncRunRead` 增加 `error_detail` / `error_hint`；`shared-types` 的 `SyncRunRecord` 同步增加；账号详情页主错误面板与同步记录列表错误项均渲染「业务层说明与处置建议」+「代码级错误详情」`<pre>` + 错误码 Badge。
+- 质量门禁：ruff / mypy（7 文件）/ `pytest tests/test_platform_detect.py`（6 passed）/ `tsc -p apps/web --noEmit`（exit 0）全绿；修复了 `account-detail-client.tsx` 因两个同步按钮缺少单一父元素导致的 `TS2657`（已用 `<>...</>` 包裹）。
+
+#### 本轮状态小结
+
+| 用户反馈项 | 本轮处理 |
+| --- | --- |
+| #1 作品获取不全 | 新增「全量重新同步」`force_full` 路径，回填被增量窗口锁死的历史作品 |
+| #2 账号级 Bio 等扩展 | 上一轮「资料卡」已实现（Bio / 认证 / 地区 / 粉丝），本轮核对保留 |
+| #3 同步时判断头像/签名是否更新 | `sync.py` `_sync_account` 每次对账 `avatar_url/description/country/is_verified/language`，已实现 |
+| #4 添加账号简化、自动识别平台 | 删除平台下拉，新增 `platform_detect` 自动识别，添加只需网址 |
+| #5 作品列表封面 | 各适配器填 `cover_url` + 前端 `ExternalImage`，已实现 |
+| #6 数据≥1 位小数 | `formatPercent` ≥2 位；两处展示改 `toFixed(1)`，已实现 |
+| #7 去重 + 可配置抓取参数 | `skip_existing` + `adapter_config.yt_dlp`（dateafter/datebefore/max_items/extra_args）+ 设置页抓取卡片，已实现 |
+| #9 报错双详情 | `sync_runs.error_detail`/`error_hint` + 全路径填充 + 前端渲染，本轮新增 |

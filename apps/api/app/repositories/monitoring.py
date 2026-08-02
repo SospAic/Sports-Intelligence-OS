@@ -55,6 +55,16 @@ class MonitoringRepository:
     async def get_platform(self, platform_id: UUID) -> Platform | None:
         return await self._session.get(Platform, platform_id)
 
+    async def get_platform_by_key(self, key: str) -> Platform | None:
+        """Resolve a platform record by its stable key (e.g. ``"youtube"``).
+
+        Used by the URL-based account auto-detection path so operators only
+        need to paste a profile URL and the system infers the platform.
+        """
+        statement = select(Platform).where(Platform.key == key.casefold())
+        result: Platform | None = await self._session.scalar(statement)
+        return result
+
     def _account_conditions(self, workspace_id: UUID, filters: AccountFilters) -> list[Any]:
         conditions: list[Any] = [Account.workspace_id == workspace_id]
         if filters.platform:

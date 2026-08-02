@@ -58,6 +58,14 @@ class SyncRun(Base):
     items_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Code-level detail: the underlying exception class, where it originated,
+    # the adapter that raised it and the trace id. Surfaced verbatim to
+    # operators/developers so failures are debuggable rather than opaque.
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Business-level explanation: a human-readable description of what the
+    # error means for this account and the concrete remediation steps, mapped
+    # from ``error_code``. Shown to operators alongside the raw detail.
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata",
         JSON().with_variant(JSONB(), "postgresql"),

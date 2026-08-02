@@ -559,7 +559,6 @@ export function AccountsClient() {
         workspaceId,
         csrf: true,
         body: JSON.stringify({
-          platform_id: form.get("platform_id"),
           external_id: form.get("external_id"),
           display_name: form.get("display_name") || null,
           metadata: {},
@@ -894,19 +893,11 @@ export function AccountsClient() {
           action={createAccount}
           className="grid gap-3 rounded-2xl border border-cyan-900/60 bg-slate-950/70 p-5 md:grid-cols-2 xl:grid-cols-3"
         >
-          <select name="platform_id" required className={inputClass}>
-            <option value="">选择平台</option>
-            {platforms.data?.map((item) => (
-              <option value={item.id} key={item.id}>
-                {item.name}
-              </option>
-            ))}
-          </select>
           <input
             name="external_id"
             required
-            className={inputClass}
-            placeholder="账号主页网址或频道 ID（如 https://youtube.com/@xxx）"
+            className={`${inputClass} md:col-span-2 xl:col-span-2`}
+            placeholder="账号主页网址（如 https://youtube.com/@xxx、https://tiktok.com/@xxx）"
           />
           <input
             name="display_name"
@@ -926,6 +917,7 @@ export function AccountsClient() {
             </button>
           </div>
           <p className="text-xs text-slate-500 md:col-span-2">
+            只需粘贴账号主页网址，系统会自动识别平台（YouTube / TikTok / 抖音 / Bilibili），无需手动选择。
             添加账号不会伪造统计数据；只有 Adapter 同步成功后才会写入真实快照。
           </p>
         </form>

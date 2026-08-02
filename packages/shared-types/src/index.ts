@@ -856,6 +856,8 @@ export interface SyncRunRecord {
   items_total: number | null;
   error_code: string | null;
   error_message: string | null;
+  error_detail: string | null;
+  error_hint: string | null;
   metadata: Record<string, unknown>;
 }
 

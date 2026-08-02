@@ -52,7 +52,10 @@ class PlatformRead(BaseModel):
 
 
 class AccountCreate(StrictModel):
-    platform_id: UUID
+    # Platform is optional on first registration: when omitted, the system
+    # infers it from the profile URL (see platform_detect). This lets the
+    # operator paste a single URL without choosing a platform manually.
+    platform_id: UUID | None = None
     external_id: str = Field(min_length=1, max_length=255)
     username: str | None = Field(default=None, max_length=255)
     # display_name is optional on first registration: when omitted it is
@@ -478,6 +481,17 @@ class SyncUnavailableResponse(BaseModel):
     detail: str
 
 
+class AccountSyncRequest(StrictModel):
+    """Body for ``POST /accounts/{id}/sync``.
+
+    ``force_full`` triggers a back-catalogue resync: the synchroniser ignores
+    the newest-known publish date and re-pulls every work, back-filling
+    accounts that were previously capped at a small window.
+    """
+
+    force_full: bool = False
+
+
 class SyncRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -500,6 +514,8 @@ class SyncRunRead(BaseModel):
     items_total: int | None
     error_code: str | None
     error_message: str | None
+    error_detail: str | None
+    error_hint: str | None
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
 
 

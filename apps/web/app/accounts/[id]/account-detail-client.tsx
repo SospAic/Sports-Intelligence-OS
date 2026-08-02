@@ -20,6 +20,7 @@ import {
   Loader2,
   RefreshCw,
   Save,
+  Database,
   Trash2,
 } from "lucide-react";
 import Link from "next/link";
@@ -251,13 +252,27 @@ function SyncProgressPanel({
           </div>
 
           {currentRun.error_message && (
-            <div className="mt-4 rounded-lg border border-rose-900/60 bg-rose-950/30 p-3 text-xs text-rose-300">
-              {currentRun.error_code && (
-                <Badge tone={adapterErrorCodeTone(currentRun.error_code)}>
-                  {currentRun.error_code}
-                </Badge>
+            <div className="mt-4 space-y-3 rounded-lg border border-rose-900/60 bg-rose-950/30 p-3 text-xs text-rose-300">
+              <div className="flex flex-wrap items-center gap-2">
+                {currentRun.error_code && (
+                  <Badge tone={adapterErrorCodeTone(currentRun.error_code)}>
+                    {currentRun.error_code}
+                  </Badge>
+                )}
+                <span className="font-medium text-rose-200">同步失败</span>
+              </div>
+              {currentRun.error_hint && (
+                <div>
+                  <p className="mb-1 font-medium text-rose-200">业务层说明与处置建议</p>
+                  <p className="whitespace-pre-wrap leading-relaxed">{currentRun.error_hint}</p>
+                </div>
               )}
-              {currentRun.error_message}
+              <div>
+                <p className="mb-1 font-medium text-rose-200">代码级错误详情</p>
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed text-rose-300/90">
+{currentRun.error_detail || currentRun.error_message}
+                </pre>
+              </div>
             </div>
           )}
         </>
@@ -642,6 +657,22 @@ export function AccountDetailClient({ id }: { id: string }) {
       }
     }
   }
+  async function syncFull() {
+    if (!workspaceId) return;
+    try {
+      await apiRequest(`/accounts/${id}/sync`, {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ force_full: true }),
+      });
+      notify("全量重新同步已排队（将回填历史作品）");
+      await qc.invalidateQueries({ queryKey: ["account"] });
+      await qc.invalidateQueries({ queryKey: ["account-runs", id] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "全量同步失败", "error");
+    }
+  }
   async function cancelSync(runId?: string) {
     if (!workspaceId || !runId) return;
     setCancelling(true);
@@ -805,14 +836,25 @@ export function AccountDetailClient({ id }: { id: string }) {
                     title="终止正在进行的同步任务"
                   />
                 ) : (
-                  <button
-                    className={buttonClass}
-                    onClick={sync}
-                    disabled={!item.is_active}
-                  >
-                    <RefreshCw size={15} />
-                    立即同步
-                  </button>
+                  <>
+                    <button
+                      className={buttonClass}
+                      onClick={sync}
+                      disabled={!item.is_active}
+                    >
+                      <RefreshCw size={15} />
+                      立即同步
+                    </button>
+                    <button
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-cyan-900/60 bg-slate-950 px-4 text-sm font-medium text-cyan-300 transition hover:bg-cyan-950/40"
+                      onClick={syncFull}
+                      disabled={!item.is_active}
+                      title="忽略已同步进度，重新拉取该账号的全部历史作品（用于回填被旧版本截断的作品）"
+                    >
+                      <Database size={15} />
+                      全量重新同步
+                    </button>
+                  </>
                 )}
                 {["owner", "admin"].includes(role ?? "") && (
                   <button
@@ -1154,14 +1196,25 @@ export function AccountDetailClient({ id }: { id: string }) {
                       </strong>
                     </span>
                     {run.error_message && (
-                      <span className="text-rose-400">
-                        {run.error_code && (
-                          <Badge tone={adapterErrorCodeTone(run.error_code)}>
-                            {run.error_code}
-                          </Badge>
-                        )}{" "}
-                        {run.error_message}
-                      </span>
+                      <div className="space-y-2 rounded-md border border-rose-900/50 bg-rose-950/20 p-2 text-rose-300">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {run.error_code && (
+                            <Badge tone={adapterErrorCodeTone(run.error_code)}>
+                              {run.error_code}
+                            </Badge>
+                          )}
+                          <span className="text-rose-200">同步失败</span>
+                        </div>
+                        {run.error_hint && (
+                          <p className="whitespace-pre-wrap leading-relaxed text-rose-300/90">
+                            <span className="font-medium text-rose-200">业务层说明：</span>
+                            {run.error_hint}
+                          </p>
+                        )}
+                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed text-rose-300/90">
+{run.error_detail || run.error_message}
+                        </pre>
+                      </div>
                     )}
                   </div>
                   <div
