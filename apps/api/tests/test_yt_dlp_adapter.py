@@ -239,7 +239,15 @@ class _StubFallback:
 async def test_fallback_used_when_yt_dlp_empty():
     adapter = DouyinYtDlpAdapter()
     # yt-dlp yields nothing → must delegate to the browser adapter.
-    async def _empty(url, *, playlist_end=None):  # type: ignore[assignment]
+    async def _empty(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+    ):  # type: ignore[assignment]
         return [], "ERROR: unsupported"
 
     adapter._run_yt_dlp = _empty
@@ -302,6 +310,9 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
         return all_entries[start:end], ""
 
     adapter._run_yt_dlp = _windowed  # type: ignore[assignment]
+    # Stub the browser fallback so param-passthrough tests (which feed an empty
+    # window to exercise the call args) don't attempt to launch a real browser.
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
     return captured
 
 
