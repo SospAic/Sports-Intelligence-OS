@@ -45,6 +45,7 @@ class DeadLetterRead(BaseModel):
     total_attempts: int
     last_error_code: str | None = None
     last_error_detail: str | None = None
+    last_error_hint: str | None = None
     dead_at: datetime
     replay_status: str
     replayed_at: datetime | None = None
@@ -74,6 +75,7 @@ class OutboxEventAttemptRead(BaseModel):
     finished_at: datetime | None = None
     error_code: str | None = None
     error_detail_safe: str | None = None
+    error_hint: str | None = None
     duration_ms: int | None = None
 
 
@@ -98,6 +100,7 @@ class NotificationDeliveryAttemptRead(BaseModel):
     duration_ms: int | None = None
     error_code: str | None = None
     error_detail_safe: str | None = None
+    error_hint: str | None = None
     retryable: bool | None = None
     request_summary: dict[str, Any] | None = None
     response_summary: dict[str, Any] | None = None
@@ -126,6 +129,7 @@ class ExternalCallAttemptRead(BaseModel):
     http_status: int | None = None
     error_code: str | None = None
     error_detail_safe: str | None = None
+    error_hint: str | None = None
     retryable: bool | None = None
     request_summary: dict[str, Any] | None = None
     response_summary: dict[str, Any] | None = None

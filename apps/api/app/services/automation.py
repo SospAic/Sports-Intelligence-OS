@@ -28,7 +28,6 @@ from app.models.automation import (
 from app.models.monitoring import Account, ContentItem
 from app.models.news import Article, TopicEvent
 from app.models.notification_template import NotificationTemplateVersion
-from app.models.operations import AuditEntry, ExternalCallAttempt
 from app.models.topics import SavedTopic
 from app.providers.llm.base import LLMProvider
 from app.providers.notifications.base import (
@@ -60,6 +59,7 @@ from app.schemas.automation import (
     NotificationTestRequest,
 )
 from app.schemas.generation import GenerationCreate
+from app.services.audit import build_audit_entry, build_external_call_attempt
 from app.services.generation import GenerationError, GenerationService
 from app.services.notification_template import NotificationTemplateService
 
@@ -968,7 +968,7 @@ class AutomationService:
             attempt_record.retryable = exc.retryable
             # Also log to external_call_attempts
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=delivery.workspace_id,
                     call_type="notification",
@@ -1002,7 +1002,7 @@ class AutomationService:
         attempt_record.response_summary = {"external_id": receipt.external_id}
         # Log to external_call_attempts
         self.session.add(
-            ExternalCallAttempt(
+            build_external_call_attempt(
                 id=uuid4(),
                 workspace_id=delivery.workspace_id,
                 call_type="notification",
@@ -1181,9 +1181,13 @@ class AutomationService:
         resource_type: str,
         resource_id: UUID,
         changes: dict[str, Any] | None = None,
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1204,6 +1208,9 @@ class AutomationService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

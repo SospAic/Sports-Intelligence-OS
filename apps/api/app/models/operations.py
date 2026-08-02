@@ -38,6 +38,7 @@ class TaskRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_detail_safe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     correlation_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
 
@@ -82,6 +83,7 @@ class OutboxEventAttempt(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_detail_safe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
@@ -107,6 +109,7 @@ class DeadLetterEvent(Base):
     total_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     dead_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     replay_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     replayed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -139,6 +142,7 @@ class ExternalCallAttempt(Base):
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_detail_safe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     request_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     response_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -173,6 +177,9 @@ class SystemEvent(Base):
     metadata_safe_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     trace_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuditEntry(Base):
@@ -198,3 +205,12 @@ class AuditEntry(Base):
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     trace_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        CheckConstraint("status IN ('success', 'failed')", name="ck_audit_entries_status"),
+        nullable=False,
+        default="success",
+    )
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)

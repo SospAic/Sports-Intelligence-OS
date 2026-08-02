@@ -22,7 +22,7 @@ from app.models.generation import (
 )
 from app.models.monitoring import ContentItem
 from app.models.news import Article, EventArticle, Source, TopicEvent
-from app.models.operations import AuditEntry, ExternalCallAttempt, SystemEvent
+from app.models.operations import SystemEvent
 from app.prompts.renderer import PromptRenderError, redact_sensitive, render_prompt
 from app.providers.llm.base import (
     LLMMessage,
@@ -53,6 +53,8 @@ from app.schemas.generation import (
     ProviderDescriptor,
     WorkflowRead,
 )
+from app.services.audit import build_audit_entry, build_external_call_attempt
+from app.services.error_detail import business_hint_for
 from app.services.settings import SettingsError, SettingsService
 from app.workflows.generation import (
     DEFAULT_MAX_CHARS,
@@ -573,6 +575,7 @@ class GenerationService:
             "code": "generation_dispatch_failed",
             "message": "Background generation worker is unavailable",
         }
+        run.error_hint = business_hint_for("generation_dispatch_failed", category="generation")
         await self.session.commit()
 
     async def execute_run(self, run_id: UUID) -> None:
@@ -686,10 +689,12 @@ class GenerationService:
             if failed is not None:
                 failed.status = "failed"
                 failed.completed_at = datetime.now(UTC)
+                code = getattr(exc, "code", "generation_execution_failed")
                 failed.error = {
-                    "code": getattr(exc, "code", "generation_execution_failed"),
+                    "code": code,
                     "message": str(exc)[:1000],
                 }
+                failed.error_hint = business_hint_for(code, category="generation")
                 current = next(
                     (item for item in failed.steps if item.step_key == failed.current_step), None
                 )
@@ -697,6 +702,25 @@ class GenerationService:
                     current.status = "failed"
                     current.completed_at = datetime.now(UTC)
                     current.error = dict(failed.error)
+                self.session.add(
+                    SystemEvent(
+                        id=uuid4(),
+                        workspace_id=failed.workspace_id,
+                        severity="error",
+                        category="generation",
+                        event_type="generation.run_failed",
+                        message=f"生成工作流执行失败：{str(exc)[:200]}",
+                        resource_type="generation_run",
+                        resource_id=failed.id,
+                        status="open",
+                        error_code=code,
+                        error_detail=str(exc)[:2000],
+                        error_hint=business_hint_for(code, category="generation"),
+                        metadata_safe_json={"model": failed.model, "provider": failed.provider},
+                        trace_id=uuid4(),
+                        created_at=datetime.now(UTC),
+                    )
+                )
                 await self.session.commit()
             raise
 
@@ -984,7 +1008,7 @@ class GenerationService:
             response = await provider.generate(request)
             finished_at = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1016,7 +1040,7 @@ class GenerationService:
         except (LLMProviderRateLimitError, LLMProviderAuthenticationError) as exc:
             finished_at = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1053,7 +1077,7 @@ class GenerationService:
         except LLMProviderError as exc:
             finished_at = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1080,7 +1104,7 @@ class GenerationService:
         except Exception:
             finished_at = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1137,7 +1161,7 @@ class GenerationService:
             response = await fallback_provider.generate(request)
             fallback_finished = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1185,7 +1209,7 @@ class GenerationService:
         except Exception as fallback_exc:
             fallback_finished = datetime.now(UTC)
             self.session.add(
-                ExternalCallAttempt(
+                build_external_call_attempt(
                     id=uuid4(),
                     workspace_id=run.workspace_id,
                     call_type="llm",
@@ -1564,9 +1588,13 @@ class GenerationService:
         resource_type: str,
         resource_id: UUID,
         changes: dict[str, Any] | None = None,
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1581,6 +1609,9 @@ class GenerationService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

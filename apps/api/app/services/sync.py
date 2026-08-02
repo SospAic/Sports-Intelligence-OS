@@ -28,12 +28,14 @@ from app.models.monitoring import (
     ContentSnapshot,
     DerivedMetric,
 )
-from app.models.operations import ExternalCallAttempt, SystemEvent
+from app.models.operations import SystemEvent
 from app.models.sync import SyncRun
 from app.providers.registry import ProviderRegistry
 from app.repositories.sync import SyncRepository
 from app.schemas.monitoring import SyncRunPage, SyncRunRead
 from app.services.adaptive_sync import compute_adaptive_interval
+from app.services.audit import build_external_call_attempt
+from app.services.error_detail import business_hint_for, code_level_detail
 from app.services.metric_calculations import (
     percentile_rank,
     ratio_score,
@@ -75,93 +77,7 @@ class RetryableSyncError(Exception):
     pass
 
 
-def business_hint_for(code: str | None, adapter_key: str | None) -> str:
-    """Return a business-layer explanation + remediation for a sync error code.
 
-    This is the operator-facing counterpart to the raw ``error_detail``: it tells
-    the person running the sync *what the failure means for this account* and
-    *what to do next*, instead of a bare error string.
-    """
-
-    hints: dict[str, str] = {
-        "login_required": (
-            "该平台内容需要登录后才能访问（登录墙）。请在「设置 → 平台管理」中"
-            "配置该平台的登录态 / 凭证后重试。"
-        ),
-        "authentication_error": (
-            "平台凭证无效或已过期。请检查对应平台的 API Key / Token 配置是否正确且未失效。"
-        ),
-        "permission_denied": "当前凭证缺少所需权限。请确认平台应用已获得相应授权范围（scope）。",
-        "not_found": (
-            "账号不存在、已被平台隐藏或已删除。请检查网址是否正确，"
-            "或该内容是否仅对登录用户可见。"
-        ),
-        "rate_limited": (
-            "触发了平台限流。系统会自动有限重试；若持续失败，请降低抓取频率或稍后再试。"
-        ),
-        "transient_provider_error": (
-            "平台或网络暂时不可用（可能是限流、反爬或临时故障）。系统会自动有限重试；"
-            "如反复失败可稍后手动重试。"
-        ),
-        "adapter_configuration_error": (
-            "采集方式未正确配置（缺少凭证或未满足公开页条件）。请检查平台管理中的采集配置。"
-        ),
-        "contract_mapping_error": (
-            "平台返回的数据结构异常，无法映射到统一模型。可能是页面改版或反爬，可重试；若持续请反馈开发。"
-        ),
-        "capability_not_supported": "该操作所需的平台能力未实现。",
-        "adapter_not_implemented": "该平台适配器尚未实现，暂不支持同步。",
-        "account_not_found": "同步目标账号已被删除。",
-        "unexpected_sync_error": (
-            "同步过程出现未预期错误。代码级详情已记录，可将本错误信息反馈给开发排查。"
-        ),
-        "queue_dispatch_failed": (
-            "后台任务队列不可用，同步任务未被消费。请检查 Celery worker 是否正常运行。"
-        ),
-        "dispatch_timeout": (
-            "同步任务已入队但长时间未被 worker 接收，可能 broker 不可用。请检查 Celery worker。"
-        ),
-        "stale_task_recovered": (
-            "同步任务执行超时（worker 可能中途崩溃），已自动释放锁。可重新发起同步。"
-        ),
-        "retry_exhausted": "已重试多次仍失败，停止自动重试。请根据上方错误详情排查后手动重试。",
-        "account_metrics_extraction_failed": (
-            "已更新账号资料，但指标提取失败（部分字段需官方 API / 登录授权）。不影响作品同步。"
-        ),
-    }
-    base = hints.get(code or "") or (
-        f"同步失败（{(code or 'unknown')}）。详见上方代码级错误，或检查平台采集配置后重试。"
-    )
-    if adapter_key:
-        return f"{base}（适配器：{adapter_key}）"
-    return base
-
-
-def code_level_detail(
-    exc: BaseException | None,
-    *,
-    run: "SyncRun | None" = None,
-    adapter_key: str | None = None,
-) -> str:
-    """Build the code-level error detail string for operator/developer debugging.
-
-    Includes the concrete exception class, its message, the originating adapter
-    and the run/request ids so a failure can be traced without scraping logs.
-    """
-
-    parts: list[str] = []
-    if exc is not None:
-        parts.append(
-            f"{type(exc).__module__}.{type(exc).__qualname__}: {exc}"
-        )
-    if adapter_key:
-        parts.append(f"adapter={adapter_key}")
-    if run is not None:
-        parts.append(f"run={run.id}")
-        req = (run.request_id or "").strip()
-        if req:
-            parts.append(f"request_id={req}")
-    return " | ".join(parts) if parts else "no code-level detail captured"
 
 
 def _as_int(value: int | float | None) -> int | None:
@@ -686,6 +602,9 @@ class PlatformSyncExecutor:
                     resource_type="account",
                     resource_id=account.id,
                     status="open",
+                    error_code=code,
+                    error_detail=message[:2000],
+                    error_hint=business_hint_for(code, run.adapter_key),
                     metadata_safe_json={
                         "adapter_key": run.adapter_key,
                         "error_code": code,
@@ -711,7 +630,7 @@ class PlatformSyncExecutor:
     ) -> None:
         finished_at = datetime.now(UTC)
         self.session.add(
-            ExternalCallAttempt(
+            build_external_call_attempt(
                 id=uuid4(),
                 workspace_id=run.workspace_id,
                 call_type="platform_api",

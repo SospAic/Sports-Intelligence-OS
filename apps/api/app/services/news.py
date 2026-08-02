@@ -17,7 +17,7 @@ from app.models.news import (
     Source,
     TopicEvent,
 )
-from app.models.operations import AuditEntry, ExternalCallAttempt, SystemEvent
+from app.models.operations import SystemEvent
 from app.models.topics import SavedTopic
 from app.providers.news.base import (
     NewsArticleData,
@@ -53,6 +53,8 @@ from app.schemas.news import (
     TopicEventPage,
     TopicEventRead,
 )
+from app.services.audit import build_audit_entry, build_external_call_attempt
+from app.services.error_detail import business_hint_for
 
 PROVIDER_BY_SOURCE_TYPE = {
     "rss": "rss",
@@ -786,6 +788,8 @@ class NewsService:
                 run.status = "queued"
                 run.error_code = exc.code
                 run.error_message = str(exc)[:2000]
+                run.error_detail = str(exc)[:2000]
+                run.error_hint = business_hint_for(exc.code, category="news_sync")
                 run.metadata_json = {
                     **run.metadata_json,
                     "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
@@ -879,6 +883,8 @@ class NewsService:
             run.finished_at = now
             run.error_code = "stale_task_recovered"
             run.error_message = "Task exceeded its execution lease and was released"
+            run.error_detail = "Task exceeded its execution lease and was released"
+            run.error_hint = business_hint_for("stale_task_recovered", category="news_sync")
             run.lock_key = None
             source = await self.repository.source(run.workspace_id, run.source_id)
             if source is not None:
@@ -898,6 +904,8 @@ class NewsService:
         run.finished_at = finished_at
         run.error_code = code
         run.error_message = message[:2000]
+        run.error_detail = message[:2000]
+        run.error_hint = business_hint_for(code, category="news_sync")
         run.lock_key = None
         if source is not None:
             source.last_error_code = code
@@ -914,6 +922,9 @@ class NewsService:
                     resource_type="news_source",
                     resource_id=source.id,
                     status="open",
+                    error_code=code,
+                    error_detail=message[:2000],
+                    error_hint=business_hint_for(code, category="news_sync"),
                     metadata_safe_json={
                         "provider_key": source.provider_key,
                         "error_code": code,
@@ -950,7 +961,7 @@ class NewsService:
     ) -> None:
         finished_at = datetime.now(UTC)
         self.session.add(
-            ExternalCallAttempt(
+            build_external_call_attempt(
                 id=uuid4(),
                 workspace_id=run.workspace_id,
                 call_type="news_sync",
@@ -1670,9 +1681,13 @@ class NewsService:
         resource_type: str,
         resource_id: UUID,
         summary: dict[str, Any],
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1687,6 +1702,9 @@ class NewsService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

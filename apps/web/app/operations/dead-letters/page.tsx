@@ -28,7 +28,9 @@ interface DeadLetter {
   aggregate_type: string;
   aggregate_id: string;
   total_attempts: number;
-  last_error: string | null;
+  last_error_code: string | null;
+  last_error_detail: string | null;
+  last_error_hint: string | null;
   dead_at: string;
   replay_status: "pending" | "replaying" | "replayed" | "discarded" | null;
   replayed_at: string | null;
@@ -128,16 +130,28 @@ export default function DeadLettersPage() {
       ),
     },
     {
-      accessorKey: "last_error",
+      accessorKey: "last_error_detail",
       header: "最后错误",
-      cell: ({ row }) => (
-        <span
-          className="line-clamp-2 max-w-xs text-rose-300"
-          title={row.original.last_error ?? undefined}
-        >
-          {row.original.last_error ?? "—"}
-        </span>
-      ),
+      cell: ({ row }) => {
+        const { last_error_code, last_error_detail, last_error_hint } =
+          row.original;
+        if (!last_error_code && !last_error_detail && !last_error_hint) {
+          return <span className="text-slate-500">—</span>;
+        }
+        return (
+          <div className="max-w-xs space-y-1">
+            {last_error_code && <Badge tone="danger">{last_error_code}</Badge>}
+            {last_error_detail && (
+              <pre className="whitespace-pre-wrap text-xs text-rose-300">
+                {last_error_detail}
+              </pre>
+            )}
+            {last_error_hint && (
+              <p className="text-xs text-amber-200">{last_error_hint}</p>
+            )}
+          </div>
+        );
+      },
     },
     {
       accessorKey: "dead_at",

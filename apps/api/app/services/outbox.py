@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.operations import DeadLetterEvent, OutboxEvent, OutboxEventAttempt
+from app.services.error_detail import business_hint_for
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +372,7 @@ class OutboxService:
         attempt.duration_ms = int((finished - attempt_started).total_seconds() * 1000)
         attempt.error_code = str(error_code)
         attempt.error_detail_safe = error_detail
+        attempt.error_hint = business_hint_for(error_code, category="outbox")
 
         event.attempts = attempt.attempt_number
 
@@ -389,6 +391,7 @@ class OutboxService:
                 total_attempts=event.attempts,
                 last_error_code=str(error_code),
                 last_error_detail=error_detail,
+                last_error_hint=business_hint_for(error_code, category="outbox"),
                 dead_at=now,
                 replay_status="pending",
                 replayed_at=None,

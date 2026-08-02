@@ -913,3 +913,12 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 | #6 数据≥1 位小数 | `formatPercent` ≥2 位；两处展示改 `toFixed(1)`，已实现 |
 | #7 去重 + 可配置抓取参数 | `skip_existing` + `adapter_config.yt_dlp`（dateafter/datebefore/max_items/extra_args）+ 设置页抓取卡片，已实现 |
 | #9 报错双详情 | `sync_runs.error_detail`/`error_hint` + 全路径填充 + 前端渲染，本轮新增 |
+
+## 系统操作留痕「报错双详情」全链路（2026-08-02 续）
+
+用户需求：**系统操作留痕（日志/审计/外部调用/死信/后台任务等）中所有报错，都要同时给出代码级错误详情与业务层错误详情**。
+
+- 数据层：`app/services/error_detail.py` 单一真相源（`code_level_detail` + `business_hint_for`，含 13 个 operation 错误码，未知码走通用兜底）；`system_events`/`audit_entries`/`external_call_attempts`/`task_runs`/`outbox_event_attempts`/`dead_letter_events`/`news_sync_runs`/`generation_runs` 加 `error_detail`/`error_hint`/`error_code`/`status` 列；迁移 `20260803_0001`。
+- 写入点：新增 `app/services/audit.py`（`build_audit_entry`/`build_external_call_attempt`，失败自动派生业务 hint）；`operations.py` 聚合器 + `news/generation/sync/automation` 的 SystemEvent/ExternalCallAttempt/NewsSyncRun/GenerationRun 错误路径、outbox 死信路径全部补齐双详情；`operations` 路由的 events/audits/tasks 接口返回新字段。
+- 前端：`logs-client.tsx`（系统事件 + 审计日志双表「错误详情」列：错误码 Badge + 代码级 `<pre>` + 业务层「处置建议」）、`external-calls`（详情面板业务层说明）、`dead-letters`（修正历史 `last_error`→`last_error_*` 字段错位并渲染双详情）、`tasks`（任务列表「错误详情」列）。
+- 验证：`docker compose build api worker beat web` 成功；`up -d` 后迁移 `20260802_0030 -> 20260803_0001` 已应用；8 表共 24 个新列入 DB；OpenAPI 暴露全部新字段；ruff 0 错、前端 tsc 0 错。

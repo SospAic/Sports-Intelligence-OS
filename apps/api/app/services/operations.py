@@ -18,6 +18,7 @@ from app.schemas.operations import (
     SystemEventPage,
     SystemEventRead,
 )
+from app.services.error_detail import business_hint_for
 from app.services.sync import cancel_sync_run
 
 
@@ -83,6 +84,8 @@ class OperationsService:
                         finished_at=task_run.finished_at,
                         error_code=task_run.error_code,
                         error_message=task_run.error_detail_safe,
+                        error_detail=task_run.error_detail_safe,
+                        error_hint=business_hint_for(task_run.error_code, category="worker"),
                         metadata=task_run.progress_json,
                     )
                 )
@@ -109,6 +112,10 @@ class OperationsService:
                         finished_at=sync_run.finished_at,
                         error_code=sync_run.error_code,
                         error_message=sync_run.error_message,
+                        error_detail=sync_run.error_detail,
+                        error_hint=business_hint_for(
+                            sync_run.error_code, adapter_key=sync_run.adapter_key
+                        ),
                         metadata=sync_run.metadata_json,
                     )
                 )
@@ -140,6 +147,8 @@ class OperationsService:
                         finished_at=news_run.finished_at,
                         error_code=news_run.error_code,
                         error_message=news_run.error_message,
+                        error_detail=news_run.error_detail,
+                        error_hint=business_hint_for(news_run.error_code, category="news_sync"),
                         metadata=news_run.metadata_json,
                     )
                 )
@@ -174,6 +183,10 @@ class OperationsService:
                         error_message=str(error.get("message") or error.get("detail"))
                         if error
                         else None,
+                        error_detail=str(error.get("detail") or error.get("message"))
+                        if error
+                        else None,
+                        error_hint=generation_run.error_hint,
                         metadata={
                             "provider": generation_run.provider,
                             "input_type": generation_run.input_type,
@@ -224,6 +237,9 @@ class OperationsService:
                     resource_type=item.resource_type,
                     resource_id=item.resource_id,
                     status=item.status,
+                    error_code=item.error_code,
+                    error_detail=item.error_detail,
+                    error_hint=item.error_hint,
                     metadata=item.metadata_safe_json,
                     trace_id=item.trace_id,
                     created_at=item.created_at,
@@ -273,6 +289,10 @@ class OperationsService:
                     resource_id=item.resource_id,
                     change_summary=item.change_summary_json,
                     reason=item.reason,
+                    status=item.status,
+                    error_code=item.error_code,
+                    error_detail=item.error_detail,
+                    error_hint=item.error_hint,
                     trace_id=item.trace_id,
                     created_at=item.created_at,
                 )

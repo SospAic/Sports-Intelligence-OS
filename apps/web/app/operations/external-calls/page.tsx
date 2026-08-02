@@ -38,6 +38,7 @@ interface ExternalCallAttempt {
   http_status: number | null;
   error_code: string | null;
   error_detail_safe: string | null;
+  error_hint: string | null;
   retryable: boolean | null;
   request_summary: Record<string, unknown> | null;
   response_summary: Record<string, unknown> | null;
@@ -187,10 +188,19 @@ function DetailPanel({
 
       {attempt.error_detail_safe && (
         <div className="mt-4">
-          <p className="text-xs text-slate-500">错误详情</p>
+          <p className="text-xs text-slate-500">错误详情（代码级）</p>
           <pre className="mt-1 whitespace-pre-wrap rounded-lg border border-rose-900/50 bg-rose-950/30 p-3 text-xs text-rose-300">
             {attempt.error_detail_safe}
           </pre>
+        </div>
+      )}
+
+      {attempt.error_hint && (
+        <div className="mt-4">
+          <p className="text-xs text-slate-500">处置建议（业务层）</p>
+          <p className="mt-1 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-xs text-amber-200">
+            {attempt.error_hint}
+          </p>
         </div>
       )}
 

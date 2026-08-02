@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.monitoring import Account, AccountSnapshot, ContentItem
-from app.models.operations import AuditEntry
 from app.repositories.monitoring import (
     AccountFilters,
     AccountRow,
@@ -50,6 +49,7 @@ from app.schemas.monitoring import (
     SyncIntervalResponse,
 )
 from app.services.adaptive_sync import compute_adaptive_interval
+from app.services.audit import build_audit_entry
 from app.services.platform_detect import detect_platform_key_from_url
 
 RESERVED_METADATA_KEYS = {
@@ -209,7 +209,7 @@ class MonitoringService:
         )
         self._repository.add_account(account)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -300,7 +300,7 @@ class MonitoringService:
 
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -332,7 +332,7 @@ class MonitoringService:
         account.sync_status = "disabled"
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -728,7 +728,7 @@ class MonitoringService:
         self._session.add(content)
 
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -774,7 +774,7 @@ class MonitoringService:
 
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -804,7 +804,7 @@ class MonitoringService:
         content = row[0]
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",

@@ -899,6 +899,8 @@ export interface OperationTaskRecord {
   finished_at: string | null;
   error_code: string | null;
   error_message: string | null;
+  error_detail: string | null;
+  error_hint: string | null;
   metadata: Record<string, unknown>;
 }
 export interface OperationTaskPage {
@@ -917,6 +919,9 @@ export interface SystemEventRecord {
   resource_type: string | null;
   resource_id: string | null;
   status: string;
+  error_code: string | null;
+  error_detail: string | null;
+  error_hint: string | null;
   metadata: Record<string, unknown>;
   trace_id: string;
   created_at: string;
@@ -937,6 +942,10 @@ export interface AuditEntryRecord {
   resource_id: string | null;
   change_summary: Record<string, unknown>;
   reason: string | null;
+  status: string;
+  error_code: string | null;
+  error_detail: string | null;
+  error_hint: string | null;
   trace_id: string;
   created_at: string;
 }
