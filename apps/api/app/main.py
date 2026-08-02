@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -25,6 +26,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.problems import http_exception_handler, validation_exception_handler
 from app.db.session import create_engine_and_session
+from app.services.platform_catalog_seed import seed_platform_catalog
 from app.providers.llm.registry import build_llm_provider_registry
 from app.providers.news.registry import build_news_provider_registry
 from app.providers.notifications.registry import build_notification_provider_registry
@@ -38,6 +40,8 @@ from app.services.outbox import OutboxError
 from app.services.platform_credentials import PlatformCredentialError
 from app.services.settings import SettingsError
 from app.services.sync import SyncError
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -62,6 +66,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.news_providers = build_news_provider_registry(resolved_settings)
         app.state.llm_providers = build_llm_provider_registry(resolved_settings)
         app.state.notification_providers = build_notification_provider_registry(resolved_settings)
+        # Idempotently sync the platform catalog (incl. each platform's default
+        # adapter key) with the code. This is what flips YouTube / TikTok / Douyin
+        # to the yt-dlp adapter on deploy without a manual CLI step.
+        try:
+            async with session_factory() as seed_session:
+                created, updated = await seed_platform_catalog(seed_session)
+                if updated:
+                    logger.info("platform catalog synced on startup: %s updated", updated)
+        except Exception:  # noqa: BLE001 - never block boot on a catalog sync
+            logger.exception("platform catalog seed failed during startup")
         try:
             yield
         finally:

@@ -72,6 +72,17 @@ PROXY_FIELDS = {
     "proxy_password",
 }
 
+# Runtime connection hints that let the project reuse the operator's REAL local
+# browser (Chrome/Edge) to bypass datacenter-headless anti-bot walls on
+# TikTok/Douyin. Allowed in every mode; not secrets.
+LOCAL_BROWSER_FIELDS = {
+    "cdp_endpoint",
+    "launch_mode",
+    "browser_channel",
+    "browser_executable_path",
+    "user_data_dir",
+}
+
 
 class PlatformCredentialError(RuntimeError):
     def __init__(self, message: str, *, code: str, status_code: int = 400) -> None:
@@ -120,6 +131,7 @@ class PlatformCredentialService:
             | AUTHORIZED_LOGIN_FIELDS
             | AUTHORIZED_SESSION_FIELDS
             | PROXY_FIELDS
+            | LOCAL_BROWSER_FIELDS
         )
         unknown = (set(payload.config) | set(payload.clear_fields)) - allowed
         if unknown:

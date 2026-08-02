@@ -9,10 +9,13 @@ from app.adapters.platforms import (
     BilibiliBrowserAdapter,
     DouyinAdapter,
     DouyinBrowserAdapter,
+    DouyinYtDlpAdapter,
     TikTokAdapter,
     TikTokBrowserAdapter,
+    TikTokYtDlpAdapter,
     YouTubeAdapter,
     YouTubeBrowserAdapter,
+    YouTubeYtDlpAdapter,
 )
 from app.adapters.platforms.base import AdapterDescriptor
 from app.models.monitoring import Platform
@@ -32,17 +35,21 @@ _ADAPTER_DESCRIPTORS: dict[str, AdapterDescriptor] = {
         YouTubeBrowserAdapter,
         TikTokBrowserAdapter,
         DouyinBrowserAdapter,
+        YouTubeYtDlpAdapter,
+        TikTokYtDlpAdapter,
+        DouyinYtDlpAdapter,
     )
 }
 
 # (key, name, category, adapter_key)
-# The 4 main platforms use browser-simulation adapters by default so that
-# monitoring works without API keys. Browser scraping is the underlying
-# mechanism — users only see the platform name, not "浏览器模拟".
+# YouTube / TikTok / Douyin now default to the yt-dlp universal adapter
+# (command-line extraction, no browser) with an automatic browser-simulation
+# fallback. Browser scraping remains the mechanism for Bilibili and as the
+# fallback everywhere else, so monitoring still works without API keys.
 PLATFORM_CATALOG = (
-    ("youtube", "YouTube", "video", "youtube_browser"),
-    ("tiktok", "TikTok", "video", "tiktok_browser"),
-    ("douyin", "抖音", "video", "douyin_browser"),
+    ("youtube", "YouTube", "video", "youtube_ytdlp"),
+    ("tiktok", "TikTok", "video", "tiktok_ytdlp"),
+    ("douyin", "抖音", "video", "douyin_ytdlp"),
     ("bilibili", "Bilibili", "video", "bilibili_browser"),
 )
 
@@ -76,7 +83,12 @@ async def seed_platform_catalog(session: AsyncSession) -> tuple[int, int]:
     created = 0
     updated = 0
     for key, name, category, adapter_key in PLATFORM_CATALOG:
-        descriptor = _ADAPTER_DESCRIPTORS.get(key)
+        # Resolve the descriptor by the *concrete* adapter key first (e.g.
+        # "youtube_ytdlp"), falling back to the platform key. This is critical:
+        # the legacy adapters also claim the bare platform keys ("youtube",
+        # "tiktok", "douyin"), so resolving by platform key first would silently
+        # pick the legacy adapter and undo the intended yt-dlp switch.
+        descriptor = _ADAPTER_DESCRIPTORS.get(adapter_key) or _ADAPTER_DESCRIPTORS.get(key)
         if descriptor is not None:
             capabilities = _capabilities_from_descriptor(descriptor)
             # Prefer the descriptor's adapter key when available.

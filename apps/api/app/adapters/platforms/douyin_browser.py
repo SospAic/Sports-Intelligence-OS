@@ -367,46 +367,57 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                     next_cursor=str(int(cursor or "0") + page_size) if has_more else None,
                 )
 
-            # Fallback: DOM scraping.
+            # Fallback: DOM scraping via the video-grid anchors. The video grid
+            # renders as anchors whose href contains "/video/"; legacy selectors
+            # ([data-e2e='user-post-item']) are no longer reliable and this works
+            # on the current DOM and on a real local browser driven over CDP.
             try:
-                await page.wait_for_selector(
-                    "[data-e2e='user-post-item'], [class*='ECMy_Zdt']",
-                    timeout=8_000,
-                )
+                await page.wait_for_selector("a[href*='/video/']", timeout=12_000)
             except Exception:
                 return AdapterPage(items=(), next_cursor=None)
 
             items_dom: list[PlatformContentData] = []
-            cards = page.locator("[data-e2e='user-post-item'], [class*='ECMy_Zdt']")
-            count = await cards.count()
+            anchors = page.locator("a[href*='/video/']")
+            count = await anchors.count()
 
             for i in range(min(count, page_size)):
                 try:
-                    card = cards.nth(i)
+                    anchor = anchors.nth(i)
+                    href = await anchor.get_attribute("href") or ""
+                    vid_match = re.search(r"/video/(\d+)", href)
+                    if not vid_match:
+                        continue
+                    aweme_id = vid_match.group(1)
+
                     title = ""
-                    aweme_id = ""
-                    cover_url = None
-
                     try:
-                        link_el = card.locator("a").first
-                        href = await link_el.get_attribute("href") or ""
-                        vid_match = re.search(r"/video/(\d+)", href)
-                        if vid_match:
-                            aweme_id = vid_match.group(1)
-                    except Exception:
-                        pass
-
-                    try:
-                        title_el = card.locator("[class*='title'], p").first
-                        title = (await title_el.inner_text()).strip()
+                        title = (await anchor.get_attribute("aria-label") or "").strip()
                     except Exception:
                         pass
                     if not title:
+                        try:
+                            title = (await anchor.inner_text()).strip()
+                        except Exception:
+                            pass
+                    if not title:
                         title = f"视频 {i + 1}"
 
+                    cover_url = None
                     try:
-                        img_el = card.locator("img").first
-                        cover_url = await img_el.get_attribute("src")
+                        cover_url = await anchor.locator("img").first.get_attribute("src")
+                    except Exception:
+                        pass
+
+                    # Best-effort play count from the card text (e.g. "1.2万次播放").
+                    play_count = None
+                    try:
+                        card_text = await anchor.inner_text()
+                        pm = re.search(
+                            r"([\d.,]+\s*[万亿]?\s*[Ww]?)\s*(播放|次播放|plays?)",
+                            card_text,
+                        )
+                        if pm:
+                            play_count = self._parse_count(pm.group(1))
                     except Exception:
                         pass
 
@@ -426,7 +437,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                             source_kind="live",
                             provider=self.key,
                             fetched_at=ctx.observed_at,
-                            metadata={"method": "browser_dom_scrape"},
+                            metadata={"method": "browser_dom_scrape", "play_count": play_count},
                         )
                     )
                 except Exception as exc:

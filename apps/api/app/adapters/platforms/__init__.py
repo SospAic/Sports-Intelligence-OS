@@ -16,6 +16,11 @@ from app.adapters.platforms.tiktok import TikTokAdapter
 from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
 from app.adapters.platforms.youtube import YouTubeAdapter
 from app.adapters.platforms.youtube_browser import YouTubeBrowserAdapter
+from app.adapters.platforms.yt_dlp import (
+    DouyinYtDlpAdapter,
+    TikTokYtDlpAdapter,
+    YouTubeYtDlpAdapter,
+)
 
 __all__ = [
     "AdapterCapability",
@@ -26,12 +31,15 @@ __all__ = [
     "BilibiliBrowserAdapter",
     "DouyinAdapter",
     "DouyinBrowserAdapter",
+    "DouyinYtDlpAdapter",
     "PlatformAccountData",
     "PlatformAdapter",
     "PlatformContentData",
     "PlatformMetricsData",
     "TikTokAdapter",
     "TikTokBrowserAdapter",
+    "TikTokYtDlpAdapter",
     "YouTubeAdapter",
     "YouTubeBrowserAdapter",
+    "YouTubeYtDlpAdapter",
 ]

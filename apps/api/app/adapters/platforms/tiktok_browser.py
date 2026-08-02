@@ -302,68 +302,61 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             url = TIKTOK_PROFILE_URL.format(username=username)
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
-            await self._scroll_page(page, times=2)
+            await self._scroll_page(page, times=3)
 
-            # Wait for video items.
+            # The video grid renders as anchors whose href contains "/video/".
+            # (Legacy selectors such as [data-e2e='user-post-item'] are no longer
+            # reliable; the href-based approach works on the current DOM and on a
+            # real local browser driven over CDP.)
             try:
-                await page.wait_for_selector(
-                    "[data-e2e='user-post-item'], [class*='DivItemContainer']",
-                    timeout=10_000,
-                )
+                await page.wait_for_selector("a[href*='/video/']", timeout=12_000)
             except Exception:
                 return AdapterPage(items=(), next_cursor=None)
 
             items: list[PlatformContentData] = []
-            cards = page.locator("[data-e2e='user-post-item'], [class*='DivItemContainer']")
-            count = await cards.count()
+            anchors = page.locator("a[href*='/video/']")
+            count = await anchors.count()
 
             for i in range(min(count, page_size)):
                 try:
-                    card = cards.nth(i)
+                    anchor = anchors.nth(i)
+                    href = await anchor.get_attribute("href") or ""
+                    vid_match = re.search(r"/video/(\d+)", href)
+                    if not vid_match:
+                        continue
+                    video_id = vid_match.group(1)
+
                     title = ""
-                    video_id = ""
-                    cover_url = None
-                    view_count = None
-
                     try:
-                        link_el = card.locator("a").first
-                        href = await link_el.get_attribute("href") or ""
-                        vid_match = re.search(r"/video/(\d+)", href)
-                        if vid_match:
-                            video_id = vid_match.group(1)
-                    except Exception:
-                        pass
-
-                    try:
-                        desc_el = card.locator("[class*='SpanText'], a[title]").first
-                        title = (await desc_el.inner_text()).strip()
+                        title = (await anchor.get_attribute("aria-label") or "").strip()
                     except Exception:
                         pass
                     if not title:
                         try:
-                            title = await card.locator("a").first.get_attribute("title") or ""
+                            title = (await anchor.inner_text()).strip()
                         except Exception:
                             pass
                     if not title:
                         title = f"Video {i + 1}"
 
+                    cover_url = None
                     try:
-                        img_el = card.locator("img").first
+                        img_el = anchor.locator("img").first
                         cover_url = await img_el.get_attribute("src")
                     except Exception:
                         pass
 
+                    # Best-effort view count from the card text (e.g. "1.2M views").
+                    view_count = None
                     try:
-                        view_el = card.locator("[data-e2e='video-views'], [class*='StrongVideoCount']").first
-                        view_count = self._parse_count(await view_el.inner_text())
+                        card_text = await anchor.inner_text()
+                        vm = re.search(r"([\d.,]+\s*[KMB]?)\s*views?", card_text, re.I)
+                        if vm:
+                            view_count = self._parse_count(vm.group(1))
                     except Exception:
                         pass
 
-                    canonical = (
-                        TIKTOK_VIDEO_URL.format(username=username, video_id=video_id)
-                        if video_id
-                        else url
-                    )
+                    canonical = TIKTOK_VIDEO_URL.format(username=username, video_id=video_id)
                     items.append(
                         PlatformContentData(
                             external_id=video_id or f"{username}_v{i}",

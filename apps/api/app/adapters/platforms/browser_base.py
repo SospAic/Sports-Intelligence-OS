@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
+import os
+import socket
+from urllib.parse import urlparse, urlunparse
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -65,6 +69,30 @@ LOGIN_WALL_SELECTORS = (
 )
 
 
+def _normalize_cdp_endpoint(endpoint: str) -> str:
+    """Resolve a CDP endpoint hostname to an IP address.
+
+    Chrome/Edge DevTools only accept ``/json`` requests whose ``Host`` header is
+    ``localhost`` or a bare IP address — a hostname such as
+    ``host.docker.internal`` is rejected with HTTP 500. Resolving the name to its
+    IP (e.g. the Docker bridge gateway) lets Docker users simply paste
+    ``http://host.docker.internal:9222``.
+    """
+    try:
+        parsed = urlparse(endpoint)
+        host = parsed.hostname or ""
+        if host and host.lower() not in ("localhost", "127.0.0.1", "::1"):
+            try:
+                ipaddress.ip_address(host)
+                return endpoint  # already an IP
+            except ValueError:
+                resolved = socket.gethostbyname(host)
+                return urlunparse(parsed._replace(netloc=f"{resolved}:{parsed.port}"))
+    except Exception:  # noqa: BLE001 - never block browser startup on this
+        return endpoint
+    return endpoint
+
+
 class LoginRequiredError(PlatformAdapterError):
     """Raised when login, CAPTCHA, or an interactive security step blocks access."""
 
@@ -109,6 +137,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         self._max_delay = max_action_delay or self.max_action_delay
         self._playwright: Playwright | None = None
         self._browsers: dict[str, Browser] = {}
+        self._cdp_browsers: set[str] = set()
         self._session_states: dict[str, StorageState] = {}
 
     def _credential_cache_key(self, ctx: AdapterCallContext) -> str | None:
@@ -144,7 +173,68 @@ class BrowserPlatformAdapter(PlatformAdapter):
     async def _ensure_browser(
         self, ctx: AdapterCallContext | None = None
     ) -> Browser:
-        """Lazily launch (and cache) a browser instance, optionally via a proxy."""
+        """Lazily acquire a browser instance.
+
+        Selection order (lets the project reuse the operator's *real* browser to
+        bypass datacenter-headless anti-bot walls on TikTok/Douyin):
+
+        1. CDP endpoint (``cdp_endpoint`` config or ``SIO_BROWSER_CDP_ENDPOINT`` env):
+           connect to an already-running local Chrome/Edge launched by the user
+           (same fingerprint, same residential IP, same login cookies). This is the
+           recommended mode for TikTok/Douyin.
+        2. Local real-browser launch (``launch_mode=='local'``): spawn the host's
+           ownChrome/Edge binary headful (real fingerprint) instead of the bundled
+           headless Chromium.
+        3. Default: the bundled headless Chromium, optionally behind a proxy.
+        """
+        # 1) Connect to the operator's real local browser over CDP.
+        cdp = (ctx.config.get("cdp_endpoint") if ctx is not None else None) or os.environ.get(
+            "SIO_BROWSER_CDP_ENDPOINT"
+        )
+        if cdp and cdp.strip():
+            cdp = _normalize_cdp_endpoint(cdp.strip())
+            existing = self._browsers.get(cdp)
+            if existing is not None and existing.is_connected():
+                return existing
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+            logger.info("Connecting to local browser over CDP: %s", cdp)
+            browser = await self._playwright.chromium.connect_over_cdp(cdp)
+            self._cdp_browsers.add(cdp)
+            self._browsers[cdp] = browser
+            return browser
+
+        # 2) Launch the host's real browser binary headful (real fingerprint).
+        launch_mode = (
+            ctx.config.get("launch_mode") if ctx is not None else None
+        ) or os.environ.get("SIO_BROWSER_LAUNCH_MODE")
+        if launch_mode == "local":
+            existing = self._browsers.get("local")
+            if existing is not None and existing.is_connected():
+                return existing
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+            launch_kwargs: dict[str, Any] = {
+                "headless": False,
+                "args": [
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            }
+            exe = ctx.config.get("browser_executable_path") if ctx is not None else None
+            channel = ctx.config.get("browser_channel") if ctx is not None else None
+            if exe:
+                launch_kwargs["executable_path"] = exe
+            elif channel:
+                launch_kwargs["channel"] = channel
+            ud = ctx.config.get("user_data_dir") if ctx is not None else None
+            if ud:
+                launch_kwargs["user_data_dir"] = ud
+            logger.info("Launching local real browser (headful)")
+            self._browsers["local"] = await self._playwright.chromium.launch(**launch_kwargs)
+            return self._browsers["local"]
+
+        # 3) Default: bundled headless Chromium (optionally behind a proxy).
         proxy = self._proxy_from_config(ctx) if ctx is not None else None
         cache_key = proxy["server"] if proxy else "direct"
         existing = self._browsers.get(cache_key)
@@ -296,13 +386,21 @@ class BrowserPlatformAdapter(PlatformAdapter):
             )
 
     async def aclose(self) -> None:
-        """Shut down browser and Playwright."""
-        for browser in self._browsers.values():
+        """Shut down browser and Playwright.
+
+        CDP-connected browsers belong to the operator's real local browser, so we
+        must NOT close them (that would terminate the user's Edge/Chrome). We only
+        drop the reference. Locally-launched and bundled browsers are closed.
+        """
+        for key, browser in list(self._browsers.items()):
+            if key in self._cdp_browsers:
+                continue
             try:
                 await browser.close()
             except Exception:
                 pass
         self._browsers.clear()
+        self._cdp_browsers.clear()
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None

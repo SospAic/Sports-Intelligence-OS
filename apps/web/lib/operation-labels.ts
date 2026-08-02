@@ -27,9 +27,12 @@ const TASK_PROVIDER_LABELS: Record<string, string> = {
   generic_json: "JSON 新闻采集",
   tiktok: "TikTok 官方 API",
   tiktok_browser: "TikTok 浏览器采集",
+  tiktok_ytdlp: "TikTok（yt-dlp）",
   bilibili_browser: "Bilibili 浏览器采集",
   youtube: "YouTube 官方 API",
   youtube_browser: "YouTube 浏览器采集",
+  youtube_ytdlp: "YouTube（yt-dlp）",
+  douyin_ytdlp: "抖音（yt-dlp）",
 };
 
 const TASK_TARGET_LABELS: Record<string, string> = {

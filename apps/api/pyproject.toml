@@ -23,6 +23,7 @@ dependencies = [
   "redis>=6.2,<7",
   "sqlalchemy>=2.0.41,<2.1",
   "beautifulsoup4>=4.13,<5",
+  "yt-dlp>=2025.1,<2027",
   "uvicorn[standard]>=0.35,<1",
 ]
 

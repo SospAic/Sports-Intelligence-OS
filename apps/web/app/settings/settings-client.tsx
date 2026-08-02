@@ -1246,6 +1246,28 @@ function SecurePlatformCredentialCard({
             ))}
           </div>
         )}
+        <div className="rounded-lg border border-slate-800 bg-emerald-950/30 p-3">
+          <p className="text-xs font-medium text-emerald-300">本地浏览器（可选，推荐用于 TikTok / 抖音）</p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            若 TikTok / 抖音 在默认无头浏览器下被反爬封锁，可改用你本机真实浏览器抓取——
+            指纹、IP、登录态都与你平时访问时一致。做法：用普通方式打开 Edge/Chrome 并带
+            <code className="mx-1 rounded bg-slate-800 px-1">--remote-debugging-port=9222</code>
+            启动（或运行项目自带 launch_local_browser 脚本），再在此填写地址即可。
+            若 worker 运行在 Docker 内，请填
+            <code className="mx-1 rounded bg-slate-800 px-1">http://host.docker.internal:9222</code>，
+            否则填
+            <code className="mx-1 rounded bg-slate-800 px-1">http://127.0.0.1:9222</code>。
+          </p>
+          <label className="mt-3 grid gap-1 text-xs text-slate-300">
+            本地浏览器 CDP 地址
+            <input
+              name="cdp_endpoint"
+              className={inputClass}
+              placeholder="http://127.0.0.1:9222 或 http://host.docker.internal:9222"
+              disabled={!canEdit}
+            />
+          </label>
+        </div>
         <button
           className={`${buttonClass} w-full justify-center`}
           disabled={saving || !canEdit}
