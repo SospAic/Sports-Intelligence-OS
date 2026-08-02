@@ -104,7 +104,12 @@ def test_extract_thumbnail_variants():
     )
     assert (
         adapter._extract_thumbnail(
-            {"thumbnails": [{"url": "http://x/s.jpg", "width": 120}, {"url": "http://x/l.jpg", "width": 640}]}
+            {
+                "thumbnails": [
+                    {"url": "http://x/s.jpg", "width": 120},
+                    {"url": "http://x/l.jpg", "width": 640},
+                ]
+            }
         )
         == "http://x/l.jpg"
     )

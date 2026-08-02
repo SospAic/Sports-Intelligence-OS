@@ -220,3 +220,11 @@ class PlatformAdapter(ABC):
 
     @abstractmethod
     async def health_check(self, ctx: AdapterCallContext) -> AdapterHealth: ...
+
+    async def aclose(self) -> None:
+        """Release resources held by the adapter (browsers, subprocesses, ...).
+
+        Stateless adapters can rely on this no-op default; adapters that spawn
+        browsers, child processes, or network sessions should override it.
+        """
+        return None

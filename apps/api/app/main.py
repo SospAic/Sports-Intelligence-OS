@@ -1,6 +1,6 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-import logging
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -26,7 +26,6 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.problems import http_exception_handler, validation_exception_handler
 from app.db.session import create_engine_and_session
-from app.services.platform_catalog_seed import seed_platform_catalog
 from app.providers.llm.registry import build_llm_provider_registry
 from app.providers.news.registry import build_news_provider_registry
 from app.providers.notifications.registry import build_notification_provider_registry
@@ -37,6 +36,7 @@ from app.services.monitoring import MonitoringError
 from app.services.news import NewsError
 from app.services.notification_template import NotificationTemplateError
 from app.services.outbox import OutboxError
+from app.services.platform_catalog_seed import seed_platform_catalog
 from app.services.platform_credentials import PlatformCredentialError
 from app.services.settings import SettingsError
 from app.services.sync import SyncError

@@ -171,7 +171,7 @@ class YtDlpAdapter(PlatformAdapter):
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise TransientAdapterError("yt-dlp subprocess timed out") from exc
 
         err_text = err.decode("utf-8", "replace") if err else ""
@@ -223,7 +223,7 @@ class YtDlpAdapter(PlatformAdapter):
             out, err = await asyncio.wait_for(
                 proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise TransientAdapterError("yt-dlp single-json timed out") from exc
 
         err_text = err.decode("utf-8", "replace") if err else ""
@@ -244,15 +244,15 @@ class YtDlpAdapter(PlatformAdapter):
         if isinstance(thumb, str) and thumb:
             return thumb
         if isinstance(thumb, dict) and thumb.get("url"):
-            return thumb["url"]
+            return str(thumb["url"])
         thumbs = entry.get("thumbnails")
         if isinstance(thumbs, list):
             best: str | None = None
             for th in thumbs:
                 if isinstance(th, dict) and th.get("url"):
-                    best = th["url"]
+                    best = str(th["url"])
                     if th.get("width") and int(th["width"]) >= 300:
-                        return th["url"]
+                        return str(th["url"])
             return best
         return None
 
@@ -541,7 +541,7 @@ class YtDlpAdapter(PlatformAdapter):
         if self._fb is not None:
             try:
                 await self._fb.aclose()
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001, S110
                 pass
         self._fb = None
         self._cache.clear()

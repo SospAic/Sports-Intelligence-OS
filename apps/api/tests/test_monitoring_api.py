@@ -64,7 +64,9 @@ def test_platform_and_account_crud_are_authenticated_and_auditable(
 
     platforms = client.get("/api/v1/platforms")
     assert platforms.status_code == 200
-    assert platforms.json()[0]["key"] == "test_platform"
+    # The endpoint is seeded with the built-in platforms at startup, so the
+    # test-created platform is not guaranteed to be first; assert membership.
+    assert any(p["key"] == "test_platform" for p in platforms.json())
 
     account = create_account(client, csrf_token)
     assert account["source_kind"] == "imported"

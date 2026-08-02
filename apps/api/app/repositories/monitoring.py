@@ -336,7 +336,7 @@ class MonitoringRepository:
         statement = (
             select(
                 day,
-                func.count(ContentItem.id).label("count"),
+                func.count(ContentItem.id).label("content_count"),
                 func.coalesce(
                     func.sum(func.coalesce(ContentSnapshot.view_count, 0)), 0
                 ).label("total_views"),
@@ -352,7 +352,7 @@ class MonitoringRepository:
         )
         result = await self._session.execute(statement)
         return [
-            (str(row.day), int(row.count), int(row.total_views), int(row.total_likes))
+            (str(row.day), int(row.content_count), int(row.total_views), int(row.total_likes))
             for row in result.all()
         ]
 

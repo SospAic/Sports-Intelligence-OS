@@ -20,15 +20,16 @@ import json
 import logging
 import os
 import socket
-from urllib.parse import urlparse, urlunparse
 from collections.abc import Mapping
 from typing import Any, cast
+from urllib.parse import urlparse, urlunparse
 
 from playwright.async_api import (
     Browser,
     BrowserContext,
     Page,
     Playwright,
+    ProxySettings,
     StorageState,
     async_playwright,
 )
@@ -149,7 +150,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
             f"{self.key}\0{username}\0{password}".encode()
         ).hexdigest()
 
-    def _proxy_from_config(self, ctx: AdapterCallContext) -> dict[str, Any] | None:
+    def _proxy_from_config(self, ctx: AdapterCallContext) -> ProxySettings | None:
         """Build a Playwright proxy dict from the workspace credential config.
 
         Residential/rotating proxies are the practical way to avoid datacenter-IP
@@ -161,7 +162,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         server = server.strip()
         if not server.startswith(("http://", "https://", "socks5://", "socks4://")):
             server = f"http://{server}"
-        proxy: dict[str, Any] = {"server": server}
+        proxy: ProxySettings = {"server": server}
         username = ctx.config.get("proxy_username")
         password = ctx.config.get("proxy_password")
         if isinstance(username, str) and username:
@@ -397,7 +398,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 continue
             try:
                 await browser.close()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
         self._browsers.clear()
         self._cdp_browsers.clear()

@@ -492,7 +492,7 @@ class PlatformCredentialService:
         if config.get("proxy_username"):
             safe["proxy_username"] = "configured"
         if config.get("proxy_password"):
-            safe["proxy_password"] = "configured"
+            safe["proxy_password"] = "configured"  # noqa: S105
         return safe
 
     def _audit(

@@ -26,7 +26,7 @@
 - **契约测试修复（4 项）**：`test_infrastructure_contract.py` 的 `test_prompt_03/07/10` 与 `test_project_context.py` 的 `test_current_stage` 去掉对已删除 `providers/llm/mock.py`、不存在 `services/monitoring_seed.py` 及 `mock_llm`/`Mock Webhook` 的过期断言，改为当前真实形态（`StubLLMProvider` / `GenericWebhookProvider` / STATUS「Prompt 11 后续维护」阶段），保持"不伪造成功"契约。
 - **Prettier 规范化**：新增 `apps/web/.prettierignore`（排除 `.next`/`node_modules`/`next-env.d.ts`/`pnpm-lock.yaml`）；对 apps/web 全量 `prettier --write`（约 490 个源文件，纯格式，无逻辑改动），使 `format:check` 门禁通过。
 - **亮/暗主题切换（#28，已落地）**：`app/globals.css` 早已定义 `:root[data-theme="light"]` 令牌与核心表面覆盖（bg-slate-950→白、text-white/slate-100/200→深、border-slate-800/700→浅、header 白）。真正缺口是 `data-theme` 从未被设置。新增 `components/theme-toggle.tsx`（`useSyncExternalStore` 读 DOM/localStorage + 切换并持久化）、`app/layout.tsx` 注入无闪烁内联脚本（首屏前按 localStorage 设 `data-theme`）、`components/app-shell.tsx` 头部接入切换按钮。`tsc`/`eslint`/`prettier`/`next build` 均通过。
-- **未完成任务核对（纠正）**：#26 前端批量操作工具栏**经核查已实现**（`app/contents/contents-client.tsx` 行多选 + 「批量创建选题」「批量添加监控规则」），任务列表陈旧，已标记 completed；#29 内容日历视图仍缺（ContentItem 有 `published_at` 索引，可按月聚合，但属新页面+聚合，待设计确认）；#76 外部授权 P0（`docs/NEXT_TASKS.md`）仍阻塞，需用户凭证。
+- **未完成任务核对（纠正）**：#26 前端批量操作工具栏**经核查已实现**（`app/contents/contents-client.tsx` 行多选 + 「批量创建选题」「批量添加监控规则」 + `POST /topics/batch`），任务列表陈旧，已标记 completed；#28 亮/暗主题已落地（见上）；#29 内容日历视图**现已实现**（`app/contents/content-calendar.tsx` 月历热力网格 + `GET /contents/calendar` 后端按天聚合 + `contents-client.tsx` 列表/日历切换，Playwright 实测月历渲染与当日作品列表）；#76 外部授权 P0（`docs/NEXT_TASKS.md`）仍阻塞，需用户凭证。
 - 验证状态：所有改动仅本地提交（不推送，排除 `.workbuddy/`）。
 
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
@@ -112,7 +112,12 @@
 - `extraction_failure` 元数据约定已于 2026-08-01 补齐至全部 4 个浏览器适配器（见上方正文）。
 - 账号历史曲线展示（后端 `GET /accounts/{id}/metrics/history` + 前端 Recharts 面积图）、错误分类标准化（后端 `PlatformAdapterError.code` 语义码 + 前端同步错误徽章）与适配器能力声明（优化 E：后端 `GET /settings/platform-adapters` 能力矩阵 + 前端设置页「平台管理」渲染能力矩阵）已于 2026-08-01 完成。相对指标计算（优化 D）：`engagement_rate`、`account_baseline_ratio`（相对账号基线，即单条播放 / 近 30 日播放中位数）此前已实现，本轮新增 `play_follower_ratio`（播放 / 粉丝比）并通过迁移与契约测试；采集频率自适应（优化 B）仍为下一迭代。
 - **分支治理**：当前 `codex/full-repair-real-data` 分支仍含大量未提交变更（含 2026-08-01 维护），须在验收前提交保护。
-- 本轮未实施、诚实列为下一迭代的 UX/架构项（未以静态页面、占位或硬编码冒充完成）：P1-1 Radix 弹窗/对话框重构（渐进替换手写弹窗）、P1-6 批量操作工具栏（需后端批量 API）、P1-8 虚拟滚动（依赖 `@tanstack/react-virtual`，当前前端镜像未安装，需装依赖并重建镜像）、P2-1 全局时间范围选择器（需统一各查询时间参数）、P2-2 平台对比模式（需后端对比聚合 API）、P2-4 亮/暗主题正式化（当前 light 以 CSS 覆盖，需重构为 CSS 变量设计令牌）、P2-5 内容日历视图（需新增日历数据模型）；优化 B 采集频率自适应（按视频发布时间动态调整 Celery Beat 间隔）仍为下一迭代。
+- 本轮未实施、诚实列为下一迭代的 UX/架构项（未以静态页面、占位或硬编码冒充完成）：**#26 批量操作工具栏、#28 亮/暗主题、#29 内容日历视图已于本分支实现（见上「未完成任务核对」），从下方移除**。剩余待下一迭代：P1-1 Radix 弹窗/对话框重构（渐进替换手写弹窗）、P1-8 虚拟滚动（依赖 `@tanstack/react-virtual`，当前前端镜像未安装，需装依赖并重建镜像）、P2-1 全局时间范围选择器（需统一各查询时间参数，疑似已接入待复核）、P2-2 平台对比模式（需后端对比聚合 API）；优化 B 采集频率自适应（按视频发布时间动态调整 Celery Beat 间隔）仍为下一迭代。
+
+### 2026-08-02（续）：yt-dlp 全平台接入与质量门禁复绿
+
+- **yt-dlp 全平台接入（用户「全平台尝试 yt-dlp」）**：新增 `app/adapters/platforms/yt_dlp.py`（YtDlpAdapter 基类 + YouTube/TikTok/Douyin 三适配器，key: youtube_ytdlp/tiktok_ytdlp/douyin_ytdlp），逆向各平台私有 InnerTube/web JSON，免 API Key/浏览器，返回精确播放/点赞/评论/分享、时长秒、描述全文、tags、结构化 channel_id、精确发布时间；账号/analytics 用 `--dump-single-json`（Browse API），内容列表用 `--dump-json`；yt-dlp 取不到时自动回退浏览器兜底（抖音基本不支持、TikTok 偶尔需要），不伪造数据。registry 注册三适配器；`platform_catalog_seed` 把 youtube/tiktok/douyin 默认 adapter_key 切到 yt-dlp；pyproject 加 yt-dlp 依赖；前端 `operation-labels.ts` 加中文标签；`main.py` 启动幂等 seed。修复 seed 关键 bug（先按 adapter_key 查 descriptor，避免遗留同名适配器把 adapter_key 静默改回 legacy）。离线单测 `test_yt_dlp_adapter.py` 7 passed。容器内真实验证：YouTube 账号/analytics/list/content-analytics 全经 yt-dlp 免浏览器取精确数据，TikTok list 经 yt-dlp 取精确播放量，Douyin 回退浏览器。已提交 `codex/full-repair-real-data` 分支 c808329，部署并重启 api/worker/beat，DB adapter_key 已切到 yt-dlp。
+- **质量门禁复绿（收尾）**：修复若干累积 lint/类型/测试问题——`monitoring.py` 内容日历聚合 `count` 标签与 `Row.count()` 方法冲突（真实数据下会崩，已改名 `content_count`）；`browser_base.py` proxy 参数补 `ProxySettings` 类型；`base.PlatformAdapter` 增加默认 `aclose` 钩子；`yt_dlp.py` 缩略图返回 `str()` 强转；ruff 10 项（I001/UP041/S110/S105/E501）全修。ruff / mypy（149 文件）全绿；`pytest` 全绿（修复 `test_monitoring_api` 对平台列表顺序的脆弱断言为成员断言）。
 
 ---
 
