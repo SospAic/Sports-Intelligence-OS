@@ -169,7 +169,9 @@ class MonitoringService:
             platform_id=platform.id,
             external_id=payload.external_id,
             username=payload.username,
-            display_name=payload.display_name,
+            # First registration only needs the account URL; the display name
+            # is refined by the first sync when not supplied by the operator.
+            display_name=payload.display_name or payload.external_id,
             profile_url=str(payload.profile_url) if payload.profile_url else None,
             avatar_url=str(payload.avatar_url) if payload.avatar_url else None,
             description=payload.description,
@@ -180,6 +182,8 @@ class MonitoringService:
             metadata_json={**metadata, "input_mode": "manual"},
             last_synced_at=None,
             sync_interval_seconds=payload.sync_interval_seconds,
+            max_contents_per_sync=payload.max_contents_per_sync,
+            adapter_config=dict(payload.adapter_config or {}),
             sync_status="never",
             source_kind="imported",
             source_provider="manual",

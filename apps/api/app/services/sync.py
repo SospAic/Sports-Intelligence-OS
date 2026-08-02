@@ -374,6 +374,14 @@ class PlatformSyncExecutor:
             raise AdapterConfigurationError(
                 "platform acquisition policy is no longer configured"
             )
+        # Merge per-account scrape tuning (e.g. yt-dlp date filters / passthrough
+        # args) on top of the platform-resolved credential config. Account-level
+        # settings win so operators can override behaviour per account.
+        adapter_config = account.adapter_config or {}
+        if adapter_config:
+            merged = dict(config)
+            merged["yt_dlp"] = {**(merged.get("yt_dlp") or {}), **adapter_config}
+            return merged
         return config
 
     async def execute_account_run(self, run_id: UUID) -> None:
@@ -702,6 +710,11 @@ class PlatformSyncExecutor:
         cursor: str | None = None
         created = 0
         updated = 0
+        skipped = 0
+        # Per-account cap on how many works a single sync ingests. When unset,
+        # the global ``sync_page_limit`` (pages × window) bounds the pass.
+        max_contents = account.max_contents_per_sync
+        skip_existing = bool((account.adapter_config or {}).get("skip_existing", False))
         newest_seen = await self.session.scalar(
             select(ContentItem.published_at)
             .where(ContentItem.account_id == account.id)
@@ -709,12 +722,18 @@ class PlatformSyncExecutor:
             .limit(1)
         )
         for page_index in range(self.settings.sync_page_limit):
+            if max_contents is not None and (created + updated + skipped) >= max_contents:
+                break
+            window = 50
+            if max_contents is not None:
+                remaining = max_contents - (created + updated + skipped)
+                window = max(1, min(window, remaining))
             page = await adapter.list_contents(
                 ctx,
                 account.external_id,
                 published_after=_utc(newest_seen) if newest_seen is not None else None,
                 cursor=cursor,
-                page_size=50,
+                page_size=window,
             )
             page_items: list[ContentItem] = []
             for data in page.items:
@@ -737,10 +756,13 @@ class PlatformSyncExecutor:
                         "rejected_items": rejected,
                     }
                     continue
-                content, was_created = await self._upsert_content(account, data)
+                content, was_created, was_skipped = await self._upsert_content(
+                    account, data, skip_existing=skip_existing
+                )
                 page_items.append(content)
                 created += int(was_created)
-                updated += int(not was_created)
+                skipped += int(was_skipped)
+                updated += int((not was_created) and (not was_skipped))
             await self.session.flush()
             analytics = await adapter.fetch_content_analytics(
                 ctx, [item.external_id for item in page_items]
@@ -751,11 +773,14 @@ class PlatformSyncExecutor:
                 if matched_content is not None and analytics_data.metrics:
                     self.session.add(self._content_snapshot(matched_content.id, analytics_data))
             synthesized = self._synthesize_content_snapshots(adapter, ctx, page_items, analytics)
-            if synthesized:
-                run.records_updated = int(run.records_updated or 0) + synthesized
             run.items_processed += len(page.items)
             run.records_created = created
-            run.records_updated = updated
+            # Field updates + browser-derived snapshots both count as updates.
+            run.records_updated = updated + synthesized
+            run.metadata_json = {
+                **run.metadata_json,
+                "skipped_existing": skipped,
+            }
             progress = 30 + round(55 * (page_index + 1) / self.settings.sync_page_limit)
             self._set_progress(
                 run,
@@ -868,8 +893,8 @@ class PlatformSyncExecutor:
         }
 
     async def _upsert_content(
-        self, account: Account, data: PlatformContentData
-    ) -> tuple[ContentItem, bool]:
+        self, account: Account, data: PlatformContentData, skip_existing: bool = False
+    ) -> tuple[ContentItem, bool, bool]:
         content = await self.session.scalar(
             select(ContentItem).where(
                 ContentItem.workspace_id == account.workspace_id,
@@ -878,6 +903,7 @@ class PlatformSyncExecutor:
             )
         )
         created = content is None
+        skipped = False
         if content is None:
             content = ContentItem(
                 id=uuid4(),
@@ -904,6 +930,13 @@ class PlatformSyncExecutor:
                 raw_payload_ref=None,
             )
             self.session.add(content)
+        elif skip_existing:
+            # Dedup-on-scrape: the work already exists, so keep the operator's
+            # stored editable fields (title / cover / canonical) and only bump
+            # last_seen_at. A fresh metrics snapshot is still appended upstream,
+            # so analytics stay current without clobbering edited data.
+            content.last_seen_at = data.fetched_at
+            skipped = True
         else:
             content.title = data.title
             content.description = data.description
@@ -920,7 +953,7 @@ class PlatformSyncExecutor:
             content.source_provider = data.provider
             content.fetched_at = data.fetched_at
             content.source_url = data.canonical_url
-        return content, created
+        return content, created, skipped
 
     def _content_snapshot(self, content_id: UUID, data: PlatformMetricsData) -> ContentSnapshot:
         value = data.metrics

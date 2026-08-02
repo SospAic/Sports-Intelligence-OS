@@ -188,7 +188,7 @@ export function ScoreExplanationPanel({
                             : "—"}
                         </td>
                         <td className="py-2 text-right text-slate-400">
-                          {(comp.weight * 100).toFixed(0)}%
+                          {(comp.weight * 100).toFixed(1)}%
                         </td>
                         <td className="py-2 text-right font-medium text-slate-200">
                           {comp.weighted_contribution != null

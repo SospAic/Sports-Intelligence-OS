@@ -55,7 +55,9 @@ class AccountCreate(StrictModel):
     platform_id: UUID
     external_id: str = Field(min_length=1, max_length=255)
     username: str | None = Field(default=None, max_length=255)
-    display_name: str = Field(min_length=1, max_length=255)
+    # display_name is optional on first registration: when omitted it is
+    # defaulted to ``external_id`` and refined after the first sync.
+    display_name: str | None = Field(default=None, max_length=255)
     profile_url: HttpUrl | None = None
     avatar_url: HttpUrl | None = None
     description: str | None = Field(default=None, max_length=10_000)
@@ -63,6 +65,8 @@ class AccountCreate(StrictModel):
     language: str | None = Field(default=None, max_length=16)
     is_verified: bool | None = None
     sync_interval_seconds: int = Field(default=3600, ge=300, le=604_800)
+    max_contents_per_sync: int | None = Field(default=None, ge=1, le=5000)
+    adapter_config: dict[str, Any] | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("external_id", "username", "display_name")
@@ -91,6 +95,8 @@ class AccountUpdate(StrictModel):
     language: str | None = Field(default=None, max_length=16)
     is_active: bool | None = None
     sync_interval_seconds: int | None = Field(default=None, ge=300, le=604_800)
+    max_contents_per_sync: int | None = Field(default=None, ge=1, le=5000)
+    adapter_config: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
 
     @field_validator("username", "display_name")
@@ -170,6 +176,8 @@ class AccountRead(BaseModel):
     last_synced_at: datetime | None
     next_sync_at: datetime | None
     sync_interval_seconds: int
+    max_contents_per_sync: int | None = None
+    adapter_config: dict[str, Any] = Field(default_factory=dict)
     sync_status: AccountSyncStatus
     last_sync_error_code: str | None
     last_sync_error_message: str | None

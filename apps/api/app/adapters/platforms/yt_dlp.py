@@ -143,13 +143,27 @@ class YtDlpAdapter(PlatformAdapter):
     # -- yt-dlp process ----------------------------------------------------
 
     async def _run_yt_dlp(
-        self, url: str, *, playlist_end: int | None = None
+        self,
+        url: str,
+        *,
+        playlist_start: int | None = None,
+        playlist_end: int | None = None,
+        dateafter: str | None = None,
+        datebefore: str | None = None,
+        extra_args: Mapping[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         """Run yt-dlp and return ``(parsed_entries, stderr_text)``.
 
         Raises :class:`TransientAdapterError` only on hard failures with no
         usable output; a query that simply yields zero entries returns empty
         lists so the caller can decide whether to fall back.
+
+        ``playlist_start`` / ``playlist_end`` drive windowed pagination so a
+        single sync can page past yt-dlp's default 50-item ceiling. ``dateafter``
+        / ``datebefore`` are ``YYYYMMDD`` strings forwarded to yt-dlp's date
+        filter. ``extra_args`` is a flat passthrough of additional yt-dlp
+        options (``{"match_filter": "...", "geo_bypass": True}``) operator-tuned
+        via the account's ``adapter_config``.
         """
         cmd: list[str] = [
             sys.executable,
@@ -161,8 +175,23 @@ class YtDlpAdapter(PlatformAdapter):
             "--no-progress",
             "--ignore-errors",
         ]
-        if playlist_end:
+        if playlist_start is not None:
+            cmd += ["--playlist-start", str(playlist_start)]
+        if playlist_end is not None:
             cmd += ["--playlist-end", str(playlist_end)]
+        if dateafter:
+            cmd += ["--dateafter", dateafter]
+        if datebefore:
+            cmd += ["--datebefore", datebefore]
+        if extra_args:
+            for key, value in extra_args.items():
+                if value is None or value is False:
+                    continue
+                flag = f"--{key.replace('_', '-')}"
+                if value is True:
+                    cmd.append(flag)
+                else:
+                    cmd += [flag, str(value)]
         cmd.append(url)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -417,9 +446,33 @@ class YtDlpAdapter(PlatformAdapter):
     ) -> AdapterPage:
         handle = self._normalize_handle(external_account_id)
         self._cache.clear()
+
+        cfg = ctx.config or {}
+        yt_cfg = cfg.get("yt_dlp") if isinstance(cfg.get("yt_dlp"), dict) else {}
+        dateafter = yt_cfg.get("dateafter") if isinstance(yt_cfg, dict) else None
+        datebefore = yt_cfg.get("datebefore") if isinstance(yt_cfg, dict) else None
+        max_items = yt_cfg.get("max_items") if isinstance(yt_cfg, dict) else None
+        extra_args = yt_cfg.get("extra_args") if isinstance(yt_cfg, dict) else None
+        if published_after is not None and not dateafter:
+            dateafter = published_after.strftime("%Y%m%d")
+
+        offset = int(cursor) if cursor and str(cursor).isdigit() else 0
+        window = page_size
+        if max_items is not None:
+            window = min(window, max(1, int(max_items) - offset))
+            if window <= 0:
+                return AdapterPage(items=(), next_cursor=None)
+
+        playlist_start = offset + 1
+        playlist_end = offset + window
         try:
             entries, _ = await self._run_yt_dlp(
-                self._videos_url(handle), playlist_end=max(page_size, 50)
+                self._videos_url(handle),
+                playlist_start=playlist_start,
+                playlist_end=playlist_end,
+                dateafter=dateafter,
+                datebefore=datebefore,
+                extra_args=extra_args if isinstance(extra_args, dict) else None,
             )
         except TransientAdapterError as exc:
             logger.warning(
@@ -428,33 +481,51 @@ class YtDlpAdapter(PlatformAdapter):
                 handle,
                 exc,
             )
-            return await self._fallback().list_contents(
-                ctx,
-                external_account_id,
-                published_after=published_after,
-                cursor=cursor,
-                page_size=page_size,
-            )
+            # Only fall back on the first page. A failure while paging deeper is
+            # just the end of the playlist — returning an empty page avoids a
+            # spurious browser re-fetch that would restart from the beginning.
+            if cursor is None:
+                return await self._fallback().list_contents(
+                    ctx,
+                    external_account_id,
+                    published_after=published_after,
+                    cursor=cursor,
+                    page_size=page_size,
+                )
+            return AdapterPage(items=(), next_cursor=None)
         if not entries:
-            logger.warning(
-                "yt_dlp returned no entries for %s/%s; browser fallback",
-                self.platform,
-                handle,
-            )
-            return await self._fallback().list_contents(
-                ctx,
-                external_account_id,
-                published_after=published_after,
-                cursor=cursor,
-                page_size=page_size,
-            )
+            if cursor is None:
+                logger.warning(
+                    "yt_dlp returned no entries for %s/%s; browser fallback",
+                    self.platform,
+                    handle,
+                )
+                return await self._fallback().list_contents(
+                    ctx,
+                    external_account_id,
+                    published_after=published_after,
+                    cursor=cursor,
+                    page_size=page_size,
+                )
+            # Trailing page during pagination: end of playlist, not an error.
+            return AdapterPage(items=(), next_cursor=None)
 
         items: list[PlatformContentData] = []
-        for entry in entries[:page_size]:
+        for entry in entries[:window]:
             content = self._entry_to_content(entry, handle, ctx)
             items.append(content)
             self._cache[content.external_id] = self._metrics_from_entry(entry)
-        return AdapterPage(items=tuple(items), next_cursor=None)
+
+        fetched = len(items)
+        next_offset = offset + fetched
+        # Continue paging only when a full window was returned (more may exist).
+        # When a per-account / config cap is in effect, stop exactly at the cap
+        # so we never emit a dangling cursor that triggers an extra empty page.
+        will_continue = fetched >= window
+        if max_items is not None and next_offset >= int(max_items):
+            will_continue = False
+        next_cursor = str(next_offset) if will_continue else None
+        return AdapterPage(items=tuple(items), next_cursor=next_cursor)
 
     async def fetch_content(
         self, ctx: AdapterCallContext, external_id: str

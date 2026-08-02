@@ -76,7 +76,15 @@ def make_ctx() -> SimpleNamespace:
 
 
 def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
-    async def _fake(url, *, playlist_end=None):
+    async def _fake(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+    ):
         if "videos" in url:
             return list(video_entries), ""
         return list(channel_entries), ""
@@ -241,3 +249,131 @@ async def test_fallback_used_when_yt_dlp_empty():
         ctx, "some_douyin", published_after=None, cursor=None, page_size=10
     )
     assert page.items[0].external_id == "fallback1"
+
+
+@pytest.mark.asyncio
+async def test_empty_trailing_page_does_not_fallback():
+    adapter = DouyinYtDlpAdapter()
+    fallback_calls = {"n": 0}
+
+    class _StubFallback:
+        async def list_contents(self, ctx, external_account_id, *, published_after, cursor, page_size):
+            fallback_calls["n"] += 1
+            return AdapterPage(items=(), next_cursor=None)
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+
+    async def _empty(url, *, playlist_start=None, playlist_end=None, dateafter=None,
+                    datebefore=None, extra_args=None):
+        return [], ""
+
+    adapter._run_yt_dlp = _empty  # type: ignore[assignment]
+    ctx = make_ctx()
+    # A cursor is set → this is a trailing page, not the first request.
+    page = await adapter.list_contents(
+        ctx, "some_douyin", published_after=None, cursor="50", page_size=50
+    )
+    assert page.items == ()
+    assert page.next_cursor is None
+    assert fallback_calls["n"] == 0
+
+
+def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
+    """Replace yt-dlp with a stub that honours playlist_start/end windowing so
+    we can exercise cursor pagination without the subprocess."""
+    captured = captured if captured is not None else {}
+
+    async def _windowed(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+    ):
+        captured["dateafter"] = dateafter
+        captured["datebefore"] = datebefore
+        captured["extra_args"] = extra_args
+        captured["playlist_start"] = playlist_start
+        captured["playlist_end"] = playlist_end
+        start = (playlist_start or 1) - 1
+        end = playlist_end if playlist_end is not None else len(all_entries)
+        return all_entries[start:end], ""
+
+    adapter._run_yt_dlp = _windowed  # type: ignore[assignment]
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_list_contents_paginates_past_default_ceiling():
+    adapter = YouTubeYtDlpAdapter()
+    # 120-video playlist; previously capped at ~50 in a single call.
+    all_entries = [
+        {**YOUTUBE_VIDEO, "id": f"vid{i}", "title": f"Video {i}"} for i in range(120)
+    ]
+    _make_windowed_adapter(adapter, all_entries)
+
+    ctx = make_ctx()
+    seen: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    while pages < 10:
+        page = await adapter.list_contents(
+            ctx, "olympics", published_after=None, cursor=cursor, page_size=50
+        )
+        seen.extend(item.external_id for item in page.items)
+        pages += 1
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+    assert len(seen) == 120
+    assert len(set(seen)) == 120  # no duplicates across pages
+    assert pages == 3  # 50 + 50 + 20
+
+
+@pytest.mark.asyncio
+async def test_adapter_config_max_items_short_circuits():
+    adapter = YouTubeYtDlpAdapter()
+    all_entries = [{**YOUTUBE_VIDEO, "id": f"vid{i}"} for i in range(200)]
+    captured = _make_windowed_adapter(adapter, all_entries)
+
+    ctx = make_ctx()
+    ctx.config = {"yt_dlp": {"max_items": 30, "dateafter": "20240101"}}
+    page = await adapter.list_contents(
+        ctx, "olympics", published_after=None, cursor=None, page_size=50
+    )
+    assert len(page.items) == 30
+    # Short-circuited: no further pages even though the playlist is larger.
+    assert page.next_cursor is None
+    assert captured["dateafter"] == "20240101"
+
+
+@pytest.mark.asyncio
+async def test_published_after_becomes_dateafter():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    await adapter.list_contents(
+        ctx,
+        "olympics",
+        published_after=datetime(2024, 5, 1, tzinfo=UTC),
+        cursor=None,
+        page_size=10,
+    )
+    assert captured["dateafter"] == "20240501"
+
+
+@pytest.mark.asyncio
+async def test_extra_args_passthrough_to_yt_dlp():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    ctx.config = {"yt_dlp": {"extra_args": {"match_filter": "test", "geo_bypass": True}}}
+    await adapter.list_contents(
+        ctx, "olympics", published_after=None, cursor=None, page_size=10
+    )
+    assert captured["extra_args"] == {"match_filter": "test", "geo_bypass": True}

@@ -522,6 +522,13 @@ function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
   );
 }
 
+function ymdToDateInput(value: unknown): string {
+  if (typeof value === "string" && /^\d{8}$/.test(value)) {
+    return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  }
+  return "";
+}
+
 export function AccountDetailClient({ id }: { id: string }) {
   const { workspaceId, role, loading: workspaceLoading } = useWorkspace();
   const { notify } = useToast();
@@ -672,6 +679,21 @@ export function AccountDetailClient({ id }: { id: string }) {
   async function save(form: FormData) {
     if (!workspaceId) return;
     try {
+      const existingCfg =
+        item.adapter_config && typeof item.adapter_config === "object"
+          ? (item.adapter_config as Record<string, unknown>)
+          : {};
+      const dateafterRaw = form.get("yt_dateafter");
+      const datebeforeRaw = form.get("yt_datebefore");
+      const adapterConfig: Record<string, unknown> = {
+        ...existingCfg,
+        dateafter: dateafterRaw ? String(dateafterRaw).replaceAll("-", "") : null,
+        datebefore: datebeforeRaw
+          ? String(datebeforeRaw).replaceAll("-", "")
+          : null,
+        skip_existing: form.get("skip_existing") === "on",
+      };
+      const maxContentsRaw = form.get("max_contents_per_sync");
       const body: Record<string, unknown> = {
         display_name: form.get("display_name"),
         username: form.get("username") || null,
@@ -681,6 +703,8 @@ export function AccountDetailClient({ id }: { id: string }) {
         country: (form.get("country") as string)?.toUpperCase() || null,
         language: form.get("language") || null,
         sync_interval_seconds: Number(form.get("sync_interval_seconds")),
+        max_contents_per_sync: maxContentsRaw ? Number(maxContentsRaw) : null,
+        adapter_config: adapterConfig,
         is_active: form.get("is_active") === "on",
       };
       await apiRequest(`/accounts/${id}`, {
@@ -745,8 +769,12 @@ export function AccountDetailClient({ id }: { id: string }) {
         <div className="min-w-0 flex-1">
           <PageHeader
             eyebrow={`${item.platform.name} · ${sourceKindLabel(item.source_kind)}`}
-            title={item.display_name}
-            description={item.description ?? `外部 ID：${item.external_id}`}
+            title={
+              item.is_verified
+                ? `${item.display_name} ✓`
+                : item.display_name
+            }
+            description={undefined}
             actions={
               <>
                 {item.profile_url && (
@@ -800,6 +828,34 @@ export function AccountDetailClient({ id }: { id: string }) {
           />
         </div>
       </div>
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          {item.is_verified ? (
+            <Badge tone="success">
+              <CheckCircle2 size={14} className="mr-1 inline" />
+              官方认证
+            </Badge>
+          ) : (
+            <Badge tone="neutral">未认证</Badge>
+          )}
+          {item.country ? (
+            <Badge tone="info">国家 / 地区：{item.country}</Badge>
+          ) : null}
+          <Badge tone="neutral">外部 ID：{item.external_id}</Badge>
+          {followerCount != null ? (
+            <Badge tone="neutral">{formatNumber(followerCount)} 粉丝</Badge>
+          ) : null}
+        </div>
+        {item.description ? (
+          <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-slate-300">
+            {item.description}
+          </p>
+        ) : (
+          <p className="mt-3 text-sm text-slate-600">
+            暂无简介，同步成功后将自动填充账号签名 / Bio。
+          </p>
+        )}
+      </section>
       {["queued", "syncing"].includes(item.sync_status) && (
         <SyncProgressPanel
           runs={runs.data?.items}
@@ -1265,6 +1321,64 @@ export function AccountDetailClient({ id }: { id: string }) {
               className={inputClass}
             />
           </label>
+          <fieldset className="space-y-4 rounded-xl border border-cyan-900/40 p-4">
+            <legend className="px-2 text-sm font-medium text-cyan-300">
+              抓取设置（yt-dlp 参数）
+            </legend>
+            <label className="grid gap-2 text-sm">
+              单次同步最多抓取作品数
+              <input
+                name="max_contents_per_sync"
+                type="number"
+                min="1"
+                max="5000"
+                defaultValue={item.max_contents_per_sync ?? ""}
+                placeholder="留空 = 使用全局默认（约 1000 条）"
+                className={inputClass}
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="grid gap-2 text-sm">
+                仅抓取此日期之后（dateafter）
+                <input
+                  name="yt_dateafter"
+                  type="date"
+                  defaultValue={ymdToDateInput(
+                    (item.adapter_config as Record<string, unknown> | undefined)
+                      ?.dateafter,
+                  )}
+                  className={inputClass}
+                />
+              </label>
+              <label className="grid gap-2 text-sm">
+                仅抓取此日期之前（datebefore）
+                <input
+                  name="yt_datebefore"
+                  type="date"
+                  defaultValue={ymdToDateInput(
+                    (item.adapter_config as Record<string, unknown> | undefined)
+                      ?.datebefore,
+                  )}
+                  className={inputClass}
+                />
+              </label>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                name="skip_existing"
+                type="checkbox"
+                defaultChecked={Boolean(
+                  (item.adapter_config as Record<string, unknown> | undefined)
+                    ?.skip_existing,
+                )}
+              />
+              已存在的作品跳过更新（仅刷新指标，不覆盖标题 / 封面）
+            </label>
+            <p className="text-xs text-slate-500">
+              抓取参数参考行业做法：用日期区间缩小范围、控制单次量级可显著降低被限流与超时风险；
+              同步间隔请在上方「同步周期」中设置。留空字段表示不施加该限制。
+            </p>
+          </fieldset>
           <p className="text-xs text-slate-500">
             平台 API 凭证请在「设置 → 平台管理」中统一配置。
           </p>

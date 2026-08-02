@@ -433,6 +433,8 @@ export interface AccountRecord extends MonitoringAccountSummary {
   is_active: boolean;
   metadata: Record<string, unknown>;
   sync_interval_seconds: number;
+  max_contents_per_sync: number | null;
+  adapter_config: Record<string, unknown>;
   source_provider: string;
   fetched_at: string;
   source_url: string | null;

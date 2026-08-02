@@ -29,6 +29,21 @@
 - **未完成任务核对（纠正）**：#26 前端批量操作工具栏**经核查已实现**（`app/contents/contents-client.tsx` 行多选 + 「批量创建选题」「批量添加监控规则」 + `POST /topics/batch`），任务列表陈旧，已标记 completed；#28 亮/暗主题已落地（见上）；#29 内容日历视图**现已实现**（`app/contents/content-calendar.tsx` 月历热力网格 + `GET /contents/calendar` 后端按天聚合 + `contents-client.tsx` 列表/日历切换，Playwright 实测月历渲染与当日作品列表）；#76 外部授权 P0（`docs/NEXT_TASKS.md`）仍阻塞，需用户凭证。
 - 验证状态：所有改动仅本地提交（不推送，排除 `.workbuddy/`）。
 
+### 2026-08-02（续续）：剩余任务收尾 + 平台功能全量有效数据验证
+
+- **剩余任务收尾（按 docs/NEXT_TASKS.md 与对话确认的下一迭代项）**：
+  - **P1-8 虚拟滚动（完成）**：共享 `DataTable` 增加可选 `virtualized` 模式（`@tanstack/react-virtual` 窗口化，用真实 `<tr>` 占位行保持表头对齐）；账号列表与作品列表均增加「虚拟滚动」开关（切换 pageSize=200 并启用窗口化）。
+  - **P2-2 平台/账号对比（完成）**：新增 `/accounts/compare` 页面 + 客户端，选取 2–5 个账号调用既有后端 `GET /accounts/compare`（仅真实观测 live/imported，不合成），渲染粉丝/播放/互动/增量对照表与汇总卡；账号列表头部「账号对比」入口可达。
+  - **P2-1 全局时间范围选择器（复核已完成）**：`TimeRangePicker` 已接入账号详情与作品列表。
+  - **优化B 采集频率自适应（复核已完成）**：`sync.py` 每次成功同步后调用 `compute_adaptive_interval` 并写回 `sync_interval_seconds` + `next_sync_at`，Beat 按此错峰调度；`/accounts/{id}/sync-interval` 为按需手动覆盖。
+  - **P1-1 Radix 弹窗重构（显式延后）**：属大型渐进式纯外观重构，对数据真实性无影响且一次性替换风险高，本轮未做，留作后续。
+- **平台功能全量有效数据验证（硬性要求：所有功能应有有效数据）**：在 worker 容器内用真实适配器跑全平台探针。
+  - ✅ **YouTube（yt-dlp）有效数据**：`Olympic Games`、channel_id `UCTl3QQTvqHFjurroKxexy2Q`、粉丝 **16,600,000**、5 条真实视频、内容分析 3/3 含真实 `view_count`(17472/11364/2458) 与 `like_count`。
+  - ✅ **TikTok（yt-dlp）有效数据**：5 条视频（provider=`tiktok_ytdlp`），内容分析 3/3 含真实 `view_count`(33300/77900/14600) 与 `like_count`。
+  - ⚠️ **抖音 / Bilibili（本沙箱无有效数据，代码正确）**：抖音 yt-dlp 返回 404（本就不支持）→ 浏览器兜底 0 条；Bilibili 匿名浏览器命中登录墙，适配器按项目红线正确停止（不绕过）。两者均为本环境网络/登录限制，非代码 bug；待用户配置住宅代理 + 登录态后复验。代码不伪造数据。
+  - 结论：新修改的 yt-dlp 功能在 YouTube/TikTok 上满足"有效数据"硬性要求；抖音/Bilibili 受环境网络限制，已在代码层保证优雅兜底与诚实上报。
+- Web 镜像重建（pnpm install + next build，27/27 静态页，`/accounts/compare` 预渲染），已 `docker compose up -d web` 部署，容器内 `/accounts/compare` 返回 200。提交 `26ce791`（未推送，排除 .workbuddy/）。
+
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。
@@ -800,3 +815,64 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 趋势采集 Celery 任务已实现；当前真实覆盖取决于各平台有效授权和网络可用性。
 - 趋势分析前端使用 Recharts 静态图表，尚未实现实时更新（WebSocket/SSE）。
 - API 模式与浏览器模式的切换仅影响同步时的适配器选择，不影响已保存的同步历史记录。
+
+## 2026-08-02 账号监控增强：抓取量级、资料扩展、可配置抓取参数
+
+围绕账号监控的 7 项产品反馈完成端到端改造（需求来源：超长任务清单 #1–#7）。
+
+### 1. 作品获取不全（仅 ~20–50 条）→ 真实翻页 + 单次量级上限
+
+根因：yt-dlp 适配器此前固定 `playlist_end=max(page_size,50)` 并在单页内截断，且始终返回 `next_cursor=None`，导致每次同步只抓第一窗口（≤50 条）。
+
+修复：
+- `app/adapters/platforms/yt_dlp.py` 的 `list_contents` 改为**基于游标的窗口翻页**：按 `playlist_start/playlist_end` 递增窗口，返回 `next_cursor` 直到窗口未被填满为止；首个空页（翻页中途）不再误触发浏览器兜底，避免重复从头抓取。
+- 新增 `accounts.max_contents_per_sync`（每账号单次同步最多抓取作品数，NULL=全局默认）。
+- `_sync_contents` 以 `max_contents_per_sync` 为硬上限收敛总抓取量；窗口随剩余预算收缩。
+- 离线单测覆盖：120 条 3 页无重复、max_items 截断、`published_after→dateafter`、`extra_args` 透传、空尾页不兜底。
+
+### 2. 账号详情页新增 Bio / 认证 / 地区 / 粉丝信息
+
+- `account-detail-client.tsx` 头部下方新增独立「资料卡」：展示简介（Bio）、官方认证徽章（`is_verified`）、国家/地区、外部 ID、粉丝数（`formatNumber`）。标题行在已认证时追加 `✓`。
+
+### 3. 每次同步判断头像/签名等是否需要更新
+
+- 既有 `_sync_account`（sync.py ~646–651）已在每次同步对账 `avatar_url / description / country / is_verified / language`，覆盖该需求，无需额外改动。
+
+### 4. 添加账号简化：首次只需账号网址
+
+- `AccountCreate.display_name` 改为**可选**；后端 `create_account` 在缺省时回退为 `external_id`，同步后由真实资料覆盖。
+- 添加账号表单精简为「平台 + 账号主页网址/频道 ID + 可选显示名称」，用户名/主页/同步周期等移至详情页「设置」中编辑。
+
+### 5. 所有平台作品列表显示封面
+
+- 各适配器已填充 `cover_url`，前端作品列表与账号详情作品表均通过 `ExternalImage` 渲染封面（缺失时 `<Film>` 占位）。本项已满足，仅统一占位样式。
+
+### 6. 数据最少精确到小数点后 1 位
+
+- `formatPercent` 统一 `(v*100).toFixed(2)`（≥2 位小数）。
+- 将两处 `toFixed(0)` 计分展示改为 `toFixed(1)`（`score-explanation.tsx` 权重百分比、`trends-client.tsx` 爆发分），保证所有展示数据 ≥1 位小数。
+
+### 7. 抓取去重 + 可配置 yt-dlp 参数（页面设置）
+
+- **去重**：`_upsert_content` 新增 `skip_existing`；开启后已存在作品保留运营可编辑字段（标题/封面/网址），仅刷新 `last_seen_at` 与指标快照，不覆盖手工数据。`account.adapter_config.yt_dlp.skip_existing` 控制。
+- **可配置参数**：新增 `accounts.adapter_config`（JSON），在 `_config_for` 中合并进 `AdapterCallContext.config` 并嵌套到 `yt_dlp` 下；适配器支持 `dateafter` / `datebefore`（日期区间）、`max_items`（总量上限）、`extra_args`（yt-dlp 透传参数）。
+- **前端「设置 → 抓取设置」卡片**：单次最多抓取数、dateafter/datebefore 日期选择器、跳过已存在开关，附行业最佳实践提示文案；同步周期仍在上方的「同步周期」字段设置。
+
+### 数据模型与迁移
+
+- `Account` 新增 `max_contents_per_sync: BigInteger NULL` 与 `adapter_config: JSON NOT NULL DEFAULT '{}'`，并加 `max_contents_per_sync >= 1` 检查约束。
+- 迁移 `20260802_0025_account_scrape_config.py`：按既有风格 `add_column` + `create_check_constraint`；对存量行回填 `'{}'::json` 满足 NOT NULL。
+- `AccountCreate / AccountUpdate / AccountRead` 与前端 `AccountRecord` 同步新增 `max_contents_per_sync`、`adapter_config`。
+
+### 验收命令（需 Docker PG 测试栈）
+
+- `docker compose run --rm api sh -lc "cd apps/api && pytest tests/test_yt_dlp_adapter.py"`
+- `docker compose run --rm web pnpm --filter @sio/web typecheck`
+- `docker compose run --rm api sh -lc "cd apps/api && ruff check app tests"`
+- `docker compose run --rm api sh -lc "cd apps/api && alembic upgrade head"`
+
+### 已知限制
+
+- 真实 YouTube/TikTok/抖音 抓取仍需本机可用 `yt-dlp` 与出网环境；离线单测已覆盖适配器分页/配置逻辑，但端到端量级需在可出网容器中验证。
+- `max_contents_per_sync` 仅约束单次同步抓取量，不删除历史已抓取作品；如需清理存量需在业务层另行处理。
+- 浏览器兜底适配器不受 `playlist_start/end` 翻页控制，仅 yt-dlp 主路径支持窗口翻页。

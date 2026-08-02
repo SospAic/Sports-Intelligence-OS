@@ -561,12 +561,7 @@ export function AccountsClient() {
         body: JSON.stringify({
           platform_id: form.get("platform_id"),
           external_id: form.get("external_id"),
-          username: form.get("username") || null,
-          display_name: form.get("display_name"),
-          profile_url: form.get("profile_url") || null,
-          sync_interval_seconds: Number(
-            form.get("sync_interval_seconds") || 3600,
-          ),
+          display_name: form.get("display_name") || null,
           metadata: {},
         }),
       });
@@ -911,31 +906,12 @@ export function AccountsClient() {
             name="external_id"
             required
             className={inputClass}
-            placeholder="官方平台外部 ID"
+            placeholder="账号主页网址或频道 ID（如 https://youtube.com/@xxx）"
           />
           <input
             name="display_name"
-            required
             className={inputClass}
-            placeholder="显示名称"
-          />
-          <input
-            name="username"
-            className={inputClass}
-            placeholder="用户名（可选）"
-          />
-          <input
-            name="profile_url"
-            type="url"
-            className={inputClass}
-            placeholder="主页 URL（可选）"
-          />
-          <input
-            name="sync_interval_seconds"
-            type="number"
-            min="300"
-            defaultValue="3600"
-            className={inputClass}
+            placeholder="显示名称（可选，同步后自动获取）"
           />
           <div className="flex gap-2">
             <button disabled={pending} className={buttonClass}>

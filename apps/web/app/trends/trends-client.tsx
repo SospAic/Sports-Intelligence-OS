@@ -534,7 +534,7 @@ function VideoCard({
                   : "bg-slate-600/90 text-white"
             }`}
           >
-            {video.breakout_score.toFixed(0)}
+            {video.breakout_score.toFixed(1)}
           </div>
         )}
         {/* Duration badge for YouTube */}
