@@ -60,7 +60,6 @@ RESERVED_METADATA_KEYS = {
     "raw_payload_ref",
     "is_mock",
     "demo",
-    "adapter_config",
 }
 MAX_METADATA_BYTES = 65_536
 MAX_CSV_EXPORT_ROWS = 10_000
@@ -198,8 +197,6 @@ class MonitoringService:
             metadata_json={**metadata, "input_mode": "manual"},
             last_synced_at=None,
             sync_interval_seconds=payload.sync_interval_seconds,
-            max_contents_per_sync=payload.max_contents_per_sync,
-            adapter_config=dict(payload.adapter_config or {}),
             sync_status="never",
             source_kind="imported",
             source_provider="manual",

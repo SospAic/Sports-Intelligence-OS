@@ -18,6 +18,8 @@ from app.schemas.settings import (
     PlatformCredentialRead,
     PlatformCredentialUpdate,
     RuntimeSettingsRead,
+    SyncSettingsRead,
+    SyncSettingsUpdate,
 )
 from app.services.platform_credentials import (
     PlatformCredentialError,
@@ -143,6 +145,35 @@ async def revoke_platform_login_access(
     return await PlatformCredentialService(
         db, request.app.state.settings
     ).revoke_login_access(workspace.workspace_id, auth.user.id, platform_key)
+
+
+@router.get("/sync", response_model=SyncSettingsRead)
+async def get_sync_settings(
+    request: Request, workspace: CurrentWorkspace, db: DatabaseSession
+) -> SyncSettingsRead:
+    """Return the workspace's global fetch policy (yt-dlp / scrape tuning)."""
+
+    return await service(request, db).sync_settings(workspace.workspace_id)
+
+
+@router.put("/sync", response_model=SyncSettingsRead)
+async def update_sync_settings(
+    payload: SyncSettingsUpdate,
+    request: Request,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> SyncSettingsRead:
+    """Persist the workspace's global fetch policy.
+
+    Centralises the yt-dlp / scrape tuning that used to live per-account so
+    every account in the workspace shares one fetch policy.
+    """
+
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await service(request, db).update_sync_settings(
+        workspace.workspace_id, auth.user.id, payload
+    )
 
 
 @router.get("/platform-adapters", response_model=list[AdapterDescriptorRead])

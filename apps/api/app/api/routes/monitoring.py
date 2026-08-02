@@ -29,7 +29,6 @@ from app.schemas.monitoring import (
     AccountRead,
     AccountSnapshotPage,
     AccountSort,
-    AccountSyncRequest,
     AccountUpdate,
     ContentCalendarResponse,
     ContentCreate,
@@ -297,7 +296,6 @@ async def request_account_sync(
     _: CsrfProtectedAuth,
     db: DatabaseSession,
     request: Request,
-    payload: AccountSyncRequest | None = None,
 ) -> SyncRunRead:
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     service = SyncService(
@@ -309,7 +307,6 @@ async def request_account_sync(
         workspace.workspace_id,
         account_id,
         request_id=str(request.state.request_id),
-        force_full=bool(payload.force_full) if payload else False,
     )
     if created:
         try:

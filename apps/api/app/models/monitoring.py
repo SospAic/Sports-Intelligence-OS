@@ -73,10 +73,6 @@ class Account(TimestampMixin, Base):
             "'degraded', 'error', 'disabled', 'cancelled')",
             name="account_sync_status",
         ),
-        CheckConstraint(
-            "max_contents_per_sync IS NULL OR max_contents_per_sync >= 1",
-            name="account_max_contents_per_sync_positive",
-        ),
         Index("ix_accounts_workspace_platform_active", "workspace_id", "platform_id", "is_active"),
         Index("ix_accounts_workspace_last_synced", "workspace_id", "last_synced_at"),
     )
@@ -106,10 +102,6 @@ class Account(TimestampMixin, Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     sync_interval_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=3600)
-    max_contents_per_sync: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    adapter_config: Mapped[dict[str, Any]] = mapped_column(
-        "adapter_config", JSON, nullable=False, default=dict
-    )
     sync_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="never", index=True
     )

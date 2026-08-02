@@ -68,8 +68,6 @@ class AccountCreate(StrictModel):
     language: str | None = Field(default=None, max_length=16)
     is_verified: bool | None = None
     sync_interval_seconds: int = Field(default=3600, ge=300, le=604_800)
-    max_contents_per_sync: int | None = Field(default=None, ge=1, le=5000)
-    adapter_config: dict[str, Any] | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("external_id", "username", "display_name")
@@ -98,8 +96,6 @@ class AccountUpdate(StrictModel):
     language: str | None = Field(default=None, max_length=16)
     is_active: bool | None = None
     sync_interval_seconds: int | None = Field(default=None, ge=300, le=604_800)
-    max_contents_per_sync: int | None = Field(default=None, ge=1, le=5000)
-    adapter_config: dict[str, Any] | None = None
     metadata: dict[str, Any] | None = None
 
     @field_validator("username", "display_name")
@@ -179,8 +175,6 @@ class AccountRead(BaseModel):
     last_synced_at: datetime | None
     next_sync_at: datetime | None
     sync_interval_seconds: int
-    max_contents_per_sync: int | None = None
-    adapter_config: dict[str, Any] = Field(default_factory=dict)
     sync_status: AccountSyncStatus
     last_sync_error_code: str | None
     last_sync_error_message: str | None
@@ -193,13 +187,6 @@ class AccountRead(BaseModel):
     updated_at: datetime
     latest_snapshot: AccountSnapshotRead | None = None
     follower_growth_24h: float | None = None
-
-    @field_validator("metadata", mode="before")
-    @classmethod
-    def remove_sensitive_adapter_config(cls, value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            return {}
-        return {key: item for key, item in value.items() if key != "adapter_config"}
 
 
 class AccountPage(BaseModel):
@@ -479,17 +466,6 @@ class DerivedMetricPage(BaseModel):
 class SyncUnavailableResponse(BaseModel):
     code: Literal["platform_sync_not_available"] = "platform_sync_not_available"
     detail: str
-
-
-class AccountSyncRequest(StrictModel):
-    """Body for ``POST /accounts/{id}/sync``.
-
-    ``force_full`` triggers a back-catalogue resync: the synchroniser ignores
-    the newest-known publish date and re-pulls every work, back-filling
-    accounts that were previously capped at a small window.
-    """
-
-    force_full: bool = False
 
 
 class SyncRunRead(BaseModel):

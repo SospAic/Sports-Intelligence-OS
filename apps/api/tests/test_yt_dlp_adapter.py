@@ -265,7 +265,9 @@ async def test_empty_trailing_page_does_not_fallback():
     fallback_calls = {"n": 0}
 
     class _StubFallback:
-        async def list_contents(self, ctx, external_account_id, *, published_after, cursor, page_size):
+        async def list_contents(
+            self, ctx, external_account_id, *, published_after, cursor, page_size
+        ):
             fallback_calls["n"] += 1
             return AdapterPage(items=(), next_cursor=None)
 

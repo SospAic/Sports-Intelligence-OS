@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.monitoring import Account, ContentItem, Platform
+from app.models.settings import SyncSettings
 from app.models.sync import SyncRun
+from app.schemas.settings import DEFAULT_SYNC_SETTINGS_CONFIG
 
 
 class SyncRepository:
@@ -95,3 +97,27 @@ class SyncRepository:
                 )
             ).all()
         )
+
+    async def get_sync_settings_config(self, workspace_id: UUID) -> dict[str, Any]:
+        """Return the workspace's merged fetch policy (defaults applied).
+
+        Used by the sync executor so the global ``sync_settings`` policy — works
+        cap, duplicate-skip behaviour and yt-dlp window params — is read once per
+        run instead of being stashed on each account.
+        """
+
+        row = cast(
+            SyncSettings | None,
+            await self.session.scalar(
+                select(SyncSettings).where(SyncSettings.workspace_id == workspace_id)
+            ),
+        )
+        if row is None:
+            return dict(DEFAULT_SYNC_SETTINGS_CONFIG)
+        stored = dict(row.config or {})
+        merged: dict[str, Any] = {**DEFAULT_SYNC_SETTINGS_CONFIG, **stored}
+        merged["yt_dlp"] = {
+            **DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"],
+            **(stored.get("yt_dlp") or {}),
+        }
+        return merged

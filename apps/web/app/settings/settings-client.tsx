@@ -39,6 +39,7 @@ import { formatDate } from "@/lib/format";
 import { fetchReadyHealth } from "@/lib/health";
 import { LLMSettingsPanel } from "./llm-settings-panel";
 import { RuntimeSettingsPanel } from "./runtime-settings-panel";
+import { SyncSettingsPanel } from "./sync-settings-panel";
 
 type SourcePage = {
   items: NewsSourceRecord[];
@@ -62,12 +63,14 @@ type SettingsTab =
   | "llm"
   | "notifications"
   | "sources"
-  | "platforms";
+  | "platforms"
+  | "sync";
 
 const TABS: Array<{ key: SettingsTab; label: string; icon: typeof Database }> =
   [
     { key: "overview", label: "概览", icon: HeartPulse },
     { key: "platforms", label: "平台管理", icon: Plug },
+    { key: "sync", label: "同步设置", icon: RefreshCw },
     { key: "runtime", label: "数据库与 Redis", icon: Database },
     { key: "llm", label: "LLM API", icon: Sparkles },
     { key: "notifications", label: "通知 Provider", icon: Send },
@@ -88,6 +91,7 @@ export function SettingsClient() {
       "notifications",
       "sources",
       "platforms",
+      "sync",
     ].includes(initialTab)
       ? initialTab
       : "overview",
@@ -651,6 +655,7 @@ export function SettingsClient() {
           )}
         </div>
       )}
+      {tab === "sync" && <SyncSettingsPanel />}
     </main>
   );
 }

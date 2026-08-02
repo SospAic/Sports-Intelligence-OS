@@ -129,8 +129,6 @@ class SyncService:
         workspace_id: UUID,
         account_id: UUID,
         request_id: str,
-        *,
-        force_full: bool = False,
     ) -> tuple[SyncRunRead, bool]:
         account = await self.repository.get_account(workspace_id, account_id)
         if account is None:
@@ -207,7 +205,7 @@ class SyncService:
             error_message=None,
             error_detail=None,
             error_hint=None,
-            metadata_json={"trigger": "manual", "retry_count": 0, "force_full": bool(force_full)},
+            metadata_json={"trigger": "manual", "retry_count": 0},
             lock_key=lock_key,
         )
         account.sync_status = "queued"
@@ -235,7 +233,7 @@ class SyncService:
         run.error_code = "queue_dispatch_failed"
         run.error_message = "Background task broker is unavailable"
         run.error_detail = code_level_detail(None, run=run, adapter_key=run.adapter_key)
-        run.error_hint = business_hint_for("queue_dispatch_failed", run.adapter_key)
+        run.error_hint = business_hint_for("queue_dispatch_failed", adapter_key=run.adapter_key)
         run.progress_stage = "failed"
         run.progress_message = run.error_hint
         run.lock_key = None
@@ -346,7 +344,7 @@ class SyncService:
         run.error_code = error_code
         run.error_message = error_message
         run.error_detail = code_level_detail(None, run=run, adapter_key=run.adapter_key)
-        run.error_hint = business_hint_for(error_code, run.adapter_key)
+        run.error_hint = business_hint_for(error_code, adapter_key=run.adapter_key)
         run.lock_key = None
         run.progress_stage = "failed"
         run.progress_message = run.error_hint
@@ -387,15 +385,17 @@ class PlatformSyncExecutor:
             raise AdapterConfigurationError(
                 "platform acquisition policy is no longer configured"
             )
-        # Merge per-account scrape tuning (e.g. yt-dlp date filters / passthrough
-        # args) on top of the platform-resolved credential config. Account-level
-        # settings win so operators can override behaviour per account.
-        adapter_config = account.adapter_config or {}
-        if adapter_config:
-            merged = dict(config)
-            merged["yt_dlp"] = {**(merged.get("yt_dlp") or {}), **adapter_config}
-            return merged
-        return config
+        # Merge the workspace's global fetch policy (yt-dlp window / passthrough
+        # args, plus the works cap) on top of the platform-resolved credential
+        # config. The global ``sync_settings`` wins on conflict so operators tune
+        # behaviour once, centrally, instead of per account.
+        sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
+        yt_cfg = dict(sync_cfg.get("yt_dlp") or {})
+        if sync_cfg.get("max_contents") is not None:
+            yt_cfg["max_items"] = sync_cfg["max_contents"]
+        merged = dict(config)
+        merged["yt_dlp"] = {**(merged.get("yt_dlp") or {}), **yt_cfg}
+        return merged
 
     async def execute_account_run(self, run_id: UUID) -> None:
         run = await self.repository.get_run(run_id)
@@ -464,7 +464,7 @@ class PlatformSyncExecutor:
                 run.error_code = exc.code
                 run.error_message = str(exc)[:2000]
                 run.error_detail = code_level_detail(exc, run=run, adapter_key=run.adapter_key)
-                run.error_hint = business_hint_for(exc.code, run.adapter_key)
+                run.error_hint = business_hint_for(exc.code, adapter_key=run.adapter_key)
                 run.metadata_json = {
                     **run.metadata_json,
                     "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
@@ -580,7 +580,7 @@ class PlatformSyncExecutor:
         run.error_code = code
         run.error_message = message[:2000]
         run.error_detail = code_level_detail(exc, run=run, adapter_key=run.adapter_key)
-        run.error_hint = business_hint_for(code, run.adapter_key)
+        run.error_hint = business_hint_for(code, adapter_key=run.adapter_key)
         run.lock_key = None
         run.progress_stage = "failed"
         run.progress_message = (run.error_hint or message)[:500]
@@ -604,7 +604,7 @@ class PlatformSyncExecutor:
                     status="open",
                     error_code=code,
                     error_detail=message[:2000],
-                    error_hint=business_hint_for(code, run.adapter_key),
+                    error_hint=business_hint_for(code, adapter_key=run.adapter_key),
                     metadata_safe_json={
                         "adapter_key": run.adapter_key,
                         "error_code": code,
@@ -733,21 +733,16 @@ class PlatformSyncExecutor:
         created = 0
         updated = 0
         skipped = 0
-        # Per-account cap on how many works a single sync ingests. When unset,
-        # the global ``sync_page_limit`` (pages × window) bounds the pass.
-        max_contents = account.max_contents_per_sync
-        skip_existing = bool((account.adapter_config or {}).get("skip_existing", False))
-        # Full resync (requested from the UI) ignores the newest-known publish
-        # date so the entire back-catalogue is pulled, back-filling accounts that
-        # were previously capped at a small window. Incremental syncs keep the
-        # ``published_after`` shortcut to avoid re-fetching old works.
-        force_full = bool(run.metadata_json.get("force_full"))
-        newest_seen = await self.session.scalar(
-            select(ContentItem.published_at)
-            .where(ContentItem.account_id == account.id)
-            .order_by(ContentItem.published_at.desc())
-            .limit(1)
-        )
+        # Workspace-wide fetch policy (set on the Settings → Sync tab). The cap
+        # bounds how many works a single sync ingests; ``skip_existing`` decides
+        # whether already-known works are refreshed or left untouched.
+        sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
+        max_contents = sync_cfg.get("max_contents")
+        skip_existing = bool(sync_cfg.get("skip_existing", True))
+        # Default behaviour is a full-catalogue fetch: we never shortcut by the
+        # newest-known publish date. The yt-dlp date window (``dateafter`` /
+        # ``datebefore``) from the global policy is applied by the adapter, so
+        # narrowing the range is done through settings, not incremental state.
         for page_index in range(self.settings.sync_page_limit):
             if max_contents is not None and (created + updated + skipped) >= max_contents:
                 break
@@ -756,8 +751,6 @@ class PlatformSyncExecutor:
                 remaining = max_contents - (created + updated + skipped)
                 window = max(1, min(window, remaining))
             published_after = None
-            if not force_full and newest_seen is not None:
-                published_after = _utc(newest_seen)
             page = await adapter.list_contents(
                 ctx,
                 account.external_id,

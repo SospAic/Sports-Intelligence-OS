@@ -163,3 +163,52 @@ class PlatformCredentialRead(BaseModel):
     configured_fields: list[str]
     config_masked: dict[str, Any]
     updated_at: datetime | None
+
+
+# -- Synchronisation settings (workspace-scoped fetch policy) ---------------
+
+class YtDlpSettings(BaseModel):
+    """yt-dlp window / passthrough parameters applied to every sync in a workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # YYYYMMDD strings; empty means "no bound" so the full back-catalogue is fetched.
+    dateafter: str = Field(default="", max_length=8)
+    datebefore: str = Field(default="", max_length=8)
+    playlist_start: int = Field(default=1, ge=1, le=100_000)
+    extra_args: dict[str, Any] = Field(default_factory=dict)
+
+
+class SyncSettingsConfig(BaseModel):
+    """Global fetch policy shared by every account in a workspace.
+
+    ``max_contents`` caps how many works a single sync run ingests (``None`` =
+    unbounded, limited only by the platform pagination window). ``skip_existing``
+    controls whether already-known works are refreshed or left untouched. The
+    ``yt_dlp`` sub-object carries the yt-dlp-specific window / passthrough args.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_contents: int | None = Field(default=None, ge=1, le=5000)
+    skip_existing: bool = True
+    yt_dlp: YtDlpSettings = Field(default_factory=YtDlpSettings)
+
+
+class SyncSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config: SyncSettingsConfig
+
+
+class SyncSettingsRead(BaseModel):
+    config: SyncSettingsConfig
+
+
+#: Merged with whatever the workspace has stored so the UI always sees every key.
+DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
+    "max_contents": None,
+    "skip_existing": True,
+    "yt_dlp": {"dateafter": "", "datebefore": "", "playlist_start": 1, "extra_args": {}},
+}
+

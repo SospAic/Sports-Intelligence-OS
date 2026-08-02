@@ -300,6 +300,25 @@ export interface RuntimeSettingsRecord {
   warning: string;
 }
 
+export interface YtDlpSettings {
+  dateafter: string;
+  datebefore: string;
+  playlist_start: number;
+  extra_args: Record<string, unknown>;
+}
+
+export interface SyncSettingsConfig {
+  /** Max works a single sync ingests; null = full catalogue (bounded by pagination). */
+  max_contents: number | null;
+  /** Skip already-known works (only refresh metrics) instead of overwriting. */
+  skip_existing: boolean;
+  yt_dlp: YtDlpSettings;
+}
+
+export interface SyncSettingsRecord {
+  config: SyncSettingsConfig;
+}
+
 export interface LLMProviderSettingRecord {
   id: string | null;
   provider_key: string;
@@ -433,8 +452,6 @@ export interface AccountRecord extends MonitoringAccountSummary {
   is_active: boolean;
   metadata: Record<string, unknown>;
   sync_interval_seconds: number;
-  max_contents_per_sync: number | null;
-  adapter_config: Record<string, unknown>;
   source_provider: string;
   fetched_at: string;
   source_url: string | null;

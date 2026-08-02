@@ -44,6 +44,21 @@
   - 结论：新修改的 yt-dlp 功能在 YouTube/TikTok 上满足"有效数据"硬性要求；抖音/Bilibili 受环境网络限制，已在代码层保证优雅兜底与诚实上报。
 - Web 镜像重建（pnpm install + next build，27/27 静态页，`/accounts/compare` 预渲染），已 `docker compose up -d web` 部署，容器内 `/accounts/compare` 返回 200。提交 `26ce791`（未推送，排除 .workbuddy/）。
 
+### 2026-08-02（续续续）：同步设置集中化架构反转 + 两处阻塞 Bug 修复
+
+- **架构反转（用户明确要求）**：原先「账号级抓取设置（`accounts.max_contents_per_sync` + `accounts.adapter_config`）」与「全量重新同步按钮（`force_full`）」被推翻，改为**工作区级统一同步设置**。
+  - **后端模型**：新增工作区作用域 `SyncSettings` 模型（`sync_settings` 表：id / workspace_id FK CASCADE / config JSON / 时间戳）；**删除** `Account` 上的 `max_contents_per_sync` 列、`adapter_config` 列及对应 CHECK 约束。
+  - **迁移**：新增 `20260803_0002_add_sync_settings.py`（建表）、`20260803_0003_remove_account_scrape_config.py`（删 account 两列 + 约束）。
+  - **Schema**：`schemas/settings.py` 新增 `YtDlpSettings`（dateafter/datebefore/playlist_start/extra_args）、`SyncSettingsConfig`（max_contents:int|None、skip_existing:bool、yt_dlp）、`SyncSettingsUpdate`、`SyncSettingsRead` 与 `DEFAULT_SYNC_SETTINGS_CONFIG`；`schemas/monitoring.py` 删除 `max_contents_per_sync`/`adapter_config`/`force_full` 与 `AccountSyncRequest`。
+  - **服务/仓储**：`SettingsService` 增 `sync_settings`/`update_sync_settings`；`SyncRepository` 增 `get_sync_settings_config`（默认值合并）；`SyncService.request_account_sync` 去掉 `force_full`，`_config_for` 合并工作区全局 yt-dlp 策略（`max_items` 来自 `max_contents`），`_sync_contents` 默认**全量抓取作品**（`published_after=None`，移除增量 `newest_seen` 捷径），`max_contents`/`skip_existing` 均取自全局设置。
+  - **路由**：新增 `GET /settings/sync`、`PUT /settings/sync`（owner/admin）；`POST /accounts/{id}/sync` 不再接受 `force_full` body。
+  - **前端**：`shared-types` 新增 `YtDlpSettings`/`SyncSettingsConfig`/`SyncSettingsRecord`，删除账号上的抓取字段；设置页新增「同步设置」Tab（`sync-settings-panel.tsx`：max_contents、skip_existing 开关、dateafter/datebefore 日期、playlist_start、extra_args 文本域带 JSON 校验）；账号详情页**移除**「全量重新同步」按钮与「抓取设置（yt-dlp 参数）」字段集。
+- **阻塞 Bug 修复（验证期发现）**：
+  - **重复索引**：`SyncSettings.workspace_id` 同时有 `index=True`（自动生成 `ix_sync_settings_workspace_id`）与显式 `Index("ix_sync_settings_workspace_id", …)`，同名重复注册导致 `Base.metadata.create_all` 二次建索引失败（pytest 全模块 fixture 级 `DuplicateTable`）。已删除显式 `Index`，仅保留 `index=True` + `UniqueConstraint("workspace_id")`，与迁移 `op.create_index` 命名一致。
+  - **`business_hint_for` 关键字限定**：`error_detail.business_hint_for(code, *, adapter_key=None, category=None)` 的 `adapter_key` 为仅关键字参数，但 `services/sync.py` 5 处写作 `business_hint_for(code, run.adapter_key)`（位置传参）→ 同步错误路径 `TypeError` 崩溃。已统一改为 `adapter_key=run.adapter_key`（行 236/347/467/583/607）。
+  - **测试库陈 schema**：持久化测试库 `sports_intelligence_test` 因 `create_all` 不 alter 既有表而滞后（缺 `audit_entries.status` 等新列），导致 27 项非相关测试误报失败。已 `DROP DATABASE` 重建，由 `create_all` 按当前模型重建全部表。
+- **验证状态**：后端 `ruff check` 全绿；关联 44 项测试全过（`test_yt_dlp_adapter` / `test_settings` / `test_monitoring_api` / `test_sync_cancel` / `test_sync_degraded_status` / `test_account_content_summary` / `test_accounts_batch_compare`）；全量后端套件后台复跑中。前端 `tsc`/`eslint` 此前已通过（Part B 改动未触及前端逻辑以外的类型）。改动仅本地、未推送，待 Docker 构建 + `alembic upgrade head` 实机验收后提交。
+
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。

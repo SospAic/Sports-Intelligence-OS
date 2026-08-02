@@ -47,6 +47,27 @@ class LLMProviderSetting(TimestampMixin, Base):
     health_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
 
 
+class SyncSettings(TimestampMixin, Base):
+    """Workspace-scoped global fetch policy for platform synchronisation.
+
+    Centralises the yt-dlp / scrape tuning that used to live per-account on
+    ``accounts.adapter_config``. Every account in a workspace now shares one
+    fetch policy: the works cap, the duplicate-skip behaviour and the
+    yt-dlp window parameters (date range, playlist start, passthrough args).
+    """
+
+    __tablename__ = "sync_settings"
+    __table_args__ = (
+        UniqueConstraint("workspace_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
 class PlatformCredentialSetting(TimestampMixin, Base):
     """Workspace-scoped acquisition mode and encrypted platform credentials."""
 

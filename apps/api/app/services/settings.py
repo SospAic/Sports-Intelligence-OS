@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import DEVELOPMENT_SECRET, Settings
 from app.models.operations import AuditEntry
-from app.models.settings import LLMProviderSetting
+from app.models.settings import LLMProviderSetting, SyncSettings
 from app.providers.llm.base import LLMHealth, LLMProvider
 from app.providers.llm.openai_compatible import OpenAICompatibleProvider
 from app.providers.notifications.crypto import SecretConfigCipher, mask_secret_config
 from app.providers.registry import ProviderRegistry
 from app.schemas.settings import (
+    DEFAULT_SYNC_SETTINGS_CONFIG,
     ConfigFieldDescriptor,
     LLMProviderSettingRead,
     LLMProviderSettingUpdate,
@@ -26,6 +27,9 @@ from app.schemas.settings import (
     RuntimeSettingField,
     RuntimeSettingSection,
     RuntimeSettingsRead,
+    SyncSettingsConfig,
+    SyncSettingsRead,
+    SyncSettingsUpdate,
 )
 
 
@@ -656,6 +660,60 @@ class SettingsService:
                 ),
             ],
         )
+
+    async def sync_settings(self, workspace_id: UUID) -> SyncSettingsRead:
+        """Return the workspace's global fetch policy, with defaults filled in."""
+
+        row = await self._sync_settings_row(workspace_id)
+        return self._sync_settings_read(row)
+
+    async def update_sync_settings(
+        self, workspace_id: UUID, actor_id: UUID, payload: SyncSettingsUpdate
+    ) -> SyncSettingsRead:
+        """Persist the workspace's global fetch policy and audit the change."""
+
+        config = payload.config.model_dump()
+        row = await self._sync_settings_row(workspace_id)
+        if row is None:
+            row = SyncSettings(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                config=config,
+            )
+            self.session.add(row)
+            action = "sync_settings.created"
+        else:
+            row.config = config
+            action = "sync_settings.updated"
+        self._audit(
+            workspace_id,
+            actor_id,
+            action,
+            row.id,
+            {"config_keys": sorted(config.keys())},
+        )
+        await self.session.commit()
+        await self.session.refresh(row)
+        return self._sync_settings_read(row)
+
+    async def _sync_settings_row(self, workspace_id: UUID) -> SyncSettings | None:
+        return cast(
+            SyncSettings | None,
+            await self.session.scalar(
+                select(SyncSettings).where(SyncSettings.workspace_id == workspace_id)
+            ),
+        )
+
+    def _sync_settings_read(self, row: SyncSettings | None) -> SyncSettingsRead:
+        if row is None:
+            return SyncSettingsRead(config=SyncSettingsConfig(**DEFAULT_SYNC_SETTINGS_CONFIG))
+        stored = dict(row.config or {})
+        merged: dict[str, Any] = {**DEFAULT_SYNC_SETTINGS_CONFIG, **stored}
+        merged["yt_dlp"] = {
+            **DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"],
+            **(stored.get("yt_dlp") or {}),
+        }
+        return SyncSettingsRead(config=SyncSettingsConfig(**merged))
 
     async def llm_setting(self, workspace_id: UUID) -> LLMProviderSettingRead:
         setting = await self._llm_row(workspace_id)

@@ -163,7 +163,7 @@ class YtDlpAdapter(PlatformAdapter):
         / ``datebefore`` are ``YYYYMMDD`` strings forwarded to yt-dlp's date
         filter. ``extra_args`` is a flat passthrough of additional yt-dlp
         options (``{"match_filter": "...", "geo_bypass": True}``) operator-tuned
-        via the account's ``adapter_config``.
+        via the workspace's centralised ``sync_settings`` policy.
         """
         cmd: list[str] = [
             sys.executable,
