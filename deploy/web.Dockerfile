@@ -14,10 +14,13 @@ COPY apps/web /workspace/apps/web
 
 RUN --mount=type=cache,id=sio-pnpm-store,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
-    && pnpm config set fetch-retries 5 \
-    && pnpm config set fetch-retry-maxtimeout 120000 \
-    && pnpm config set fetch-timeout 300000 \
-    && pnpm install --frozen-lockfile \
+    && pnpm config set fetch-retries 12 \
+    && pnpm config set fetch-retry-factor 3 \
+    && pnpm config set fetch-retry-mintimeout 10000 \
+    && pnpm config set fetch-retry-maxtimeout 300000 \
+    && pnpm config set fetch-timeout 600000 \
+    && pnpm config set network-concurrency 4 \
+    && pnpm install --prefer-offline --frozen-lockfile --network-concurrency 4 \
     && pnpm --filter @sio/web build
 
 # Next.js standalone output does not include .next/static or public assets.
