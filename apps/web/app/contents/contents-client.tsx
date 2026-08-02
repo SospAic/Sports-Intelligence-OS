@@ -80,6 +80,7 @@ export function ContentsClient() {
   const [range, setRange] = useUrlState("range", "all");
   const [from, setFrom] = useUrlState("from", "");
   const [view, setView] = useUrlState("view", "list");
+  const [virtualized, setVirtualized] = useState(false);
   const publishedFrom = resolvePublishedFrom(range, from || null) ?? undefined;
   const [selected, setSelected] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
@@ -424,6 +425,17 @@ export function ContentsClient() {
                 日历
               </button>
             </div>
+            <button
+              className={`px-3 py-1.5 text-sm rounded-lg border border-slate-700 ${
+                virtualized
+                  ? "bg-cyan-500/20 text-cyan-200"
+                  : "text-slate-400 hover:bg-slate-800"
+              }`}
+              onClick={() => setVirtualized((v) => !v)}
+              title="切换为虚拟滚动（适合超长作品列表）"
+            >
+              虚拟滚动
+            </button>
             <button className={secondaryButtonClass} onClick={saveView}>
               <Save size={15} />
               保存视图
@@ -628,10 +640,11 @@ export function ContentsClient() {
           columns={columns}
           total={contents.data?.total ?? 0}
           page={page}
-          pageSize={20}
+          pageSize={virtualized ? 200 : 20}
           onPageChange={setPage}
           empty="没有符合条件的作品；请先同步账号。"
           getRowId={(row) => row.id}
+          virtualized={virtualized}
         />
       )}
     </main>

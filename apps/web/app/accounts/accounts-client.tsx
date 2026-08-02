@@ -421,6 +421,7 @@ export function AccountsClient() {
   const { notify } = useToast();
   const client = useQueryClient();
   const [page, setPage] = useState(1);
+  const [virtualized, setVirtualized] = useState(false);
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState(
     () => readLocalAccountView().platform,
@@ -771,6 +772,23 @@ export function AccountsClient() {
               <Save size={16} />
               保存视图
             </button>
+            <button
+              className={`px-3 py-1.5 text-sm rounded-lg border border-slate-700 ${
+                virtualized
+                  ? "bg-cyan-500/20 text-cyan-200"
+                  : "text-slate-400 hover:bg-slate-800"
+              }`}
+              onClick={() => setVirtualized((v) => !v)}
+              title="切换为虚拟滚动（适合超长账号列表）"
+            >
+              虚拟滚动
+            </button>
+            <Link
+              href="/accounts/compare"
+              className={`px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800`}
+            >
+              账号对比
+            </Link>
             <details className="relative">
               <summary
                 className={`${secondaryButtonClass} list-none cursor-pointer`}
@@ -953,12 +971,13 @@ export function AccountsClient() {
           columns={columns}
           total={accounts.data?.total ?? 0}
           page={page}
-          pageSize={20}
+          pageSize={virtualized ? 200 : 20}
           onPageChange={setPage}
           empty="尚未添加监控账号"
           getRowId={(row) => row.id}
           columnVisibility={columnVisibility}
           onColumnVisibilityChange={setColumnVisibility}
+          virtualized={virtualized}
         />
       )}
       {drawerAccount && (
