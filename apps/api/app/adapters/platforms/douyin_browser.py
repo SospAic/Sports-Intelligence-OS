@@ -131,7 +131,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                 # Might be a short ID or custom URL.
                 url = f"https://www.douyin.com/user/{sec_uid}"
 
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
 
             display_name = ""
@@ -225,7 +225,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
         context, page = await self._new_page(ctx)
         try:
             url = f"https://www.douyin.com/user/{external_id}"
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
 
             follower_count = None
@@ -316,7 +316,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             page.on("response", _capture)
 
             url = f"https://www.douyin.com/user/{external_account_id}"
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
             await self._scroll_page(page, times=2)
 

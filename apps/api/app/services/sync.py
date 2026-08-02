@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from statistics import median
@@ -18,6 +18,7 @@ from app.adapters.platforms.base import (
     PlatformAdapterError,
     PlatformContentData,
     PlatformMetricsData,
+    parse_compact_count,
 )
 from app.core.config import Settings
 from app.models.monitoring import (
@@ -749,6 +750,9 @@ class PlatformSyncExecutor:
                 matched_content = by_external_id.get(analytics_data.external_id)
                 if matched_content is not None and analytics_data.metrics:
                     self.session.add(self._content_snapshot(matched_content.id, analytics_data))
+            synthesized = self._synthesize_content_snapshots(adapter, ctx, page_items, analytics)
+            if synthesized:
+                run.records_updated = int(run.records_updated or 0) + synthesized
             run.items_processed += len(page.items)
             run.records_created = created
             run.records_updated = updated
@@ -766,6 +770,67 @@ class PlatformSyncExecutor:
                 break
             cursor = page.next_cursor
         return created, updated
+
+    @staticmethod
+    def _view_count_from_metadata(meta: Mapping[str, Any] | None) -> int | None:
+        """Recover a per-work view count captured by browser adapters.
+
+        Browser adapters stash ``view_count`` (int) or ``view_text`` (e.g.
+        '1.2M views') in ``ContentItem.metadata_json`` because their
+        ``fetch_content_analytics`` cannot retrieve structured metrics. We
+        surface that as a real ``ContentSnapshot.view_count`` so the UI shows
+        "相关数据" instead of blanks.
+        """
+        if not meta:
+            return None
+        for key in ("view_count", "play_count"):
+            vc = meta.get(key)
+            if isinstance(vc, bool):
+                continue
+            if isinstance(vc, int) and not isinstance(vc, bool):
+                return vc
+            if isinstance(vc, float):
+                return int(vc)
+            if isinstance(vc, str) and vc.strip():
+                parsed = parse_compact_count(vc)
+                if parsed is not None:
+                    return parsed
+        vt = meta.get("view_text")
+        if isinstance(vt, str) and vt.strip():
+            return parse_compact_count(vt)
+        return None
+
+    def _synthesize_content_snapshots(
+        self,
+        adapter: PlatformAdapter,
+        ctx: AdapterCallContext,
+        page_items: list[ContentItem],
+        analytics: Sequence[PlatformMetricsData],
+    ) -> int:
+        """Create a ContentSnapshot from adapter-captured view counts when the
+        platform's ``fetch_content_analytics`` returned no structured metrics."""
+        snapshotted = {a.external_id for a in analytics if a.metrics}
+        made = 0
+        for item in page_items:
+            if item.external_id in snapshotted:
+                continue
+            vc = self._view_count_from_metadata(item.metadata_json)
+            if vc is not None:
+                self.session.add(
+                    self._content_snapshot(
+                        item.id,
+                        PlatformMetricsData(
+                            external_id=item.external_id,
+                            captured_at=ctx.observed_at,
+                            metrics={"view_count": vc},
+                            source_kind="live",
+                            provider=adapter.key,
+                            fetched_at=ctx.observed_at,
+                        ),
+                    )
+                )
+                made += 1
+        return made
 
     @staticmethod
     def _content_rejection_reason(data: PlatformContentData) -> str | None:

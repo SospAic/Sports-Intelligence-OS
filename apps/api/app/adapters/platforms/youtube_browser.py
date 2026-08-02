@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from playwright.async_api import Page
@@ -39,6 +39,75 @@ logger = logging.getLogger(__name__)
 
 YT_CHANNEL_URL = "https://www.youtube.com/@{handle}"
 YT_VIDEO_URL = "https://www.youtube.com/watch?v={video_id}"
+
+def _parse_relative_date(text: str | None, observed_at: datetime) -> datetime | None:
+    """Parse YouTube's relative/absolute publish timestamps into a datetime.
+
+    Handles English ('3 days ago') and Chinese ('17小时前', '1天前') relative
+    forms, plus absolute formats like 'Jun 3, 2024'. Returns ``None`` if
+    unparseable.
+    """
+    if not text:
+        return None
+    t = text.strip().lower()
+    m = re.search(r"(\d+)\s*(second|minute|hour|day|week|month|year)s?\s+ago", t)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        deltas = {
+            "second": timedelta(seconds=n),
+            "minute": timedelta(minutes=n),
+            "hour": timedelta(hours=n),
+            "day": timedelta(days=n),
+            "week": timedelta(weeks=n),
+            "month": timedelta(days=30 * n),
+            "year": timedelta(days=365 * n),
+        }
+        return observed_at - deltas[unit]
+    # Chinese relative: 30秒前 / 5分钟前 / 17小时前 / 3天前 / 2周前 / 1个月前 / 半年前(ignore) / 1年前
+    m = re.search(r"(\d+)\s*(秒|分钟|小时|天|周|个月|年)前", t)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        deltas = {
+            "秒": timedelta(seconds=n),
+            "分钟": timedelta(minutes=n),
+            "小时": timedelta(hours=n),
+            "天": timedelta(days=n),
+            "周": timedelta(weeks=n),
+            "个月": timedelta(days=30 * n),
+            "年": timedelta(days=365 * n),
+        }
+        return observed_at - deltas[unit]
+    for fmt in ("%b %d, %Y", "%b %d %Y", "%Y-%m-%d", "%d %b %Y"):
+        try:
+            return datetime.strptime(t, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_views_from_text(text: str | None) -> int | None:
+    """Extract a video view count from the renderer's combined text line.
+
+    YouTube renders this in the adapter's zh-CN locale as e.g. '8225次观看',
+    '1.2万次观看', or in English as '1.2M views'. The combined text also
+    contains the duration ('20:52'), so we must match the views token
+    specifically rather than the first number.
+    """
+    if not text:
+        return None
+    m = re.search(r"([\d.,]+)\s*万?\s*次观看", text)
+    if m:
+        num = float(m.group(1).replace(",", ""))
+        mult = 10_000 if "万" in m.group(0) else 1
+        return int(num * mult)
+    m = re.search(r"([\d.,]+)\s*([KMB]?)\s*views", text, re.IGNORECASE)
+    if m:
+        num = float(m.group(1).replace(",", ""))
+        mult = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(m.group(2).upper(), 1)
+        return int(num * mult)
+    return None
 
 
 class YouTubeBrowserAdapter(BrowserPlatformAdapter):
@@ -118,7 +187,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             page.on("response", _capture)
 
             url = YT_CHANNEL_URL.format(handle=handle)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(1.5)
 
             # Try intercepted data first.
@@ -203,7 +272,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
         context, page = await self._new_page(ctx)
         try:
             url = YT_CHANNEL_URL.format(handle=handle)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(1.5)
 
             subscriber_count = None
@@ -270,7 +339,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
         context, page = await self._new_page(ctx)
         try:
             url = f"{YT_CHANNEL_URL.format(handle=handle)}/videos"
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
             await self._scroll_page(page, times=3)
 
@@ -283,72 +352,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             except Exception:
                 return AdapterPage(items=(), next_cursor=None)
 
-            items: list[PlatformContentData] = []
-            cards = page.locator("ytd-rich-item-renderer, ytd-grid-video-renderer")
-            count = await cards.count()
-
-            for i in range(min(count, page_size)):
-                try:
-                    card = cards.nth(i)
-                    title = ""
-                    try:
-                        title_el = card.locator("#video-title, #video-title-link").first
-                        title = (await title_el.inner_text()).strip()
-                    except Exception:
-                        pass
-                    if not title:
-                        title = await card.locator("#video-title").get_attribute("title") or f"Video {i + 1}"
-
-                    video_id = ""
-                    try:
-                        link_el = card.locator("a#video-title-link, a#thumbnail").first
-                        href = await link_el.get_attribute("href") or ""
-                        vid_match = re.search(r"[?&]v=([\w-]+)", href)
-                        if vid_match:
-                            video_id = vid_match.group(1)
-                    except Exception:
-                        pass
-
-                    cover_url = None
-                    try:
-                        img_el = card.locator("img").first
-                        cover_url = await img_el.get_attribute("src")
-                    except Exception:
-                        pass
-
-                    view_text = None
-                    try:
-                        meta_el = card.locator("#metadata-line span, .inline-metadata-item").first
-                        view_text = (await meta_el.inner_text()).strip()
-                    except Exception:
-                        pass
-
-                    canonical = YT_VIDEO_URL.format(video_id=video_id) if video_id else url
-                    items.append(
-                        PlatformContentData(
-                            external_id=video_id or f"{handle}_v{i}",
-                            account_external_id=handle,
-                            content_type="video",
-                            title=title,
-                            description=None,
-                            published_at=None,
-                            duration_seconds=None,
-                            canonical_url=canonical,
-                            cover_url=cover_url,
-                            language="en",
-                            status="public",
-                            source_kind="live",
-                            provider=self.key,
-                            fetched_at=ctx.observed_at,
-                            metadata={
-                                "method": "browser_scrape",
-                                "view_text": view_text,
-                            },
-                        )
-                    )
-                except Exception as exc:
-                    logger.debug("skip card %d: %s", i, exc)
-                    continue
+            items = await self._extract_video_renderers(page, ctx, handle, page_size)
 
             # YouTube uses infinite scroll; no simple cursor pagination.
             next_cursor = None
@@ -361,6 +365,83 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             ) from exc
         finally:
             await context.close()
+
+    async def _extract_video_renderers(
+        self,
+        page: Page,
+        ctx: AdapterCallContext,
+        handle: str,
+        page_size: int,
+    ) -> list[PlatformContentData]:
+        """Extract video cards from the Videos tab in a single DOM read.
+
+        YouTube's markup changes often; locating each field with individual
+        Playwright locators is slow and brittle (stale selectors wait the full
+        default timeout). Reading the whole grid once via ``page.evaluate`` is
+        fast and resilient to layout changes.
+        """
+        raw = await page.evaluate(
+            """(limit) => {
+                const rs = Array.from(
+                    document.querySelectorAll('ytd-rich-item-renderer, ytd-grid-video-renderer')
+                );
+                const out = [];
+                for (const r of rs.slice(0, limit)) {
+                    const a = r.querySelector('a[href*="/watch"]');
+                    if (!a) continue;
+                    const href = a.getAttribute('href') || '';
+                    const m = href.match(/[?&]v=([\\w-]+)/);
+                    const videoId = m ? m[1] : '';
+                    const tEl = r.querySelector('a.ytLockupMetadataViewModelTitle') || a;
+                    const title = (tEl ? tEl.textContent : '').trim();
+                    const img = r.querySelector('img');
+                    const cover = img ? (img.getAttribute('src') || '') : '';
+                    const text = r.innerText ? r.innerText.replace(/\\n+/g, ' | ') : '';
+                    out.push({videoId, title, cover, text});
+                }
+                return out;
+            }""",
+            page_size,
+        )
+        items: list[PlatformContentData] = []
+        for i, d in enumerate(raw):
+            video_id = (d.get("videoId") or "").strip()
+            title = (d.get("title") or "").strip()
+            if not title:
+                title = f"Video {i + 1}"
+            cover_url = d.get("cover") or None
+            text = d.get("text") or ""
+            view_count = _parse_views_from_text(text)
+            published_at = _parse_relative_date(text, ctx.observed_at)
+            canonical = (
+                YT_VIDEO_URL.format(video_id=video_id)
+                if video_id
+                else f"https://www.youtube.com/@{handle}/videos"
+            )
+            items.append(
+                PlatformContentData(
+                    external_id=video_id or f"{handle}_v{i}",
+                    account_external_id=handle,
+                    content_type="video",
+                    title=title,
+                    description=None,
+                    published_at=published_at,
+                    duration_seconds=None,
+                    canonical_url=canonical,
+                    cover_url=cover_url,
+                    language="en",
+                    status="public",
+                    source_kind="live",
+                    provider=self.key,
+                    fetched_at=ctx.observed_at,
+                    metadata={
+                        "method": "browser_scrape",
+                        "raw_text": text[:300],
+                        "view_count": view_count,
+                    },
+                )
+            )
+        return items
 
     async def fetch_content(
         self, ctx: AdapterCallContext, external_id: str

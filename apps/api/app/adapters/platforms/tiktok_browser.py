@@ -123,7 +123,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             page.on("response", _capture)
 
             url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
 
             # Try to extract from embedded JSON (SIGI_STATE).
@@ -219,7 +219,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
         context, page = await self._new_page(ctx)
         try:
             url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
 
             follower_count = None
@@ -300,7 +300,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
         context, page = await self._new_page(ctx)
         try:
             url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
             await self._scroll_page(page, times=2)
 

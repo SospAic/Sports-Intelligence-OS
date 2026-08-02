@@ -1,9 +1,28 @@
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
+
+
+def parse_compact_count(text: str | None) -> int | None:
+    """Parse compact count strings into an integer.
+
+    Handles '1.2M', '456K', '1,234,567', '789' and trailing words such as
+    'views' / '播放' / '次观看'. Returns ``None`` when nothing parseable.
+    """
+    if not text:
+        return None
+    t = text.strip().upper().replace(",", "")
+    t = re.sub(r"[^0-9.KMB]", "", t)
+    m = re.match(r"([\d.]+)\s*([KMB]?)", t)
+    if not m:
+        return None
+    num = float(m.group(1))
+    mult = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(m.group(2), 1)
+    return int(num * mult)
 
 
 class AdapterCapability(StrEnum):

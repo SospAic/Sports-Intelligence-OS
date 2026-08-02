@@ -136,7 +136,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             page.on("response", _capture_acc)
 
             url = BILIBILI_SPACE_URL.format(mid=mid)
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(1.5)
 
             # Anonymous-first: check if platform demands login.
@@ -333,7 +333,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                 f"{BILIBILI_SPACE_URL.format(mid=mid)}/video"
                 f"?tid=0&pn={page_num}&keyword=&order=pubdate"
             )
-            await page.goto(url, wait_until="networkidle", timeout=self.page_load_timeout_ms)
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             # Give the SPA time to fire its XHR calls.
             await self._polite_delay(2.0)
 
