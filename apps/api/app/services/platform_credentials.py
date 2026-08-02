@@ -63,6 +63,14 @@ AUTHORIZED_SESSION_CONFIRMATIONS = {
     "platform_session_allowed",
     "oauth_unavailable_or_insufficient",
 }
+# Residential/rotating proxy used to bypass datacenter-IP anti-bot walls.
+# Allowed in every mode so a workspace can attach a proxy to any acquisition
+# strategy (notably for TikTok/Douyin public-page and authorized-session runs).
+PROXY_FIELDS = {
+    "proxy_server",
+    "proxy_username",
+    "proxy_password",
+}
 
 
 class PlatformCredentialError(RuntimeError):
@@ -111,6 +119,7 @@ class PlatformCredentialService:
             | PUBLIC_PAGE_FIELDS
             | AUTHORIZED_LOGIN_FIELDS
             | AUTHORIZED_SESSION_FIELDS
+            | PROXY_FIELDS
         )
         unknown = (set(payload.config) | set(payload.clear_fields)) - allowed
         if unknown:
@@ -466,6 +475,12 @@ class PlatformCredentialService:
             safe["storage_state_json"] = "configured"
         if config.get("legacy_account_configs"):
             safe["legacy_account_configs"] = "configured"
+        if config.get("proxy_server"):
+            safe["proxy_server"] = "configured"
+        if config.get("proxy_username"):
+            safe["proxy_username"] = "configured"
+        if config.get("proxy_password"):
+            safe["proxy_password"] = "configured"
         return safe
 
     def _audit(

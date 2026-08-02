@@ -31,6 +31,7 @@ from app.schemas.monitoring import (
     AccountSort,
     AccountUpdate,
     ContentCreate,
+    ContentCalendarResponse,
     ContentPage,
     ContentRead,
     ContentSnapshotPage,
@@ -485,6 +486,27 @@ async def export_contents(
         content=csv_text.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="contents.csv"'},
+    )
+
+
+@router.get("/contents/calendar", response_model=ContentCalendarResponse)
+async def contents_calendar(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    year: int,
+    month: Annotated[int, Query(ge=1, le=12)],
+    platform: str | None = None,
+    account: UUID | None = None,
+    query: str | None = None,
+) -> ContentCalendarResponse:
+    """Per-day calendar aggregation of published works for a given month."""
+    return await MonitoringService(db).contents_calendar(
+        workspace.workspace_id,
+        filters=ContentFilters(
+            platform=platform, account=account, query=query
+        ),
+        year=year,
+        month=month,
     )
 
 

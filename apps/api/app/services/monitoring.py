@@ -36,6 +36,8 @@ from app.schemas.monitoring import (
     AccountSyncStatus,
     AccountUpdate,
     ContentCreate,
+    ContentCalendarBucket,
+    ContentCalendarResponse,
     ContentPage,
     ContentRead,
     ContentSnapshotPage,
@@ -546,6 +548,46 @@ class MonitoringService:
             page=page,
             page_size=page_size,
             total=total,
+        )
+
+    async def contents_calendar(
+        self,
+        workspace_id: UUID,
+        *,
+        filters: ContentFilters,
+        year: int,
+        month: int,
+    ) -> ContentCalendarResponse:
+        """Per-day aggregation of published works for a month (calendar view)."""
+        import calendar
+
+        _, last_day = calendar.monthrange(year, month)
+        month_filters = ContentFilters(
+            platform=filters.platform,
+            account=filters.account,
+            query=filters.query,
+            published_from=datetime(year, month, 1, 0, 0, 0, tzinfo=UTC),
+            published_to=datetime(
+                year, month, last_day, 23, 59, 59, 999999, tzinfo=UTC
+            ),
+        )
+        rows = await self._repository.contents_calendar(
+            workspace_id, filters=month_filters
+        )
+        buckets = [
+            ContentCalendarBucket(
+                date=date, count=count, total_views=total_views, total_likes=total_likes
+            )
+            for date, count, total_views, total_likes in rows
+        ]
+        return ContentCalendarResponse(
+            year=year,
+            month=month,
+            platform=filters.platform,
+            account=filters.account,
+            buckets=buckets,
+            total_count=sum(b.count for b in buckets),
+            total_views=sum(b.total_views for b in buckets),
         )
 
     async def summarize_account_contents(

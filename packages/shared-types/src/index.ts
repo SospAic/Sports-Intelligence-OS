@@ -551,6 +551,23 @@ export interface ContentRecordPage {
   total: number;
 }
 
+export interface ContentCalendarBucket {
+  date: string;
+  count: number;
+  total_views: number;
+  total_likes: number;
+}
+
+export interface ContentCalendarResponse {
+  year: number;
+  month: number;
+  platform: string | null;
+  account: string | null;
+  buckets: ContentCalendarBucket[];
+  total_count: number;
+  total_views: number;
+}
+
 export interface ContentSnapshotPage {
   items: ContentSnapshot[];
   page: number;

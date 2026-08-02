@@ -38,6 +38,7 @@ import {
   secondaryButtonClass,
 } from "@/components/ui";
 import { apiRequest, downloadApiFile } from "@/lib/browser-api";
+import { ContentCalendar } from "./content-calendar";
 import { buildContentListPath } from "@/lib/admin-queries";
 import {
   metricAvailability,
@@ -78,6 +79,7 @@ export function ContentsClient() {
   const [minViews, setMinViews] = useState(() => readSavedView().minViews);
   const [range, setRange] = useUrlState("range", "all");
   const [from, setFrom] = useUrlState("from", "");
+  const [view, setView] = useUrlState("view", "list");
   const publishedFrom = resolvePublishedFrom(range, from || null) ?? undefined;
   const [selected, setSelected] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
@@ -400,6 +402,28 @@ export function ContentsClient() {
         description="统一排序、筛选和比较作品快照；增长量来自派生指标，不会冒充平台原始字段。"
         actions={
           <>
+            <div className="flex overflow-hidden rounded-lg border border-slate-700">
+              <button
+                className={`px-3 py-1.5 text-sm ${
+                  view === "list"
+                    ? "bg-cyan-500/20 text-cyan-200"
+                    : "text-slate-400 hover:bg-slate-800"
+                }`}
+                onClick={() => setView("list")}
+              >
+                列表
+              </button>
+              <button
+                className={`px-3 py-1.5 text-sm ${
+                  view === "calendar"
+                    ? "bg-cyan-500/20 text-cyan-200"
+                    : "text-slate-400 hover:bg-slate-800"
+                }`}
+                onClick={() => setView("calendar")}
+              >
+                日历
+              </button>
+            </div>
             <button className={secondaryButtonClass} onClick={saveView}>
               <Save size={15} />
               保存视图
@@ -585,7 +609,9 @@ export function ContentsClient() {
           </p>
         </form>
       )}
-      {contents.isLoading ? (
+      {view === "calendar" ? (
+        <ContentCalendar platform={platform} query={query} />
+      ) : contents.isLoading ? (
         <div className="rounded-2xl border border-slate-800">
           <SkeletonRows />
         </div>

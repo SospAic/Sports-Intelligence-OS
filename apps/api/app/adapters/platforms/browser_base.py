@@ -108,7 +108,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         self._min_delay = min_action_delay or self.min_action_delay
         self._max_delay = max_action_delay or self.max_action_delay
         self._playwright: Playwright | None = None
-        self._browser: Browser | None = None
+        self._browsers: dict[str, Browser] = {}
         self._session_states: dict[str, StorageState] = {}
 
     def _credential_cache_key(self, ctx: AdapterCallContext) -> str | None:
@@ -120,21 +120,53 @@ class BrowserPlatformAdapter(PlatformAdapter):
             f"{self.key}\0{username}\0{password}".encode()
         ).hexdigest()
 
-    async def _ensure_browser(self) -> Browser:
-        """Lazily launch the browser instance."""
-        if self._browser is not None and self._browser.is_connected():
-            return self._browser
+    def _proxy_from_config(self, ctx: AdapterCallContext) -> dict[str, Any] | None:
+        """Build a Playwright proxy dict from the workspace credential config.
+
+        Residential/rotating proxies are the practical way to avoid datacenter-IP
+        anti-bot walls on TikTok/Douyin when an authorized session is supplied.
+        """
+        server = ctx.config.get("proxy_server")
+        if not isinstance(server, str) or not server.strip():
+            return None
+        server = server.strip()
+        if not server.startswith(("http://", "https://", "socks5://", "socks4://")):
+            server = f"http://{server}"
+        proxy: dict[str, Any] = {"server": server}
+        username = ctx.config.get("proxy_username")
+        password = ctx.config.get("proxy_password")
+        if isinstance(username, str) and username:
+            proxy["username"] = username
+        if isinstance(password, str) and password:
+            proxy["password"] = password
+        return proxy
+
+    async def _ensure_browser(
+        self, ctx: AdapterCallContext | None = None
+    ) -> Browser:
+        """Lazily launch (and cache) a browser instance, optionally via a proxy."""
+        proxy = self._proxy_from_config(ctx) if ctx is not None else None
+        cache_key = proxy["server"] if proxy else "direct"
+        existing = self._browsers.get(cache_key)
+        if existing is not None and existing.is_connected():
+            return existing
         if self._playwright is None:
             self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
+        # --disable-blink-features=AutomationControlled hides the WebDriver flag
+        # that many anti-bot systems use to fingerprint headless Chromium.
+        self._browsers[cache_key] = await self._playwright.chromium.launch(
             headless=self._headless,
-            args=["--disable-dev-shm-usage"],
+            args=[
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+            ],
+            proxy=proxy,
         )
-        return self._browser
+        return self._browsers[cache_key]
 
     async def _new_context(self, ctx: AdapterCallContext) -> BrowserContext:
         """Create an isolated browser context for public-page sampling."""
-        browser = await self._ensure_browser()
+        browser = await self._ensure_browser(ctx)
         cache_key = self._credential_cache_key(ctx)
         storage_state: StorageState | None = self._session_states.get(cache_key or "")
         raw_storage_state = ctx.config.get("storage_state_json")
@@ -265,9 +297,12 @@ class BrowserPlatformAdapter(PlatformAdapter):
 
     async def aclose(self) -> None:
         """Shut down browser and Playwright."""
-        if self._browser is not None:
-            await self._browser.close()
-            self._browser = None
+        for browser in self._browsers.values():
+            try:
+                await browser.close()
+            except Exception:
+                pass
+        self._browsers.clear()
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None

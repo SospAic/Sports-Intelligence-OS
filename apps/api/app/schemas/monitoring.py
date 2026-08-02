@@ -356,6 +356,27 @@ class ContentPage(BaseModel):
     total: int
 
 
+class ContentCalendarBucket(BaseModel):
+    """One calendar day with aggregated content metrics."""
+
+    date: str  # YYYY-MM-DD
+    count: int
+    total_views: int
+    total_likes: int
+
+
+class ContentCalendarResponse(BaseModel):
+    """Per-day aggregation of published works for a single month."""
+
+    year: int
+    month: int  # 1-12
+    platform: str | None = None
+    account: UUID | None = None
+    buckets: list[ContentCalendarBucket]
+    total_count: int
+    total_views: int
+
+
 def _default_traffic_source_split() -> dict[str, float | None]:
     return {"recommendation": None, "search": None, "profile": None}
 

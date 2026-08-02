@@ -316,6 +316,46 @@ class MonitoringRepository:
         total = int((await self._session.scalar(count_statement)) or 0)
         return [(row[0], row[1], row[2]) for row in result.all()], total
 
+    async def contents_calendar(
+        self,
+        workspace_id: UUID,
+        *,
+        filters: ContentFilters,
+    ) -> list[tuple[str, int, int, int]]:
+        """Aggregate published works by calendar day for a given month.
+
+        Returns tuples of (date_str, count, total_views, total_likes) keyed by
+        ``YYYY-MM-DD``. All numbers come from real snapshots the adapter stored;
+        missing snapshot metrics contribute zero rather than being faked.
+        """
+        latest_snapshot_id = self._latest_content_snapshot_id()
+        conditions = self._content_conditions(workspace_id, filters)
+        day = func.to_char(
+            func.date_trunc("day", ContentItem.published_at), "YYYY-MM-DD"
+        ).label("day")
+        statement = (
+            select(
+                day,
+                func.count(ContentItem.id).label("count"),
+                func.coalesce(
+                    func.sum(func.coalesce(ContentSnapshot.view_count, 0)), 0
+                ).label("total_views"),
+                func.coalesce(
+                    func.sum(func.coalesce(ContentSnapshot.like_count, 0)), 0
+                ).label("total_likes"),
+            )
+            .join(Platform, ContentItem.platform_id == Platform.id)
+            .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
+            .where(*conditions)
+            .group_by(day)
+            .order_by(day.asc())
+        )
+        result = await self._session.execute(statement)
+        return [
+            (str(row.day), int(row.count), int(row.total_views), int(row.total_likes))
+            for row in result.all()
+        ]
+
     async def summarize_account_contents(
         self, workspace_id: UUID, account_id: UUID
     ) -> dict[str, Any]:

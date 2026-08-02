@@ -1148,6 +1148,43 @@ function SecurePlatformCredentialCard({
         )}
         {mode === "authorized_session" && (
           <div className="space-y-3">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-xs leading-5 text-slate-400">
+                住宅/轮换代理是绕过 TikTok、抖音等数据中心 IP 反爬封锁的关键。配合下方已授权的登录会话（storage_state），即可在「账号监控」中正常抓取到真实作品与播放数据。仅作用于当前工作区该平台的全部账号。
+              </p>
+              <div className="mt-3 grid gap-3 sm:grid-cols-1">
+                <label className="grid gap-1 text-xs text-slate-300">
+                  代理服务器（必填，如 http://host:port 或 socks5://host:port）
+                  <input
+                    name="proxy_server"
+                    className={inputClass}
+                    placeholder="住宅代理出口地址"
+                    disabled={!canEdit}
+                  />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1 text-xs text-slate-300">
+                    代理用户名（可选）
+                    <input
+                      name="proxy_username"
+                      className={inputClass}
+                      placeholder="可选"
+                      disabled={!canEdit}
+                    />
+                  </label>
+                  <label className="grid gap-1 text-xs text-slate-300">
+                    代理密码（可选）
+                    <input
+                      name="proxy_password"
+                      type="password"
+                      className={inputClass}
+                      placeholder="可选"
+                      disabled={!canEdit}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
             <label className="grid gap-1 text-xs text-slate-300">
               Playwright storage_state JSON *
               <textarea
