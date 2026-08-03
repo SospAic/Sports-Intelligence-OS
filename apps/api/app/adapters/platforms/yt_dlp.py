@@ -629,17 +629,48 @@ class YtDlpAdapter(PlatformAdapter):
         analytics_fetched = bool(data)
         follower = data.get("channel_follower_count") or data.get("subscriber_count")
         playlist_count = data.get("playlist_count")
-        metrics: dict[str, int | None] = {
+        metrics: dict[str, int | float | None] = {
             "follower_count": int(follower) if follower is not None else None,
             "video_count": int(playlist_count) if playlist_count is not None else None,
             "total_view_count": None,
         }
-        # yt-dlp is the sole source for analytics. We intentionally do NOT fall
-        # back to the browser when individual metrics (e.g. follower count on
-        # TikTok/Douyin) are unavailable — a partial result is still valid, and
-        # the browser adapter is reserved for hard yt-dlp failures only. Missing
-        # metrics are reported via ``unavailable_metrics`` so the UI can show
-        # "相关数据缺失" instead of silently switching acquisition strategy.
+        analytics_source = "yt_dlp"
+        # TikTok / Douyin profiles do not expose account-level metrics through
+        # yt-dlp's channel JSON (only the video list does — ``resolve_account``
+        # already delegates the *profile* to the browser adapter for these
+        # platforms because the channel JSON omits the uploader). The browser
+        # adapter, however, can scrape the public profile stats (follower / like
+        # / video counts) from the rendered page. So whenever yt-dlp yields no
+        # usable account metrics for these platforms, delegate analytics to the
+        # browser adapter too, instead of leaving the counts permanently
+        # unavailable. This covers both TikTok (yt-dlp fetches the channel but
+        # no metrics) and Douyin (yt-dlp returns nothing usable at all). The
+        # browser path is best-effort: if it also fails, the metrics stay None
+        # and are surfaced via ``unavailable_metrics`` rather than misreported
+        # as a degraded sync. YouTube keeps using yt-dlp's channel JSON, which
+        # does carry these metrics.
+        if self.platform in ("tiktok", "douyin") and all(
+            v is None for v in metrics.values()
+        ):
+            try:
+                fb = await self._fallback().fetch_account_analytics(ctx, handle)
+                merged: dict[str, int | float | None] = dict(metrics)
+                for key, val in fb.metrics.items():
+                    if merged.get(key) is None and val is not None:
+                        merged[key] = int(val) if isinstance(val, (int, float)) else val
+                metrics = merged
+                analytics_source = "browser"
+                if any(v is not None for v in fb.metrics.values()):
+                    # We obtained real analytics from the browser, so this is a
+                    # successful (partial) extraction, not a degraded sync.
+                    analytics_fetched = True
+            except Exception as exc:  # noqa: BLE001 - browser is best-effort here
+                logger.warning(
+                    "browser analytics fallback failed for %s/%s: %s",
+                    self.platform,
+                    handle,
+                    exc,
+                )
 
         unavailable = tuple(k for k, v in metrics.items() if v is None)
         return PlatformMetricsData(
@@ -650,7 +681,11 @@ class YtDlpAdapter(PlatformAdapter):
             provider=self.key,
             fetched_at=ctx.observed_at,
             unavailable_metrics=unavailable,
-            metadata={"method": "yt_dlp", "analytics_fetched": analytics_fetched},
+            metadata={
+                "method": "yt_dlp",
+                "analytics_fetched": analytics_fetched,
+                "analytics_source": analytics_source,
+            },
         )
 
     async def list_contents(

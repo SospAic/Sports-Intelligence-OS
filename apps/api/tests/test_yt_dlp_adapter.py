@@ -22,6 +22,7 @@ from app.adapters.platforms.base import (
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
+    PlatformMetricsData,
     TransientAdapterError,
 )
 from app.adapters.platforms.yt_dlp import (
@@ -251,7 +252,9 @@ async def test_tiktok_analytics_partial_fetch_is_not_degraded():
     # TikTok/Douyin user pages via yt-dlp rarely expose follower/video counts,
     # but the fetch still returns a real account object. The adapter must report
     # ``analytics_fetched=True`` and surface the missing fields via
-    # ``unavailable_metrics`` rather than signalling a failed extraction.
+    # ``unavailable_metrics`` rather than signalling a failed extraction. The
+    # browser fallback (used to recover the metrics) is stubbed so the test
+    # stays offline and the yt-dlp-only result is asserted.
     adapter = TikTokYtDlpAdapter()
     profile = {
         "id": "MS4wLjABAAAAexample",
@@ -264,6 +267,23 @@ async def test_tiktok_analytics_partial_fetch_is_not_degraded():
         return profile, ""
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            # Browser also comes up empty (offline); yt-dlp's channel object is
+            # still treated as a successful fetch.
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={},
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
     ctx = make_ctx()
     analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
     assert analytics.metadata.get("analytics_fetched") is True
@@ -276,15 +296,83 @@ async def test_tiktok_analytics_partial_fetch_is_not_degraded():
 
 
 @pytest.mark.asyncio
+async def test_tiktok_analytics_browser_fallback_captures_metrics():
+    # When yt-dlp fetches the TikTok channel but exposes no account metrics,
+    # the adapter must delegate to the browser adapter and *merge* the scraped
+    # follower / like / video counts back into the result (instead of leaving
+    # them permanently unavailable). The merged metrics must keep
+    # ``analytics_fetched=True`` so the sync is not misreported as degraded.
+    adapter = TikTokYtDlpAdapter()
+    profile = {
+        "id": "MS4wLjABAAAAexample",
+        "title": "guitar_daily",
+        "uploader": "guitar_daily",
+        "webpage_url": "https://www.tiktok.com/@guitar_daily",
+    }
+
+    async def _fake_single(url, *, playlist_end=1):
+        return profile, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={
+                    "follower_count": 61600,
+                    "total_like_count": 1300000,
+                    "video_count": 201,
+                },
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is True
+    assert analytics.metadata.get("analytics_source") == "browser"
+    assert analytics.metrics["follower_count"] == 61600
+    assert analytics.metrics["total_like_count"] == 1300000
+    assert analytics.metrics["video_count"] == 201
+    # TikTok exposes no total view count even via the browser, so it stays
+    # unavailable rather than fabricated.
+    assert analytics.metrics["total_view_count"] is None
+    assert "total_view_count" in analytics.unavailable_metrics
+
+
+@pytest.mark.asyncio
 async def test_tiktok_analytics_transient_failure_reports_not_fetched():
     # A genuinely empty yt-dlp result (transient failure) must be reported as
     # ``analytics_fetched=False`` so the sync engine can still flag it degraded.
+    # The browser fallback is stubbed to also fail (offline) so the test stays
+    # hermetic and the degraded signal is preserved.
     adapter = TikTokYtDlpAdapter()
 
     async def _fake_single(url, *, playlist_end=1):
         raise TransientAdapterError("yt-dlp timed out")
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={},
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
     ctx = make_ctx()
     analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
     assert analytics.metadata.get("analytics_fetched") is False
