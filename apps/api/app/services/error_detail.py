@@ -146,8 +146,12 @@ def business_hint_for(
     lists the most common causes so the field is never empty for a real failure.
     """
 
+    # Never surface a literal "(unknown)": an unmapped / missing code means the
+    # failure was not categorised, not that the cause is genuinely unknown. A
+    # generic, actionable hint is far less confusing for operators than a token
+    # that looks like a bug in the error layer itself.
     base = _BUSINESS_HINTS.get(code or "") or (
-        f"操作执行失败（{(code or 'unknown')}）。常见原因：依赖的下游服务不可用、"
+        "操作执行失败。常见原因：依赖的下游服务不可用、"
         "凭证过期或权限不足、网络中断或触发限流、入参校验未通过。"
         "请结合代码级错误详情定位，必要时联系管理员。"
     )

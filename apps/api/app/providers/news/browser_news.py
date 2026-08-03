@@ -136,11 +136,30 @@ SITE_PRESETS: dict[str, SitePreset] = {
         timestamp="time[datetime], .article-list-item__time",
         image="img[src]",
     ),
+    # Free crawlable sports-data sites (the "通用网页连接器" path).
+    "fbref.com": SitePreset(
+        domain="fbref.com",
+        article_container=".news-item, .article, article, [data-article]",
+        title="h2, h3, .news-item__title, .article__title, a",
+        link="a[href]",
+        summary=".news-item__summary, p",
+        timestamp="time[datetime], .news-item__date",
+        image="img[src]",
+    ),
+    "transfermarkt.com": SitePreset(
+        domain="transfermarkt.com",
+        article_container=".news-item, .box > .table > tbody > tr, article",
+        title=".news-item__title, .text > a, h2, h3",
+        link="a[href]",
+        summary=".news-item__content, .text, p",
+        timestamp=".news-item__date, time[datetime]",
+        image="img[src]",
+    ),
 }
 
 
-def _resolve_preset(url: str) -> SitePreset | None:
-    """Match a URL to a built-in site preset by domain."""
+def _resolve_preset(url: str, config: Mapping[str, Any] | None = None) -> SitePreset | None:
+    """Match a URL to a built-in site preset by domain or explicit config key."""
     from urllib.parse import urlsplit
 
     hostname = (urlsplit(url).hostname or "").casefold()
@@ -149,6 +168,11 @@ def _resolve_preset(url: str) -> SitePreset | None:
     for domain, preset in SITE_PRESETS.items():
         if hostname == domain or hostname.endswith(f".{domain}"):
             return preset
+    # Allow an explicit preset name from the source config (e.g. "fbref").
+    if config:
+        named = config.get("preset")
+        if named and named in SITE_PRESETS:
+            return SITE_PRESETS[named]
     return None
 
 
@@ -226,7 +250,7 @@ class BrowserNewsProvider(NewsProvider):
         config: Mapping[str, Any], url: str
     ) -> dict[str, str | None]:
         """Resolve CSS selectors from config or built-in presets."""
-        preset = _resolve_preset(url)
+        preset = _resolve_preset(url, config)
         return {
             "article_container": str(
                 config.get("selector_article_container")

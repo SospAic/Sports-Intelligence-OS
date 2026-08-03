@@ -158,7 +158,7 @@ async def test_account_sync_interval_adaptive_and_default(
     monkeypatch.setattr("app.services.sync.enqueue_platform_sync", lambda _rid: None)
     csrf = authenticate(client)
 
-    # No contents yet -> default hourly interval, basis "default".
+    # No contents yet -> default ~8h interval, basis "default".
     empty = create_account(client, csrf, external_id="iv-empty", display_name="IvEmpty")
     default_resp = client.post(
         f"/api/v1/accounts/{empty['id']}/sync-interval",
@@ -166,10 +166,10 @@ async def test_account_sync_interval_adaptive_and_default(
     )
     assert default_resp.status_code == 200, default_resp.text
     assert default_resp.json()["basis"] == "default"
-    assert default_resp.json()["sync_interval_seconds"] == 3600
+    assert default_resp.json()["sync_interval_seconds"] == 28800
 
     # After a sync with real-shaped contents, the cadence becomes adaptive and
-    # the executor stores it back on the account (clamped to the 300s floor
+    # the executor stores it back on the account (clamped to the 3600s floor
     # because the test adapter stamps identical published_at on every item).
     seeded = create_account(client, csrf, external_id="iv-seeded", display_name="IvSeeded")
     queued = client.post(
@@ -179,7 +179,7 @@ async def test_account_sync_interval_adaptive_and_default(
     await run_sync(client, database_path, UUID(queued.json()["id"]))
 
     refreshed = client.get(f"/api/v1/accounts/{seeded['id']}")
-    assert refreshed.json()["sync_interval_seconds"] == 300  # adaptive floor
+    assert refreshed.json()["sync_interval_seconds"] == 3600  # adaptive floor
 
     adaptive_resp = client.post(
         f"/api/v1/accounts/{seeded['id']}/sync-interval",
@@ -187,4 +187,4 @@ async def test_account_sync_interval_adaptive_and_default(
     )
     assert adaptive_resp.status_code == 200, adaptive_resp.text
     assert adaptive_resp.json()["basis"] == "adaptive"
-    assert 300 <= adaptive_resp.json()["sync_interval_seconds"] <= 86_400
+    assert 3600 <= adaptive_resp.json()["sync_interval_seconds"] <= 86_400

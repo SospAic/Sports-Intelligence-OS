@@ -468,6 +468,10 @@ export function AccountsClient() {
   const [downloadDefaults, setDownloadDefaults] =
     useState<YtDlpDownloadSettings>(() => readLocalDownloadDefaults());
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
+  // Requirement: offer "add account + sync immediately" so a freshly added
+  // account pulls real data in one step instead of waiting for the next
+  // scheduled sync. Defaults to on; the user can uncheck to add without syncing.
+  const [syncImmediately, setSyncImmediately] = useState(true);
   const serverPrefsApplied = useRef(false);
 
   const serverPrefs = useQuery({
@@ -607,7 +611,28 @@ export function AccountsClient() {
         },
       ).catch(() => null);
       writeLocalDownloadDefaults(downloadDefaults);
-      notify("账号已添加；默认下载设置已保存，真实数据将在同步成功后出现。");
+      // Requirement: optionally trigger a real sync right after the account is
+      // created, so the user sees live data without waiting for the scheduler.
+      let syncQueued = true;
+      if (syncImmediately) {
+        syncQueued = await apiRequest(
+          `/accounts/${encodeURIComponent(created.id)}/sync`,
+          {
+            method: "POST",
+            workspaceId,
+            csrf: true,
+          },
+        )
+          .then(() => true)
+          .catch(() => false);
+      }
+      notify(
+        syncImmediately
+          ? syncQueued
+            ? "账号已添加并触发同步；真实数据将在同步完成后出现。"
+            : "账号已添加，但立即同步未能启动（适配器可能尚未实现或账号已停用），你可稍后在账号行手动同步。"
+          : "账号已添加；默认下载设置已保存，真实数据将在同步成功后出现。",
+      );
       setCreating(false);
       await client.invalidateQueries({ queryKey: ["accounts"] });
     } catch (error) {
@@ -938,6 +963,15 @@ export function AccountsClient() {
               onChange={setDownloadDefaults}
             />
           </div>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300 md:col-span-2 xl:col-span-3">
+            <input
+              type="checkbox"
+              checked={syncImmediately}
+              onChange={(event) => setSyncImmediately(event.target.checked)}
+              className="size-4 rounded border-slate-600 bg-slate-900 accent-cyan-500"
+            />
+            添加后立即同步（创建账号后立刻触发一次真实数据同步）
+          </label>
           <div className="flex gap-2">
             <button disabled={pending} className={buttonClass}>
               {pending ? "保存中…" : "保存账号"}

@@ -67,6 +67,18 @@ class Settings(BaseSettings):
         ),
     )
     sync_page_limit: int = Field(default=20, ge=1, le=200)
+    sync_run_timeout_seconds: int = Field(
+        default=1800,
+        ge=120,
+        le=7200,
+        description=(
+            "Hard wall-clock budget for a single account sync run. When exceeded "
+            "the run stops paging, commits whatever it has ingested, and finishes "
+            "as success/degraded instead of running unbounded. Keep this below "
+            "SIO_TASK_STALE_AFTER_SECONDS (default 2100) so healthy-but-slow runs "
+            "are never wrongly flagged as crashed by the stale-recovery watchdog."
+        ),
+    )
     llm_openai_compatible_base_url: str | None = None
     llm_openai_compatible_api_key: SecretStr | None = None
     llm_default_model: str = "gpt-4.1-mini"

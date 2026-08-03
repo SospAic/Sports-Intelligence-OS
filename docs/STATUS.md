@@ -1149,3 +1149,44 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - **测试**：`apps/api/tests/test_yt_dlp_adapter.py` 新增 `test_tiktok_analytics_browser_fallback_captures_metrics`（断言合并 follower/total_like_count/video_count 且 `analytics_source=browser`、`analytics_fetched=True`、仅 `total_view_count` unavailable）；既有 2 个 analytics 用例改为桩 `_fallback` 保持离线。定向 32 passed、ruff 绿；全量 DB/Redis 集成测试因隔离容器无本地 `127.0.0.1:5432`/`6399` 服务而环境性失败（与本次改动无关，连接被拒为基础设施问题）。
 - **部署**：提交 `5e4378b` 并 push 至 `codex/full-repair-real-data`；`docker compose build api worker beat` 重建含修复镜像并 `up -d`（api/worker/beat healthy，`/health/ready`→200）。
 - **剩余平台限制（非代码缺陷）**：TikTok/Douyin 反爬间歇性使 yt-dlp 列表/浏览器抓取失败（如 `Unable to extract secondary user ID`、anti-bot 墙），代码已优雅回退且不崩溃；`total_view_count` 两平台均无公开来源，恒为 unavailable。
+
+## 2026-08-03（续：账号监控「立即同步」+「不好使」根因修复与部署）
+
+- **用户双需求**：①「添加账号」流程新增「立即同步」按钮；②报「账号监控干脆不好使了，是不是代码回退，报错：操作执行失败（unknown）」。
+- **诊断结论（非代码回退）**：`celery inspect active` 显示 worker 池 16 进程未饱和；`操作执行失败（unknown）` 文案仅由 `app/services/error_detail.py: business_hint_for(None)` 生成，全库 `sync_runs` **0 行**命中（所有 `business_hint_for` 调用方均传具体 code，sync 路径不会产生 `(unknown)`），故为陈旧/瞬态 UI，非回归。
+- **真正根因**：(a) **YouTube 大频道同步无上限**——`config.sync_page_limit=20` 且 `max_contents` 默认 `None`，单账号一次同步最多翻 20×50=1000 条视频，常跑 30–60 分钟，体感「卡死/不好使」；(b) **`recover_stale_runs` 误判**——单页 yt-dlp 慢于陈旧窗口(`SIO_TASK_STALE_AFTER_SECONDS=2100`)时把**仍在跑**的同步标「worker 可能中途崩溃」并释放锁，而 worker 后续跑完 `success` 却不清 `error_hint`，导致 **34 条 success/degraded run 残留「崩溃」提示**（实证 32 success + 2 degraded）。
+- **修复**：`core/config.py` 新增 `sync_run_timeout_seconds`(默认 1800，约束 < 2100 陈旧窗口)；`services/sync.py` 在 `_sync_contents` **每页翻页前先提交心跳** + 超预算即截断（不再无界运行），success 路径**清空 `error_hint`/`error_detail`**（根治 34 条误报）；`error_detail.py` 兜底文案去掉字面 `(unknown)`（永不再显示该迷惑 token）。
+- **前端**：`apps/web/app/accounts/accounts-client.tsx` 添加账号表单新增「添加后立即同步」勾选（默认勾选），创建账号 + 保存下载默认后若勾选即 `POST /accounts/{id}/sync` 触发真实同步并按排队/失败结果提示。
+- **验证与部署**：3 后端文件 `py_compile` 通过；web `tsc --noEmit` 0 错；DB 清理 `UPDATE sync_runs SET error_hint=NULL, error_detail=NULL WHERE error_code IS NULL AND error_hint IS NOT NULL AND status IN ('success','degraded')` → 34→0；`docker compose build api worker web` 重建含修复镜像并 `up -d`（旧构建容器需重建）。repro_*.py 探针已移出仓库至 `/tmp/sio-probe-archive`。改动本地、待 commit/push（不推送、排除 .workbuddy/）。
+
+## 2026-08-03（热点情报横向扩源 + 账号同步间隔调优）
+
+- **用户双需求**：①账号监控自动更新间隔「8 小时左右即可」；②热点情报数据来源横向拓展（新增热门开源项目 + 免费可爬取网站），且数据统计支持「单/多平台 + 分类」聚合展示，展示方法参考主流系统/平台。经 AskUserQuestion 确认全选：源类型（开源社区 / 免费体育站 / 扩充媒体 RSS / 通用网页连接器）、聚合展示风格（趋势时间线 / 排行榜单 / 指数对比 / 热度矩阵）、新增源默认启用。
+
+### 需求 1：账号监控自动更新间隔 → 默认 8 小时
+- **模型**：`models/monitoring.py` 的 `Account.sync_interval_seconds` 默认值 `3600` → **`28800`**（8 小时）。
+- **Schema**：`schemas/monitoring.py` 两处 `sync_interval_seconds` 字段 `Field(default=28800, ge=3600, le=604_800)`（原为 `default=3600, ge=300`）。
+- **自适应同步**：`services/adaptive_sync.py` 常量 `ADAPTIVE_SYNC_MIN_INTERVAL_SECONDS 300→3600`、`ADAPTIVE_SYNC_DEFAULT_INTERVAL_SECONDS 3600→28800`、`MAX 86400` 不变；注释更新为「默认约 8 小时；最快 1 小时避免高频轮询压垮 worker」。
+- **测试**：`tests/test_accounts_batch_compare.py` 断言默认 `28800`、自适应 floor `3600`、自适应区间 `[3600, 86400]`。
+- **理由**：既满足「8 小时左右」节奏，又用 1 小时下限避免高频轮询再次压垮 worker（呼应前序「YouTube 大频道长同步占满池子」体感「不好使」）。
+
+### 需求 2：热点情报横向扩源（默认启用）
+- **种子源**（`services/news_seed.py`）：新增 `EXPANDED_SOURCE_EXAMPLES`（16 个源，`enabled=True`）+ `seed_expanded_news_sources(session, workspace_id)`（按 `name` 去重，`category∈{open_source, community_web, sports_media}`），在 `seed_news_source_examples` 末尾调用。
+  - 开源社区：dev.to Sports Analytics、dev.to Data Science、Hacker News Front Page、Hacker News Sports、GitHub cfbfastR releases（atom）、GitHub hoopR releases（atom）。
+  - 免费体育/社区：Reddit r/soccer、r/nba、r/sports、FBref Big 5（`provider_key=browser_news`, `config.preset=fbref`）、Transfermarkt News（`browser_news`, `preset=transfermarkt`）。
+  - 扩充媒体：AP News Sports、The Guardian Football、The Guardian NBA、NPR Sports（`source_type=json`）、Goal Football。
+- **通用网页连接器**（`providers/news/browser_news.py`）：`SITE_PRESETS` 新增 `fbref.com` / `transfermarkt.com` CSS 选择器；`_resolve_preset(url, config=None)` 支持 `config.get("preset")` 显式命名预设。绕开 `news_sources.source_type` 仅限 `('rss','atom','json','manual')` 的 CHECK 约束：浏览器抓取站点用 `source_type="rss"` + `provider_key="browser_news"` + `config.preset`。
+- **播种触发**：`seed_news_source_examples` 仅由 CLI `seed-news-sources`（`cli.py`）与测试显式调用，**不在 bootstrap 自动流程内**——部署后须手动跑一次 `python -m app.cli seed-news-sources` 让 16 个新源入库并被 `sync-all-news-sources` beat 采集；该命令自动取首个 `active` workspace，无需参数。
+
+### 需求 2：单/多平台 + 分类聚合展示
+- **后端聚合**（`schemas/trends.py` + `services/trends.py` + `routes/trends.py`）：新增 `TrendAggregateItem` / `TrendAggregate` schema；`TrendService.aggregate(workspace_id, *, platforms, category, days=30)` 从 `TrendTopic`/`TrendVideo`（均自带 `platform`+`category`）取窗口数据，产出四类：`timeline`（每天×平台累计热度）、`ranking`（热点+视频 Top25）、`index`（各平台总热度归一化 0–100）、`matrix`（平台×分类热度合计）。新增 `GET /trends/aggregate`（`platforms` 逗号分隔白名单、`category` 可选、`days` 默认 30）。
+- **前端视图**（`components/app-shell.tsx` + `app/trends/analytics/*`）：导航「洞察」组新增「情报分析」入口（`/trends/analytics`）；`analytics-client.tsx` 提供平台多选 toggle（空=全部）+ 分类下拉 + 窗口 7/30/90 天，4 模式按钮——`timeline`（recharts `LineChart`，日期透视平台→热度，参考 Google Trends）、`ranking`（Top25 列表含平台/分类 badge，参考 GitHub Trending）、`index`（recharts `BarChart` 归一化热度，参考微信·百度指数）、`matrix`（平台×分类热度表格背景色深浅，Sports-OS 自定义）。复用现有 recharts + react-query + useUrlState 模式，独立路由不破坏现有趋势页。
+- **质量门禁**：后端 5 个改动文件 `py_compile` 全过；前端 `tsc --noEmit` 0 错（修复 3 处类型：matrixRows 返回类型补 `maxHeat`、recharts `Tooltip.formatter` 签名收敛为 `(value)=>[string,string]`）。
+
+### 验证与部署（已完成）
+- **构建部署**：`docker compose build api worker web`（含前序「立即同步」）+ `api worker beat`（含本轮种子幂等修复），全部 `Built`；`up -d` 后 api/worker/web/beat 均 healthy；`alembic upgrade head` 已是最新（无待应用迁移）。
+- **种子幂等修复（关键）**：首跑 `seed-news-sources` 报 `pk_news_sources` 唯一冲突——DB 既有示例源 `ESPN Top Headlines` 等行被改名（去「（示例，默认停用）」后缀）但其确定性 UUID（`uuid5(NAMESPACE_URL, "…news-source:{ws}:{name}")`）未变，致按 `name` 去重漏判、按同 UUID 插入撞 PK。已将 `seed_news_source_examples` / `seed_expanded_news_sources` / 手动源三处去重改为**按确定性 id 判定**（`select(Source).where(Source.id == source_uuid(ws, name))`），彻底幂等；重跑 `created=19`（16 扩源 + 手动源 + 2 个此前缺失示例），不再崩溃。
+- **扩源落地（DB 实证）**：`news_sources` 总数 20→39；本轮 16 源全部 `enabled=True`——`open_source` 6（dev.to×2 / HN×2 / GitHub cfbfastR+hoopR releases atom）、`community_web` 5（Reddit r/soccer+r/nba+r/sports / FBref / Transfermarkt，后二者 `provider_key=browser_news` + `config.preset`）、`sports_media` 5（AP / The Guardian Football+NBA / NPR json / Goal）。beat 的 `sync-all-news-sources` 将按 `enabled` 采集这些新源。
+- **聚合接口实证**：`TrendService.aggregate` 直连真实数据——`trend_topics` 3207 行、`trend_videos` 38511 行；返回 `timeline`(10)/`ranking`(50)/`index`(4 平台归一化)/`matrix`(33 单元)，`platforms=[youtube,tiktok,douyin,bilibili]`、`categories` 21 类、`window_days=30`；`platforms=["youtube"],days=7` 过滤后 timeline 缩至 2，过滤生效。HTTP `GET /api/v1/trends/aggregate` 已注册（401 auth-gated，符合受保护路由预期）；前端 `/trends/analytics` 已在 `next build` 产出（路由列表含 `ƒ /trends/analytics`）。
+- **账号间隔**：`models/monitoring.py` `sync_interval_seconds` 默认 28800、`schemas` `Field(default=28800, ge=3600)`、`adaptive_sync` MIN 3600/DEFAULT 28800/MAX 86400，新账号将默认约 8 小时、最快 1 小时同步。
+- **质量门禁**：后端改动文件 `py_compile` 全过；前端 `tsc --noEmit` 0 错（构建含 `/trends/analytics`）。改动本地、待 commit/push（不推送、排除 .workbuddy/）。

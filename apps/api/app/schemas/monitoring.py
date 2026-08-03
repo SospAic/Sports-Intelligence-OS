@@ -69,7 +69,7 @@ class AccountCreate(StrictModel):
     country: str | None = Field(default=None, min_length=2, max_length=2)
     language: str | None = Field(default=None, max_length=16)
     is_verified: bool | None = None
-    sync_interval_seconds: int = Field(default=3600, ge=300, le=604_800)
+    sync_interval_seconds: int = Field(default=28800, ge=3600, le=604_800)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("external_id", "username", "display_name")
@@ -97,7 +97,7 @@ class AccountUpdate(StrictModel):
     country: str | None = Field(default=None, min_length=2, max_length=2)
     language: str | None = Field(default=None, max_length=16)
     is_active: bool | None = None
-    sync_interval_seconds: int | None = Field(default=None, ge=300, le=604_800)
+    sync_interval_seconds: int | None = Field(default=None, ge=3600, le=604_800)
     metadata: dict[str, Any] | None = None
 
     @field_validator("username", "display_name")

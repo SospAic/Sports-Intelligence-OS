@@ -402,6 +402,9 @@ class PlatformSyncExecutor:
         self.repository = SyncRepository(session)
         self.registry = registry
         self.settings = settings
+        # Set when a run hits its wall-clock budget mid-pagination so the success
+        # path can label the result as truncated rather than a full sync.
+        self._budget_exceeded = False
 
     async def _aborted(self, run: "SyncRun") -> bool:
         """Return True if the run was cancelled by a user while executing.
@@ -622,14 +625,30 @@ class PlatformSyncExecutor:
         run.error_message = (
             "指标提取失败，仅更新了账号资料" if metrics_degraded else None
         )
+        # Always clear any stale error surface on a successful run. A prior
+        # stale-recovery pass can stamp a "worker crashed / timeout" hint on a run
+        # that was still progressing and later finished fine; leaving it would
+        # make a succeeded sync display a misleading failure message.
+        run.error_hint = None
+        run.error_detail = None
         run.lock_key = None
         run.progress_percent = 100
         run.progress_stage = "completed"
-        run.progress_message = (
-            "同步完成（指标提取失败，仅更新了账号资料）"
-            if metrics_degraded
-            else "同步完成"
-        )
+        if self._budget_exceeded:
+            run.progress_message = (
+                f"同步已按时间预算截断，已入库 {run.items_processed} 条；"
+                "可在账号设置中调大抓取上限或再次手动同步以获取更多历史。"
+            )
+            run.metadata_json = {
+                **run.metadata_json,
+                "truncated_by_budget": True,
+            }
+        else:
+            run.progress_message = (
+                "同步完成（指标提取失败，仅更新了账号资料）"
+                if metrics_degraded
+                else "同步完成"
+            )
         run.items_total = run.items_processed
         account.sync_status = final_status
         account.last_synced_at = finished
@@ -853,8 +872,30 @@ class PlatformSyncExecutor:
         # ``datebefore``) from the global policy is applied by the adapter, so
         # narrowing the range is done through settings, not incremental state.
         for page_index in range(self.settings.sync_page_limit):
+            # Heartbeat BEFORE the (potentially slow) external page fetch so the
+            # stale-recovery watchdog never mislabels a run that is merely
+            # mid-page as "crashed". Without this, a single slow yt-dlp page can
+            # leave the previous heartbeat older than the stale window and trip
+            # recover_stale_runs on a run that is actually still making progress.
+            self._set_progress(
+                run,
+                30 + round(55 * page_index / self.settings.sync_page_limit),
+                "content_list",
+                f"准备获取第 {page_index + 1}/{self.settings.sync_page_limit} 页作品列表…",
+            )
+            await self.session.commit()
             if max_contents is not None and (created + updated + skipped) >= max_contents:
                 break
+            # Hard wall-clock budget: stop paging once exceeded so a single large
+            # channel cannot monopolise a worker indefinitely. The run finishes
+            # what it has ingested (success/degraded) rather than running unbounded.
+            # Kept below SIO_TASK_STALE_AFTER_SECONDS so healthy-but-slow runs are
+            # never flagged as crashed.
+            if run.started_at is not None:
+                elapsed = (datetime.now(UTC) - run.started_at).total_seconds()
+                if elapsed >= self.settings.sync_run_timeout_seconds:
+                    self._budget_exceeded = True
+                    break
             window = 50
             if max_contents is not None:
                 remaining = max_contents - (created + updated + skipped)

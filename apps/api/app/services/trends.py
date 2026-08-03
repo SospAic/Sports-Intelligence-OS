@@ -11,6 +11,7 @@ from app.schemas.trends import (
     PlatformSummary,
     ScoreComponent,
     ScoreExplanation,
+    TrendAggregateItem,
     TrendDashboard,
     TrendKeywordSnapshotRead,
     TrendTopicPage,
@@ -221,6 +222,154 @@ class TrendService:
             if len(latest) == 200:
                 break
         return latest
+
+    # ------------------------------------------------------------------
+    # Aggregation (single/multi-platform + category)
+    # ------------------------------------------------------------------
+
+    async def aggregate(
+        self,
+        workspace_id: UUID,
+        *,
+        platforms: list[str] | None = None,
+        category: str | None = None,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        """Aggregate trend topics/videos over a window for the analytics view.
+
+        Produces four representations consumed by the four display modes:
+        timeline (每天每平台累计热度), ranking (热点/视频按热度), index
+        (各平台归一化热度 0-100), matrix (平台 × 分类 热度合计).
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+
+        tstmt = select(TrendTopic).where(
+            TrendTopic.workspace_id == workspace_id,
+            TrendTopic.observed_at >= cutoff,
+        )
+        if platforms:
+            tstmt = tstmt.where(TrendTopic.platform.in_(platforms))
+        if category:
+            tstmt = tstmt.where(TrendTopic.category == category)
+        topics = (
+            await self.session.scalars(
+                tstmt.order_by(TrendTopic.observed_at.desc()).limit(20_000)
+            )
+        ).all()
+
+        vstmt = select(TrendVideo).where(
+            TrendVideo.workspace_id == workspace_id,
+            TrendVideo.observed_at >= cutoff,
+        )
+        if platforms:
+            vstmt = vstmt.where(TrendVideo.platform.in_(platforms))
+        if category:
+            vstmt = vstmt.where(TrendVideo.category == category)
+        videos = (
+            await self.session.scalars(
+                vstmt.order_by(TrendVideo.observed_at.desc()).limit(20_000)
+            )
+        ).all()
+
+        plat_set: set[str] = set()
+        cat_set: set[str] = set()
+        for t in topics:
+            plat_set.add(t.platform)
+            cat_set.add(t.category)
+        for v in videos:
+            plat_set.add(v.platform)
+            if v.category:
+                cat_set.add(v.category)
+
+        # 趋势时间线: 每天 × 平台 的累计热度
+        day_plat_heat: dict[tuple[str, str], float] = {}
+        for t in topics:
+            key = (t.observed_at.date().isoformat(), t.platform)
+            day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(t.heat_score)
+        for v in videos:
+            if v.breakout_score is not None:
+                key = (v.observed_at.date().isoformat(), v.platform)
+                day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(v.breakout_score)
+        timeline = [
+            {"date": d, "platform": p, "heat": h}
+            for (d, p), h in sorted(day_plat_heat.items())
+        ]
+
+        # 排行榜单: 热点按热度 + 视频按爆发分
+        top_topics = sorted(topics, key=lambda x: x.heat_score, reverse=True)[:25]
+        top_videos = sorted(
+            [v for v in videos if v.breakout_score is not None],
+            key=lambda x: x.breakout_score or 0,
+            reverse=True,
+        )[:25]
+        ranking: list[TrendAggregateItem] = []
+        for t in top_topics:
+            ranking.append(
+                TrendAggregateItem(
+                    platform=t.platform,
+                    category=t.category,
+                    title=t.title,
+                    kind="topic",
+                    metric=float(t.heat_score),
+                    metric_label="热度",
+                    observed_at=t.observed_at,
+                )
+            )
+        for v in top_videos:
+            ranking.append(
+                TrendAggregateItem(
+                    platform=v.platform,
+                    category=v.category or "general",
+                    title=v.title,
+                    kind="video",
+                    metric=float(v.breakout_score or 0),
+                    metric_label="爆发分",
+                    observed_at=v.observed_at,
+                )
+            )
+
+        # 指数对比: 各平台总热度归一化到 0-100
+        plat_heat: dict[str, float] = {}
+        for t in topics:
+            plat_heat[t.platform] = plat_heat.get(t.platform, 0.0) + float(t.heat_score)
+        for v in videos:
+            if v.breakout_score is not None:
+                plat_heat[v.platform] = plat_heat.get(v.platform, 0.0) + float(
+                    v.breakout_score
+                )
+        max_heat = max(plat_heat.values()) if plat_heat else 0.0
+        index = [
+            {
+                "platform": p,
+                "value": round((h / max_heat) * 100, 2) if max_heat else 0.0,
+            }
+            for p, h in sorted(plat_heat.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
+        # 热度矩阵: 平台 × 分类 热度合计
+        pc: dict[tuple[str, str], float] = {}
+        for t in topics:
+            k = (t.platform, t.category)
+            pc[k] = pc.get(k, 0.0) + float(t.heat_score)
+        for v in videos:
+            if v.breakout_score is not None and v.category:
+                k = (v.platform, v.category)
+                pc[k] = pc.get(k, 0.0) + float(v.breakout_score)
+        matrix = [
+            {"platform": p, "category": c, "heat": h}
+            for (p, c), h in sorted(pc.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
+        return {
+            "generated_at": datetime.now(UTC),
+            "window_days": days,
+            "platforms": sorted(plat_set),
+            "categories": sorted(cat_set),
+            "timeline": timeline,
+            "ranking": ranking,
+            "index": index,
+            "matrix": matrix,
+        }
 
     # ------------------------------------------------------------------
     # Explainability

@@ -22,6 +22,7 @@ from app.schemas.trends import (
     SearchQueryPage,
     SearchQueryRead,
     SearchRequest,
+    TrendAggregate,
     TrendDashboard,
     TrendKeywordSnapshotRead,
     TrendTopicPage,
@@ -99,6 +100,33 @@ async def explain_video(
 ) -> ScoreExplanation:
     """Return the score breakdown for a trend video's breakout_score."""
     return await TrendService(db).explain_video(workspace.workspace_id, video_id)
+
+
+@router.get("/aggregate", response_model=TrendAggregate)
+async def aggregate_trends(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    platforms: str | None = None,
+    category: str | None = None,
+    days: int = 30,
+) -> TrendAggregate:
+    """Single/multi-platform + category aggregation for the analytics view.
+
+    ``platforms`` is a comma-separated allow-list (e.g. ``youtube,tiktok``);
+    omit for all platforms. ``category`` optionally filters by sport/category.
+    """
+    plat_list = (
+        [p.strip() for p in platforms.split(",") if p.strip()]
+        if platforms
+        else None
+    )
+    result = await TrendService(db).aggregate(
+        workspace.workspace_id,
+        platforms=plat_list,
+        category=category,
+        days=days,
+    )
+    return TrendAggregate(**result)
 
 
 @router.get("/topics/{topic_id}/explain", response_model=ScoreExplanation)

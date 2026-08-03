@@ -101,7 +101,7 @@ class Account(TimestampMixin, Base):
     next_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    sync_interval_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=3600)
+    sync_interval_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=28800)
     sync_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="never", index=True
     )

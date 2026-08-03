@@ -71,6 +71,38 @@ class TrendVideoPage(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 聚合统计（单/多平台 + 分类）
+# ---------------------------------------------------------------------------
+
+
+class TrendAggregateItem(BaseModel):
+    platform: str
+    category: str
+    title: str
+    kind: str  # "topic" | "video"
+    metric: float
+    metric_label: str
+    observed_at: datetime
+
+
+class TrendAggregate(BaseModel):
+    """Single/multi-platform + category aggregation for the analytics view."""
+
+    generated_at: datetime
+    window_days: int
+    platforms: list[str]
+    categories: list[str]
+    # 趋势时间线: 每天每平台的累计热度
+    timeline: list[dict[str, Any]]
+    # 排行榜单: 热点/视频按热度排序
+    ranking: list[TrendAggregateItem]
+    # 指数对比: 各平台归一化热度（0-100）
+    index: list[dict[str, Any]]
+    # 热度矩阵: 平台 × 分类 热度合计
+    matrix: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
 # 关键词快照
 # ---------------------------------------------------------------------------
 

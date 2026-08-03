@@ -21,11 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.monitoring import ContentItem
 
-# Polling cadence bounds (seconds). Never poll faster than 5 minutes (to avoid
+# Polling cadence bounds (seconds). Never poll faster than once an hour (to avoid
 # hammering platforms / hitting rate limits) and never slower than once a day.
-ADAPTIVE_SYNC_MIN_INTERVAL_SECONDS = 300
+# The default is ~8 hours: account monitoring auto-updates on a relaxed cadence.
+ADAPTIVE_SYNC_MIN_INTERVAL_SECONDS = 3_600
 ADAPTIVE_SYNC_MAX_INTERVAL_SECONDS = 86_400
-ADAPTIVE_SYNC_DEFAULT_INTERVAL_SECONDS = 3_600
+ADAPTIVE_SYNC_DEFAULT_INTERVAL_SECONDS = 28_800
 ADAPTIVE_SYNC_SAMPLE_SIZE = 12
 
 # Poll at roughly a quarter of the median posting gap: frequent enough to catch
