@@ -23,6 +23,7 @@ import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
+import { contentCoverUrl } from "@/lib/media";
 import {
   AvailabilityValue,
   NeedsConditionBadge,
@@ -235,7 +236,7 @@ export function ContentsClient() {
       cell: ({ row }) => (
         <div className="flex min-w-72 items-center gap-3">
           <ExternalImage
-            src={row.original.cover_url}
+            src={contentCoverUrl(row.original)}
             alt=""
             className="h-12 w-20 rounded-md object-cover"
           />

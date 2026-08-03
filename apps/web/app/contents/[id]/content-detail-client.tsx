@@ -10,6 +10,7 @@ import { Captions, ExternalLink, FileJson, Film, Image as ImageIcon, Sparkles } 
 import Link from "next/link";
 import { useWorkspace } from "@/components/app-shell";
 import { ExternalImage } from "@/components/external-image";
+import { contentCoverUrl } from "@/lib/media";
 import { TrendChart } from "@/components/trend-chart";
 import {
   MetricCard,
@@ -171,9 +172,9 @@ export function ContentDetailClient({ id }: { id: string }) {
           </>
         }
       />
-      {data.cover_url && (
+      {contentCoverUrl(data) && (
         <ExternalImage
-          src={data.cover_url}
+          src={contentCoverUrl(data)}
           alt={data.title}
           className="max-h-72 w-full rounded-2xl border border-slate-800 object-cover"
         />

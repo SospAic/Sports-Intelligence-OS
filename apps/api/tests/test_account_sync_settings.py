@@ -237,3 +237,88 @@ async def test_executor_config_for_no_override_keeps_workspace(monkeypatch) -> N
     config = await executor._config_for(account)
     assert config["download"]["download_video"] is False
     assert config["download"]["video_format"] == "best"
+
+
+async def test_executor_config_for_forces_thumbnail_for_expiring_platforms(
+    monkeypatch,
+) -> None:
+    # TikTok / Douyin covers are short-lived signed CDN links; the executor
+    # must archive a local, permanent thumbnail even when no workspace download
+    # policy is configured at all.
+    executor = PlatformSyncExecutor.__new__(PlatformSyncExecutor)
+    executor.session = None  # type: ignore[assignment]
+    executor.registry = None  # type: ignore[assignment]
+    executor.settings = SimpleNamespace(browser_first_mode=False)
+
+    class _FakeRepo:
+        async def get_sync_settings_config(self, workspace_id):  # noqa: ANN001
+            return {"max_contents": None, "skip_existing": True, "yt_dlp": {}}
+
+    executor.repository = _FakeRepo()  # type: ignore[assignment]
+
+    class _FakeCredService:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001
+            pass
+
+        @staticmethod
+        async def resolve(workspace_id, platform_key):  # noqa: ANN001
+            return "api", {}
+
+    monkeypatch.setattr(
+        "app.services.sync.PlatformCredentialService", _FakeCredService
+    )
+
+    account = SimpleNamespace(
+        workspace_id=uuid4(),
+        platform=SimpleNamespace(key="tiktok"),
+        sync_settings_override=None,
+    )
+    config = await executor._config_for(account)
+    assert config["download"]["write_thumbnail"] is True
+    # A non-expiring platform must NOT be forced on.
+    account.platform.key = "youtube"
+    config_youtube = await executor._config_for(account)
+    assert "download" not in config_youtube
+
+
+async def test_executor_config_for_explicit_thumbnail_off_respected(
+    monkeypatch,
+) -> None:
+    # An explicit operator opt-out of thumbnail archiving must be honoured for
+    # the otherwise-forced platforms.
+    executor = PlatformSyncExecutor.__new__(PlatformSyncExecutor)
+    executor.session = None  # type: ignore[assignment]
+    executor.registry = None  # type: ignore[assignment]
+    executor.settings = SimpleNamespace(browser_first_mode=False)
+
+    class _FakeRepo:
+        async def get_sync_settings_config(self, workspace_id):  # noqa: ANN001
+            return {
+                "max_contents": None,
+                "skip_existing": True,
+                "yt_dlp": {},
+                "download": {"write_thumbnail": False},
+            }
+
+    executor.repository = _FakeRepo()  # type: ignore[assignment]
+
+    class _FakeCredService:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001
+            pass
+
+        @staticmethod
+        async def resolve(workspace_id, platform_key):  # noqa: ANN001
+            return "api", {}
+
+    monkeypatch.setattr(
+        "app.services.sync.PlatformCredentialService", _FakeCredService
+    )
+
+    account = SimpleNamespace(
+        workspace_id=uuid4(),
+        platform=SimpleNamespace(key="douyin"),
+        sync_settings_override=None,
+    )
+    config = await executor._config_for(account)
+    assert config["download"]["write_thumbnail"] is False
+

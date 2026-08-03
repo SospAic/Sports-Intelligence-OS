@@ -10,7 +10,7 @@ import type {
   ContentRecordPage,
   SyncRunPage,
 } from "@sio/shared-types";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 import {
   CheckCircle2,
@@ -52,6 +52,7 @@ import {
 } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { buildAccountDetailPaths } from "@/lib/admin-queries";
+import { contentCoverUrl } from "@/lib/media";
 import {
   metricConditionText,
   metricAvailability,
@@ -362,7 +363,19 @@ const CONTENT_SORT_OPTIONS: { key: string; label: string }[] = [
   { key: "engagement_rate", label: "互动率" },
 ];
 
-function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
+function ContentTable({
+  rows,
+  total,
+  page,
+  pageSize,
+  onPageChange,
+}: {
+  rows: ContentRecordPage["items"];
+  total: number;
+  page: number;
+  pageSize: number;
+  onPageChange: (page: number) => void;
+}) {
   const columns = useMemo<
     ColumnDef<ContentRecordPage["items"][number], unknown>[]
   >(
@@ -371,10 +384,11 @@ function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
         id: "cover",
         header: "",
         enableSorting: false,
-        cell: ({ row }) =>
-          row.original.cover_url ? (
+        cell: ({ row }) => {
+          const cover = contentCoverUrl(row.original);
+          return cover ? (
             <ExternalImage
-              src={row.original.cover_url}
+              src={cover}
               alt=""
               className="h-12 w-20 shrink-0 rounded-md object-cover ring-1 ring-slate-700"
             />
@@ -382,7 +396,8 @@ function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
             <span className="grid h-12 w-20 place-items-center rounded-md bg-slate-800 text-slate-600">
               <Film size={16} />
             </span>
-          ),
+          );
+        },
       },
       {
         id: "title",
@@ -529,9 +544,10 @@ function ContentTable({ rows }: { rows: ContentRecordPage["items"] }) {
     <DataTable
       data={rows}
       columns={columns}
-      total={rows.length}
-      page={1}
-      pageSize={rows.length || 1}
+      total={total}
+      page={page}
+      pageSize={pageSize}
+      onPageChange={onPageChange}
       empty="尚无作品数据"
     />
   );
@@ -548,12 +564,16 @@ export function AccountDetailClient({ id }: { id: string }) {
   const [from, setFrom] = useUrlState("from", "");
   const [contentSort, setContentSort] = useUrlState("csort", "published_at");
   const publishedFrom = resolvePublishedFrom(range, from || null);
+  const [contentPage, setContentPage] = useState(1);
+  const [contentPageSize, setContentPageSize] = useState(50);
   const [cancelling, setCancelling] = useState(false);
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
   const paths = buildAccountDetailPaths(id);
   const contentsPath = buildAccountDetailPaths(id, {
     sort: contentSort,
     publishedFrom,
+    page: contentPage,
+    pageSize: contentPageSize,
   }).contents;
   const account = useQuery({
     queryKey: ["account", id, workspaceId],
@@ -582,6 +602,7 @@ export function AccountDetailClient({ id }: { id: string }) {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
+    placeholderData: keepPreviousData,
   });
   const contentSummary = useQuery({
     queryKey: ["account-content-summary", id],
@@ -948,16 +969,25 @@ export function AccountDetailClient({ id }: { id: string }) {
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
             <TimeRangePicker
               value={range}
-              onChange={setRange}
+              onChange={(value) => {
+                setRange(value);
+                setContentPage(1);
+              }}
               customFrom={from}
-              onCustomFromChange={setFrom}
+              onCustomFromChange={(value) => {
+                setFrom(value);
+                setContentPage(1);
+              }}
             />
             <label className="flex items-center gap-2 text-xs text-slate-400">
               排序
               <select
                 className={`${inputClass} h-8 w-auto px-2 text-xs`}
                 value={contentSort}
-                onChange={(event) => setContentSort(event.target.value)}
+                onChange={(event) => {
+                  setContentSort(event.target.value);
+                  setContentPage(1);
+                }}
               >
                 {CONTENT_SORT_OPTIONS.map((option) => (
                   <option key={option.key} value={option.key}>
@@ -966,9 +996,32 @@ export function AccountDetailClient({ id }: { id: string }) {
                 ))}
               </select>
             </label>
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              每页
+              <select
+                className={`${inputClass} h-8 w-auto px-2 text-xs`}
+                value={contentPageSize}
+                onChange={(event) => {
+                  setContentPageSize(Number(event.target.value));
+                  setContentPage(1);
+                }}
+              >
+                {[20, 50, 100].map((size) => (
+                  <option key={size} value={size}>
+                    {size} 条
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           {contents.data?.items.length ? (
-            <ContentTable rows={contents.data.items} />
+            <ContentTable
+              rows={contents.data.items}
+              total={contents.data.total}
+              page={contentPage}
+              pageSize={contentPageSize}
+              onPageChange={setContentPage}
+            />
           ) : (
             <StatePanel
               type="empty"

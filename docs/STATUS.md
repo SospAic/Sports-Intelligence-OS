@@ -1065,3 +1065,25 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 「热门视频」（原 Section 2）下移至**倒数第二**位（赛道趋势图表之后、平台模块之前）。
 - 最终顺序：热门话题排行 → 赛道趋势图表 → 热门视频 → 各平台派生话题与视频样本。
 - 质量门禁：tsc 0 错、eslint 0 错；`docker compose build web` + `up -d web` 重新部署，`/trends` 与 `/health/ready` 均 200。
+
+## 账号监控：作品分页 + TikTok/抖音 封面失效修复（2026-08-03）
+
+用户报障：「账号监控内始终没有封面，且只有 20 条」。诊断后确认是两个独立根因，已分别修复。
+
+### 根因（诊断）
+- **「只有 20 条」＝展示层写死**：`buildAccountDetailPaths` 的 contents 分支写死 `page_size=20`，`ContentTable` 用 `total={rows.length}`、`pageSize={rows.length||1}` 且无翻页控件、不请求后续页。并非采集上限——实查各平台入库量 YouTube 6538 / Bilibili 302 / TikTok 195，均已落库。后端 `list_account_contents` 本就支持 `page`/`page_size`（≤100）。
+- **「始终没有封面」≠ 没存**：`cover_url` 填充率极高（yt 6538/6538、bili 302/302、tt 194/195）。根因是 **TikTok/抖音 封面为签名 CDN（`p16-common-sign.tiktokcdn.com/...`）短链，几小时内过期**，页面打开时已 404 → `ExternalImage.onError` 回退灰块。YouTube（`i.ytimg.com` 永久）、Bilibili（`i0.hdslb.com` 自动升 https）正常显示。
+
+### 修复 A：作品真实分页
+- `apps/web/lib/admin-queries.ts` `buildAccountDetailPaths` 新增 `page`/`pageSize` 选项。
+- `apps/web/app/accounts/[id]/account-detail-client.tsx`：`ContentTable` 接入 `total/page/pageSize/onPageChange`；作品 TAB 新增「每页 20/50/100」选择器；`contents` 查询用 `keepPreviousData` 平滑翻页；切换排序/时间范围/每页条数时在事件回调里 `setContentPage(1)`（避免在 effect 内 setState 触发 `react-hooks/set-state-in-effect`）。
+
+### 修复 B：封面本地归档（根治过期）
+- 后端 `apps/api/app/services/sync.py` `_config_for`：对 `tiktok`/`douyin` 平台 `dl.setdefault("write_thumbnail", True)`，复用既有 `_collect_media` + `/api/v1/media/{content_id}/{file}` 路由（`ContentItem.media` 白名单 + workspace 归属 + 防穿越）。显式 `write_thumbnail: false` 的运营配置仍被尊重。
+- 前端 `apps/web/lib/media.ts`：新增 `contentCoverUrl()` 助手（优先 `media.thumbnail` 走 `/api/v1/media/...`，回退 `cover_url`）；`normalizeExternalImageUrl` 放行同源 `/api/v1/media/` 相对路径。`accounts/[id]`、`contents`、`contents/[id]` 三处封面渲染改用该助手。
+- **注意**：新同步才会为 TikTok/抖音 归档缩略图；已采集的历史项需对这些账号重跑一次同步以补封面。
+
+### 验证
+- 后端：ruff 通过；`sync.py` 语法 `py_compile` 通过；新增 2 个 `_config_for` 单测（强制缩略图 / 显式关闭被尊重）。
+- 前端：`tsc --noEmit` 0 错；`eslint` 0 错（仅 `content-detail-client.tsx` 既有 `<img>` 警告，非本次引入）；`media.test.ts` 8 passed（含 `contentCoverUrl` 与 `/api/v1/media/` 透传）。
+- 部署：标准 `docker compose build api worker beat web` + `up -d` 重建并应用；web 镜像已触发 `docker compose build web` 验证编译。

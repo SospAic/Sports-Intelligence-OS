@@ -44,12 +44,14 @@ export function buildAccountDetailPaths(
     sort?: string;
     order?: SortOrder;
     publishedFrom?: string | null;
+    page?: number;
+    pageSize?: number;
   } = {},
 ) {
   const encoded = encodeURIComponent(accountId);
   const contentsParams = new URLSearchParams({
-    page: "1",
-    page_size: "20",
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 20),
     sort: options.sort ?? "published_at",
     order: options.order ?? "desc",
   });

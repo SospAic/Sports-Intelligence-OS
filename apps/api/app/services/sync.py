@@ -441,6 +441,16 @@ class PlatformSyncExecutor:
         if isinstance(override, dict) and isinstance(override.get("download"), dict):
             base_dl = dict(merged.get("download") or {})
             merged["download"] = self._deep_merge_download(base_dl, override["download"])
+        # TikTok / Douyin serve covers through short-lived signed CDN URLs that
+        # expire within hours, so the platform-provided ``cover_url`` 404s by
+        # the time the user opens the page (the "作品" tab then shows no cover).
+        # Force local thumbnail archiving for those platforms so the detail UI
+        # serves a permanent copy via the /media route. Honour an explicit
+        # operator setting; only default it on when unset.
+        if account.platform.key in ("tiktok", "douyin"):
+            dl = dict(merged.get("download") or {})
+            dl.setdefault("write_thumbnail", True)
+            merged["download"] = dl
         # Per-account fetch window (count / date range / start). These override
         # the workspace-wide ``yt_dlp`` window and works cap for this account
         # only, so an operator can e.g. sync a smaller slice of one account
