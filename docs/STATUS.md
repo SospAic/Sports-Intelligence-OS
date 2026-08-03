@@ -1137,3 +1137,15 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 
 ### 说明
 - 分页本身（每个窗口 1 次 yt-dlp 列表调用、`sync_page_limit` 默认 20 页 × 50 条）是 yt-dlp 原生分页成本，属用户接受的「yt-dlp 运行速度」，未改动；本次仅去掉了账号阶段多余的整次抓取。
+
+### 2026-08-03（续）：TikTok 同步「依然出错」根治（Olympic Motion 实证）
+
+- **现象**：用户报 TikTok 账号同步依然出错，以 Olympic Motion（`olympicsbringsustogether`，`source_provider=tiktok_browser`）为例——账号列表/详情长期显示 `degraded` + `指标提取失败，仅更新了账号资料`，且粉丝/作品/点赞数全为空。
+- **日志解读（实证）**：
+  1. 该账号最近一次 `degraded` 同步（`521f366d`，12:21）跑在修复提交 `6980d2f`（19:49）与容器重建（20:42）**之前**——属历史残留，非当前 bug。重建后容器内代码已含 `analytics_fetched` 判定，重跑即转 `success`。
+  2. **更深层真实缺口**（重跑仍存在的问题）：yt-dlp 对 TikTok 频道 JSON **不暴露 `uploader`/`channel`**，致 `resolve_account` 必然回退浏览器取资料；但 `fetch_account_analytics` 只走 yt-dlp，而 yt-dlp 同样取不到 TikTok 的 `follower/video/like` 计数 → 这些指标被**永久标记为 unavailable**，账号看板长期空白。这并非「报错」，而是「数据缺失」，与用户感知的「出错」一致。
+- **修复**（`apps/api/app/adapters/platforms/yt_dlp.py`）：对 `tiktok`/`douyin`，当 yt-dlp 取到账号对象但无任何指标时，`fetch_account_analytics` **回退到浏览器适配器**抓取公开主页的 `follower/like/video` 计数并合并回结果（与 `resolve_account` 一致的回退策略）；浏览器也失败时指标保持 `None`、经 `unavailable_metrics` 呈现，**不误报 degraded**。YouTube 仍走 yt-dlp 频道 JSON。`metadata` 新增 `analytics_source`（yt_dlp/browser）便于追溯。
+- **验证（真实环境）**：在重建后的 api/worker 容器内对 Olympic Motion 实跑同步 → `status=success`、`error_message=None`、`items_processed=30`；最新 `account_snapshots` 实测 `follower_count=61600`、`video_count=201`、`total_like_count=1300000`，`analytics_source=browser`、`analytics_fetched=true`，仅 `total_view_count` 仍 unavailable（TikTok 经浏览器亦不暴露总播放，正确呈现为「缺失」而非「失败」）。
+- **测试**：`apps/api/tests/test_yt_dlp_adapter.py` 新增 `test_tiktok_analytics_browser_fallback_captures_metrics`（断言合并 follower/total_like_count/video_count 且 `analytics_source=browser`、`analytics_fetched=True`、仅 `total_view_count` unavailable）；既有 2 个 analytics 用例改为桩 `_fallback` 保持离线。定向 32 passed、ruff 绿；全量 DB/Redis 集成测试因隔离容器无本地 `127.0.0.1:5432`/`6399` 服务而环境性失败（与本次改动无关，连接被拒为基础设施问题）。
+- **部署**：提交 `5e4378b` 并 push 至 `codex/full-repair-real-data`；`docker compose build api worker beat` 重建含修复镜像并 `up -d`（api/worker/beat healthy，`/health/ready`→200）。
+- **剩余平台限制（非代码缺陷）**：TikTok/Douyin 反爬间歇性使 yt-dlp 列表/浏览器抓取失败（如 `Unable to extract secondary user ID`、anti-bot 墙），代码已优雅回退且不崩溃；`total_view_count` 两平台均无公开来源，恒为 unavailable。
