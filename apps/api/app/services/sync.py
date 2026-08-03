@@ -287,7 +287,7 @@ class SyncService:
     async def recover_stale_runs(
         self, stale_before: datetime, dispatch_stale_before: datetime | None = None
     ) -> int:
-        """Release sync runs that are stuck holding an account lock.
+        """Release sync runs that are stuck and will never make progress.
 
         Two distinct failure modes are handled:
 
@@ -296,16 +296,21 @@ class SyncService:
           so a transient broker/worker outage does not permanently lock an account.
         * **Exceeded lease** — ``status == 'running'`` but silent longer than
           ``stale_before`` (no heartbeat). A worker may have died mid-run.
+
+        The recovery is keyed on staleness (no recent heartbeat), NOT on whether a
+        ``lock_key`` is present. Orphaned runs whose worker died *before* the lock
+        was recorded (``lock_key IS NULL``) would otherwise sit in ``running``
+        forever, making the account look permanently busy in the UI without ever
+        blocking a new sync. Those are recovered here too — the lock release is a
+        no-op when the key is already null, but the run is closed and the account
+        status is reset so the user can re-trigger the sync.
         """
 
         runs = list(
             (
                 await self.session.scalars(
                     select(SyncRun)
-                    .where(
-                        SyncRun.lock_key.is_not(None),
-                        SyncRun.status.in_(("queued", "running")),
-                    )
+                    .where(SyncRun.status.in_(("queued", "running")))
                     .limit(500)
                 )
             ).all()
@@ -351,10 +356,39 @@ class SyncService:
         run.progress_message = run.error_hint
         account = await self.repository.get_account_unscoped(run.target_id)
         if account is not None:
-            account.sync_status = "error"
-            account.last_sync_error_code = run.error_code
-            account.last_sync_error_message = run.error_message
-            account.next_sync_at = now
+            # Only reset the account's sync status if this orphaned run is still
+            # the most recent one. A newer run may have already completed
+            # (success/error) for the same account — we must not clobber that
+            # settled state with a stale recovery of an older dead run.
+            anchor = _utc(run.started_at or run.queued_at)
+            newer = await self.session.scalar(
+                select(SyncRun)
+                .where(
+                    SyncRun.workspace_id == run.workspace_id,
+                    SyncRun.target_id == run.target_id,
+                    SyncRun.id != run.id,
+                    SyncRun.status.in_(
+                        ("success", "degraded", "error", "cancelled", "skipped")
+                    ),
+                )
+                .order_by(
+                    SyncRun.started_at.desc().nullslast(),
+                    SyncRun.queued_at.desc(),
+                )
+                .limit(1)
+            )
+            newer_anchor = (
+                _utc(newer.started_at or newer.queued_at) if newer is not None else None
+            )
+            if newer is None or (
+                anchor is not None
+                and newer_anchor is not None
+                and newer_anchor < anchor
+            ):
+                account.sync_status = "error"
+                account.last_sync_error_code = run.error_code
+                account.last_sync_error_message = run.error_message
+                account.next_sync_at = now
 
 
 class PlatformSyncExecutor:

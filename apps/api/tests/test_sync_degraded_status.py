@@ -28,7 +28,7 @@ from app.models.monitoring import Account, Platform
 from app.models.sync import SyncRun
 from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
-from app.services.sync import PlatformSyncExecutor
+from app.services.sync import PlatformSyncExecutor, SyncService
 
 from .conftest import PG_ASYNC_URL, RealShapedTestAdapter
 
@@ -215,4 +215,145 @@ async def test_skeleton_adapter_sync_ends_in_error_and_releases_lock() -> None:
         assert account.sync_status == "error"
         assert run.lock_key is None, "account lock must be released after a failed sync"
         assert account.last_sync_error_code is not None
+    await engine.dispose()
+
+
+async def test_recover_stale_orphan_without_lock_key() -> None:
+    """A run stuck in 'running' whose worker died *before* recording a lock_key
+    (lock_key IS NULL) must still be recovered. Otherwise the account shows
+    'syncing' forever even though a new sync is allowed (dedup is by lock_key,
+    so an empty lock_key never blocks re-sync) — a confusing, stuck state."""
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
+    registry = _build_registry(RealShapedTestAdapter())
+
+    async with maker() as session:
+        s = session
+        s.add_all(
+            [
+                Workspace(
+                    id=workspace_id, name="ws", slug="ws", status="active",
+                    default_timezone="UTC", row_version=1,
+                ),
+                Platform(
+                    id=platform_id, key="test_platform", name="Test", category="video",
+                    enabled=True, adapter_key=ADAPTER_KEY, capabilities={},
+                ),
+                Account(
+                    id=account_id, workspace_id=workspace_id, platform_id=platform_id,
+                    external_id="external-orphan", display_name="孤儿账号",
+                    source_kind="imported", source_provider="manual",
+                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC), sync_status="syncing",
+                ),
+            ]
+        )
+        await s.commit()
+        s.add(
+            SyncRun(
+                id=run_id, workspace_id=workspace_id, target_type="account",
+                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-orphan",
+                queued_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+                started_at=datetime(2026, 7, 25, 12, 5, tzinfo=UTC),
+                status="running", lock_key=None, metadata_json={},
+            )
+        )
+        await s.commit()
+
+    settings = _build_settings()
+    async with maker() as session:
+        recovered = await SyncService(session, registry, settings).recover_stale_runs(
+            stale_before=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        assert recovered == 1
+
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        account = await session.get(Account, account_id)
+        assert run.status == "error"
+        assert run.lock_key is None
+        assert account.sync_status == "error"
+    await engine.dispose()
+
+
+async def test_recover_stale_orphan_keeps_newer_completed_status() -> None:
+    """When a stale orphan exists but a *newer* run already completed, the
+    recovery must close the orphan without clobbering the account's settled
+    status (e.g. 'success')."""
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    orphan_id = uuid4()
+    newer_id = uuid4()
+    registry = _build_registry(RealShapedTestAdapter())
+
+    async with maker() as session:
+        s = session
+        s.add_all(
+            [
+                Workspace(
+                    id=workspace_id, name="ws", slug="ws", status="active",
+                    default_timezone="UTC", row_version=1,
+                ),
+                Platform(
+                    id=platform_id, key="test_platform", name="Test", category="video",
+                    enabled=True, adapter_key=ADAPTER_KEY, capabilities={},
+                ),
+                Account(
+                    id=account_id, workspace_id=workspace_id, platform_id=platform_id,
+                    external_id="external-guard", display_name="守护账号",
+                    source_kind="imported", source_provider="manual",
+                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC), sync_status="success",
+                ),
+            ]
+        )
+        await s.commit()
+        s.add(
+            SyncRun(
+                id=orphan_id, workspace_id=workspace_id, target_type="account",
+                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-orphan2",
+                queued_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+                started_at=datetime(2026, 7, 25, 12, 5, tzinfo=UTC),
+                status="running", lock_key=None, metadata_json={},
+            )
+        )
+        s.add(
+            SyncRun(
+                id=newer_id, workspace_id=workspace_id, target_type="account",
+                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-newer",
+                queued_at=datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
+                started_at=datetime(2026, 8, 2, 12, 5, tzinfo=UTC),
+                status="success", finished_at=datetime(2026, 8, 2, 12, 30, tzinfo=UTC),
+                lock_key=None, metadata_json={},
+            )
+        )
+        await s.commit()
+
+    settings = _build_settings()
+    async with maker() as session:
+        recovered = await SyncService(session, registry, settings).recover_stale_runs(
+            stale_before=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+        assert recovered == 1  # only the orphan; the completed run is untouched
+
+    async with maker() as session:
+        orphan = await session.get(SyncRun, orphan_id)
+        newer = await session.get(SyncRun, newer_id)
+        account = await session.get(Account, account_id)
+        assert orphan.status == "error"
+        assert newer.status == "success"
+        assert account.sync_status == "success", (
+            "a newer completed run must not be clobbered by stale recovery"
+        )
     await engine.dispose()

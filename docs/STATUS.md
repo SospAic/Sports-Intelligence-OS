@@ -979,3 +979,34 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - **验证（浏览器自查 + 接口）**：`tsc` 0 错、`next build`（docker）成功、ruff 绿、全量 `pytest 132 passed`；Playwright 经 `localhost:8080` 自查：比对页复选框 **22 个**（修复前 0）、添加账号表单显「下载内容默认设置」、同步按钮弹窗显下载字段；API `GET|PATCH /accounts/{id}/sync-settings` 往返持久化成功。真实同步抽样：**YouTube 账号同步返回 850 条作品**（非 20）、`description=True`(签名)、`avatar=True`、`cover_url=True`(缩略图)——证明头像/签名/缩略图补全与分页修复生效。
 - **已知限制（TikTok/Douyin）**：yt-dlp 对 TikTok/Douyin 首页仅返回 ~20–23 条即标记结束，浏览器回退逻辑已加入但被平台反爬拦截（返回 0），故这两平台仍可能只抓到 ~20 条；属平台反爬限制，非代码缺陷。YouTube 走 yt-dlp 分页窗口化，可抓全量。
 - **部署**：`docker compose build api worker beat web` + `up -d` 已应用迁移 `0004→0005`（`sync_settings_override` 列已落库）；迁移 0005 经 api 启动 `alembic upgrade head` 自动应用。本地调试库 admin 密码曾临时改为 `Admin123!`。改动本地、待提交（不推送，排除 `.workbuddy/`）。
+
+## 同步策略重构：yt-dlp 优先 + 抓取数据设置 + 现有账号同步修复（2026-08-03）
+
+用户 4 项需求：①执行 git push ②优先独立用 yt-dlp 抓全量视频，仅在 yt-dlp 出问题/不可用时才启动浏览器兜底 ③同步弹窗新增「抓取数据设置」（单次抓取数量/抓取范围等）④现有账号前端同步仍不成功，定位并解决。
+
+### ① git push
+- 分支 `codex/full-repair-real-data` 已 `git push -u origin` 上 GitHub（PR 已生成）。本轮新增提交亦已推送。
+
+### ② yt-dlp 优先、浏览器仅作兜底（核心重构）
+- **删除 3 处"软缺口回退"**（上一轮"头像/签名缺失→浏览器补""follower 缺失→回退合并""TikTok/Douyin 窗口未满→回退浏览器"）：这些逻辑会让 yt-dlp 一旦缺字段就切浏览器，违背"优先独立用 yt-dlp"的意图。`adapters/platforms/yt_dlp.py` 的 `resolve_account`/`fetch_account_analytics`/`list_contents` 现仅在**硬失败（yt-dlp 抛 `TransientAdapterError` 或首页为空）**时回退浏览器；部分窗口（返回数 < 请求数但非空）视为目录正常结束、`next_cursor=None`，不触发切换。
+- **修复 Douyin 崩溃根因**：yt-dlp 对不支持的账号（如 Douyin）输出字面量 `null` → `json.loads("null")` 得 `None`，下游 `data.get(...)` 抛 `AttributeError: 'NoneType' object has no attribute 'get'`，整轮同步落入兜底 `except Exception` → `unexpected_sync_error`。`_run_yt_dlp_single` 现对非 dict（null/列表/标量）统一返回 `({}, err_text)`，交由调用方决定回退，不再崩溃。
+- **`list_contents` 支持账号级 `playlist_start`**：首页（offset==0）时若 `yt_cfg["playlist_start"]` 存在则跳过目录前 N 条，满足"起始位置"抓取需求。
+- **回归测试**：`test_yt_dlp_adapter.py` 改写 `test_tiktok_partial_window_falls_back_to_browser` → `test_tiktok_partial_window_does_not_fallback`（断言不回退、返回 yt-dlp 条目、`next_cursor=None`）；新增 `test_run_yt_dlp_single_null_payload_is_safe`（null 输出返回 `{}`）+ `test_resolve_account_null_profile_falls_back_gracefully`（null 档案优雅回退浏览器）。
+
+### ③ 同步弹窗新增「抓取数据设置」
+- **后端 Schema**：`schemas/monitoring.py` 新增 `AccountSyncFetchSettings`（`max_contents` 1–5000、`dateafter`、`datebefore`、`playlist_start` 1–100000，均 `Optional`）。`AccountSyncSettingsOverride` 增加 `fetch: AccountSyncFetchSettings | None`。
+- **合并到执行器**：`services/sync.py` 的 `_config_for` 在合并 `download` 后，将账号 `fetch` 覆盖深合并进 `yt_cfg`（`max_contents→max_items`、`dateafter`/`datebefore`/`playlist_start` 直接透传）。`fetch` 复用既有 `sync_settings_override` JSON 列，无需新迁移。
+- **前端**：新增 `components/fetch-settings-fields.tsx`（导出 `DEFAULT_FETCH_SETTINGS` + `FetchSettingsFields`：单次抓取数量 / 起始位置 / 抓取范围起止日期，YYYYMMDD↔YYYY-MM-DD 互转）；`shared-types` 补 `AccountSyncFetchSettings` 接口与 `AccountSyncSettingsOverride.fetch`；`sync-settings-modal.tsx` 在「下载内容选择」上方新增「抓取数据设置」分组，加载时 override→工作区默认 兜底，`PATCH` body 改为 `{ download, fetch }`。
+
+### ④ 现有账号前端同步失败：定位与修复（实证排查）
+- **根因 A（Douyin `theolympics`）**：如上 ②，`unexpected_sync_error`（`NoneType.get` 崩溃）。部署后该账号 08:14 的同步已从 `error/unexpected_sync_error` 变为 **`degraded`「指标提取失败，仅更新了账号资料」**——不再崩溃，yt-dlp 优先、缺失指标经 `unavailable_metrics` 上报，整轮正常结束。
+- **根因 B（孤儿 run 卡死）**：旧 `recover_stale_runs` 仅回收 `lock_key IS NOT NULL` 的卡死 run；部分 run 在其 worker 死前未写入 `lock_key`（空），永久停留在 `running`，UI 显示"同步中"但**按 `lock_key=account:{id}` 去重并不阻塞再同步**——属误导性卡死状态。实测发现 3 条孤儿 run（15 小时~1 天前，含 `youtube_browser`×2 与 `youtube_ytdlp`×1），已手动置为 `error`（保留账号状态，因各账号均有更新的已完成 run）。
+- **加固 reaper**：放宽 `recover_stale_runs` 为"按失活（无近期心跳）回收，不再限定 `lock_key` 非空"，使空锁孤儿也能被 beat 周期清理；`_release_stuck_run` 增加守护——仅当该孤儿是账号**最新** run 时才重置 `account.sync_status`，避免覆盖已成功的 newer run。新增 2 个回归测试（`test_recover_stale_orphan_without_lock_key` / `test_recover_stale_orphan_keeps_newer_completed_status`）。
+- **根因 C（Bilibili）**：`retry_exhausted / LoginRequiredError`，平台要求登录，属平台限制非代码缺陷，未改。
+
+### 验证
+- 后端：ruff 全绿；全量 `pytest`（Docker PG）**134 passed**；新增/改写测试均通过。
+- 前端：`tsc --noEmit` 0 错；`eslint` 0 错；`next build`（docker）成功并 `up -d`，web 容器 `Healthy`、API `/health/ready` 与 proxy `/login` 均 200。
+- 实机：Douyin `theolympics` 同步由崩溃转为 `degraded`（修复确认）；3 条孤儿 run 已清理；beat reaper 加固后可持续自愈。
+- 部署：`docker compose build api worker beat web` + `up -d` 重建 4 个服务并应用；提交 `0d6cdfe` 已推送 origin。
+- 注：本地 `next build` 因沙箱 safe-delete 对 `.next` 清理触发 50 文件批量删除确认而中断（非代码错误）；以 docker 内 `next build` 为准。
