@@ -963,6 +963,10 @@ export function TrendsClient() {
     new Set((keywords.data ?? []).map((k) => k.platform)),
   );
 
+  // Fixed platform order for the bottom "各平台派生话题与视频样本" module.
+  // Includes Douyin so it always renders a card even when no data is collected yet.
+  const OVERVIEW_PLATFORMS = PLATFORM_TABS.filter((t) => t.key !== "all");
+
   // ─── Loading State ───────────────────────────────────────────────────────
 
   const isLoading =
@@ -1110,136 +1114,6 @@ export function TrendsClient() {
       {/* Content */}
       {!isLoading && !hasError && (
         <>
-          {/* Section 1: Platform Overview Cards */}
-          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {platformStats.length > 0 ? (
-              platformStats.map((stats) => (
-                <Panel
-                  key={stats.platform}
-                  className={`relative overflow-hidden p-5 ${PLATFORM_BG[stats.platform.toLowerCase()] ?? ""}`}
-                >
-                  <div
-                    className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-b ${PLATFORM_ACCENT[stats.platform.toLowerCase()] ?? ""}`}
-                  />
-                  <div className="flex items-center gap-3">
-                    <div
-                      className={`grid size-10 place-items-center rounded-lg ${PLATFORM_BG[stats.platform.toLowerCase()] ?? "bg-slate-800"}`}
-                    >
-                      <Video
-                        size={18}
-                        className={
-                          PLATFORM_TEXT[stats.platform.toLowerCase()] ??
-                          "text-slate-400"
-                        }
-                      />
-                    </div>
-                    <h3 className="font-semibold text-white">
-                      {PLATFORM_LABELS[stats.platform.toLowerCase()] ??
-                        stats.platform}
-                    </h3>
-                  </div>
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    <div>
-                      <p className="text-xs text-slate-500">派生话题</p>
-                      <p className="mt-1 text-lg font-semibold text-white">
-                        {formatNumber(stats.topic_count)}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-slate-500">视频样本</p>
-                      <p className="mt-1 text-lg font-semibold text-white">
-                        {formatNumber(stats.video_count)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2 text-xs">
-                    <Flame size={12} className="text-amber-400" />
-                    <span className="text-slate-400">
-                      平均派生热度{" "}
-                      <span className="font-medium text-amber-300">
-                        {stats.avg_heat_score.toFixed(1)}
-                      </span>
-                    </span>
-                  </div>
-                </Panel>
-              ))
-            ) : (
-              <Panel className="col-span-full p-6 text-center text-sm text-slate-500">
-                暂无平台概览数据
-              </Panel>
-            )}
-          </section>
-
-          {/* Section 2: Trending Videos with Platform-Specific Content & Pagination */}
-          <Panel>
-            <div className="flex flex-col gap-3 border-b border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-2">
-                <Zap size={18} className="text-amber-400" />
-                <h2 className="font-semibold text-white">
-                  {platform === "all"
-                    ? "热门视频"
-                    : `${PLATFORM_LABELS[platform] ?? platform} 热门视频`}
-                </h2>
-                <span className="text-xs text-slate-500">
-                  {formatNumber(videoTotal)} 条结果
-                </span>
-              </div>
-              <SortDropdown
-                options={sortOptions}
-                value={videoSort}
-                onChange={handleSortChange}
-              />
-            </div>
-
-            {/* Video Grid - responsive: single column mobile, grid on desktop */}
-            <div className="p-4">
-              {videos.isLoading && <SkeletonRows count={6} />}
-              {!videos.isLoading && videos.isError && (
-                <StatePanel
-                  type="error"
-                  title="视频加载失败"
-                  detail={videosErrorMsg}
-                  onRetry={() => refetchVideos()}
-                />
-              )}
-              {!videos.isLoading &&
-                !videos.isError &&
-                visibleVideos.length > 0 && (
-                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-                    {visibleVideos.map((video) => (
-                      <VideoCard
-                        key={video.id}
-                        video={video}
-                        platform={platform}
-                        workspaceId={workspaceId}
-                      />
-                    ))}
-                  </div>
-                )}
-              {!videos.isLoading &&
-                !videos.isError &&
-                visibleVideos.length === 0 && (
-                  <div className="grid min-h-40 place-items-center text-sm text-slate-500">
-                    {category === "全部"
-                      ? "暂无热门视频数据"
-                      : "当前分类暂无视频样本"}
-                  </div>
-                )}
-            </div>
-
-            {/* Pagination */}
-            {!videos.isLoading && !videos.isError && videoTotal > 0 && (
-              <Pagination
-                page={videoPage}
-                pageSize={PAGE_SIZE}
-                total={videoTotal}
-                onPageChange={handleVideoPageChange}
-                onLoadMore={handleLoadMore}
-                isLoading={videosIsFetching}
-              />
-            )}
-          </Panel>
-
           {/* Section 3: Hot Topics with Pagination */}
           <Panel>
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
@@ -1532,6 +1406,140 @@ export function TrendsClient() {
                 暂无关键词趋势数据
               </div>
             )}
+          </Panel>
+
+          {/* Section 2: Trending Videos with Platform-Specific Content & Pagination — moved to second-to-last */}
+          <Panel>
+            <div className="flex flex-col gap-3 border-b border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-2">
+                <Zap size={18} className="text-amber-400" />
+                <h2 className="font-semibold text-white">
+                  {platform === "all"
+                    ? "热门视频"
+                    : `${PLATFORM_LABELS[platform] ?? platform} 热门视频`}
+                </h2>
+                <span className="text-xs text-slate-500">
+                  {formatNumber(videoTotal)} 条结果
+                </span>
+              </div>
+              <SortDropdown
+                options={sortOptions}
+                value={videoSort}
+                onChange={handleSortChange}
+              />
+            </div>
+
+            {/* Video Grid - responsive: single column mobile, grid on desktop */}
+            <div className="p-4">
+              {videos.isLoading && <SkeletonRows count={6} />}
+              {!videos.isLoading && videos.isError && (
+                <StatePanel
+                  type="error"
+                  title="视频加载失败"
+                  detail={videosErrorMsg}
+                  onRetry={() => refetchVideos()}
+                />
+              )}
+              {!videos.isLoading &&
+                !videos.isError &&
+                visibleVideos.length > 0 && (
+                  <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                    {visibleVideos.map((video) => (
+                      <VideoCard
+                        key={video.id}
+                        video={video}
+                        platform={platform}
+                        workspaceId={workspaceId}
+                      />
+                    ))}
+                  </div>
+                )}
+              {!videos.isLoading &&
+                !videos.isError &&
+                visibleVideos.length === 0 && (
+                  <div className="grid min-h-40 place-items-center text-sm text-slate-500">
+                    {category === "全部"
+                      ? "暂无热门视频数据"
+                      : "当前分类暂无视频样本"}
+                  </div>
+                )}
+            </div>
+
+            {/* Pagination */}
+            {!videos.isLoading && !videos.isError && videoTotal > 0 && (
+              <Pagination
+                page={videoPage}
+                pageSize={PAGE_SIZE}
+                total={videoTotal}
+                onPageChange={handleVideoPageChange}
+                onLoadMore={handleLoadMore}
+                isLoading={videosIsFetching}
+              />
+            )}
+          </Panel>
+
+          {/* Section 1: Platform Overview Cards — moved to bottom; always includes Douyin */}
+          <Panel className="p-5">
+            <div className="mb-4 flex items-center gap-2">
+              <BarChart3 size={18} className="text-cyan-400" />
+              <h2 className="font-semibold text-white">各平台派生话题与视频样本</h2>
+              <span className="text-xs text-slate-500">
+                按平台汇总的派生话题数与视频样本数（含抖音）
+              </span>
+            </div>
+            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {OVERVIEW_PLATFORMS.map((p) => {
+                const stats = platformStats.find(
+                  (s) => s.platform.toLowerCase() === p.key,
+                );
+                return (
+                  <Panel
+                    key={p.key}
+                    className={`relative overflow-hidden p-5 ${PLATFORM_BG[p.key] ?? ""}`}
+                  >
+                    <div
+                      className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-b ${PLATFORM_ACCENT[p.key] ?? ""}`}
+                    />
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`grid size-10 place-items-center rounded-lg ${PLATFORM_BG[p.key] ?? "bg-slate-800"}`}
+                      >
+                        <Video
+                          size={18}
+                          className={PLATFORM_TEXT[p.key] ?? "text-slate-400"}
+                        />
+                      </div>
+                      <h3 className="font-semibold text-white">{p.label}</h3>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-slate-500">派生话题</p>
+                        <p className="mt-1 text-lg font-semibold text-white">
+                          {formatNumber(stats?.topic_count ?? 0)}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">视频样本</p>
+                        <p className="mt-1 text-lg font-semibold text-white">
+                          {formatNumber(stats?.video_count ?? 0)}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-3 flex items-center gap-2 text-xs">
+                      <Flame size={12} className="text-amber-400" />
+                      <span className="text-slate-400">
+                        平均派生热度{" "}
+                        <span className="font-medium text-amber-300">
+                          {stats?.avg_heat_score != null
+                            ? stats.avg_heat_score.toFixed(1)
+                            : "0.0"}
+                        </span>
+                      </span>
+                    </div>
+                  </Panel>
+                );
+              })}
+            </section>
           </Panel>
         </>
       )}

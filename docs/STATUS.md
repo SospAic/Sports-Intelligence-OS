@@ -1010,3 +1010,58 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 实机：Douyin `theolympics` 同步由崩溃转为 `degraded`（修复确认）；3 条孤儿 run 已清理；beat reaper 加固后可持续自愈。
 - 部署：`docker compose build api worker beat web` + `up -d` 重建 4 个服务并应用；提交 `0d6cdfe` 已推送 origin。
 - 注：本地 `next build` 因沙箱 safe-delete 对 `.next` 清理触发 50 文件批量删除确认而中断（非代码错误）；以 docker 内 `next build` 为准。
+
+## 趋势中心升级为「热点情报中心」：衍生话题 + 智能搜索 TAB（2026-08-03）
+
+用户基于可行性报告（见 `docs/热点衍生话题模块可行性报告.md`）拍板：**升级现有 `/trends`「趋势中心」改名为「热点情报中心」，内部以 TAB 页分类**，而非新增独立菜单项（避免跨页割裂、复用现有路由/布局）。TAB 共三类：
+- **趋势榜单**（原有 `TrendTopic`/`TrendVideo`/`TrendKeywordSnapshot`/`CrossPlatformLink`）
+- **衍生话题**（新增）：平台已存在衍生 + AI 预测潜在热门衍生
+- **智能搜索**（新增）：自然语言描述 → 全网/指定平台检索 → 命中详情 + 配套分析
+
+### 数据模型与迁移
+- `models/trends.py` 新增 3 张表：
+  - `derivative_topics`（`DerivativeTopic`）：`source_topic_id`→`trend_topics`、`platform`、`kind`（`existing_on_platform`|`ai_predicted`）、`angle`、`title`、`description`、`predicted_heat_score`、`evidence_json`、`ai_rationale`、`status`、`confidence`、`adopted_generation_id`、`observed_at`。
+  - `search_queries`（`SearchQuery`）：`query_text`、`platform_scope`、`status`、`requested_by`、`result_count`。
+  - `search_analyses`（`SearchAnalysis`）：`search_query_id`→`search_queries`、`related_hotness`、`volume_estimate`、`sentiment`、`timeline_phases`、`platform_distribution`、`related_derivative_topics`、`summary`、`sources`、`model_used`、`raw_llm`、`results_json`。
+- 新增迁移 `alembic/versions/20260803_0006_add_derivative_search.py`（`revision="20260803_0006"`，`down_revision="20260803_0005"`），`alembic upgrade head` 由 api 启动自动应用。
+
+### 后端服务（4 个新文件）
+- `services/llm_client.py`：`call_json_llm(...)` 统一经 `SettingsService.resolve_llm_provider` + `effective_llm_defaults` 构造 `LLMRequest` 调 `provider.generate`，正则提取 JSON 响应；未配置/解析失败抛 `LLMUnavailableError`（code=`llm_unavailable`），供调用方优雅降级。
+- `services/platform_search.py`：`yt_search(platform, query, limit)` 用 `yt_dlp` 子进程 `--dump-single-json --flat-playlist` 检索；`SEARCH_BUILDERS={"youtube": ytsearch, "bilibili": bilisearch}`；**TikTok/Douyin 受反爬/登录限制，不支持搜索**，返回带说明的 note 而非报错。
+- `services/derivative_engine.py`：`DerivativeService`——`list_derivatives`、`generate_for_topic`（查热点→`yt_search`→按角度聚类真实视频写 `evidence`/`confidence`/`predicted_heat_score`，再尝试 LLM 预测潜在衍生，LLM 不可用时返回仅展示已存在的 notice）、`adopt`。角度分类 `ANGLE_KEYWORDS`（深度解析/教程教学/二创混剪/盘点榜单/幕后花絮/reaction吐槽/数据可视化/争议讨论）；热度 `_heat_from_views` 为对数刻度（`12*log10(v+1)`，0–100）。`_median` 为真中位数。
+- `services/search_analysis.py`：`SearchAnalysisService`——`list_queries`、`get_analysis`、`analyze`（按平台范围跑 `yt_search`→聚合 volume/平台分布/按月时间线→尝试 LLM 分析 `related_hotness/sentiment/timeline_phases/related_derivative_topics/summary`，LLM 不可用时以统计量兜底并写 summary），全量持久化。
+
+### API 路由（`/trends` 下新增 6 个端点）
+- `GET /derivatives`（list，支持 `topic_id`/`kind`/`page`）、`POST /derivatives/generate`（202，限 owner/admin/editor/analyst）、`POST /derivatives/{id}/adopt`
+- `POST /search`（202，analyze）、`GET /search`（list）、`GET /search/{query_id}`
+- 路由注入沿用 generation 模式：`DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)`；鉴权需 `X-Workspace-Id` + `X-CSRF-Token`。
+
+### 前端
+- `components/app-shell.tsx`：导航「趋势中心」→「热点情报中心」。
+- `app/trends/trends-client.tsx`：新增三 TAB 框架（`MODULE_TABS`），`PageHeader` 标题/eyebrow 同步改名；原趋势内容包入 `trends` TAB，新增 `derivatives`/`search` 两区。
+- `components/derivatives-panel.tsx`：选热点→拉衍生列表→`generate`（refetch）→`adopt`；`HeatBadge` 按预测热度着色；分「AI 预测的潜在热门衍生话题」「平台上已存在的衍生话题」两区。用 `useQuery` 避免 `set-state-in-effect`。
+- `components/search-panel.tsx`：自然语言输入 + 平台范围（all/youtube/bilibili，TikTok/抖音标注未接入）+ 条数 → `POST /search` → 展示 related_hotness/命中/合计播放/情绪 4 卡 + 摘要 + 平台分布 + 时间线 + 相关衍生话题 + 结果列表；`notice` 提示 AI 未生成时仅统计。
+- `e2e/navigation.spec.ts`：断言文案改为「热点情报中心」。
+
+### 平台搜索限制
+- TikTok/Douyin 在 UI 与 `platform_search` 均明确标注「暂未接入搜索（受反爬/登录限制）」；选择「全网」只检索 YouTube + Bilibili。
+
+### LLM 优雅降级
+- 两条链路均 `try/except LLMUnavailableError`：无 LLM key 时返回"仅统计量"，不返回 500，符合项目"硬失败才报错"风格。本机 `llm-experimental` 容器（g4f）可作联调。
+
+### 验证
+- 后端：ruff 全绿；新增 4 个单测（平台限制、角度分类、聚类真中位数热度、对数热度）；全量 `pytest`（Docker PG）**140 passed**（2 个非阻断 pytest-cache 权限警告）。
+- 前端：tsc 0 错；eslint 0 错（重写 useQuery 解决 `react-hooks/set-state-in-effect`）。
+- 部署：见下方「部署」。
+
+### 部署
+- `docker compose build api worker beat web` + `up -d` 重建并应用迁移 `0005→0006`（3 张新表已落库）；API `/health/ready` 与 proxy `/login` 均 200。
+- 实机两条链路：`/trends/derivatives/generate` 与 `/trends/search`（需 LLM key 出 AI 部分，否则验证降级）。
+- 提交 `fb6fac4` 已 `git push origin codex/full-repair-real-data`。
+
+### 趋势榜单页面布局调整（2026-08-03 续）
+用户要求：各平台的「派生话题 + 视频样本」模块放到页面最下方、补充抖音部分、热门视频下移至倒数第二。`apps/web/app/trends/trends-client.tsx` 的 `trends` TAB 内容区块重排：
+- 原顶部「各平台派生话题与视频样本」概览卡（Section 1）移至**最下方**，并改为按固定平台顺序 `[youtube, tiktok, douyin, bilibili]` 渲染（新增 `OVERVIEW_PLATFORMS` 常量），**始终显示抖音卡片**（无数据时计 0，落实"补充抖音部分"）。
+- 「热门视频」（原 Section 2）下移至**倒数第二**位（赛道趋势图表之后、平台模块之前）。
+- 最终顺序：热门话题排行 → 赛道趋势图表 → 热门视频 → 各平台派生话题与视频样本。
+- 质量门禁：tsc 0 错、eslint 0 错；`docker compose build web` + `up -d web` 重新部署，`/trends` 与 `/health/ready` 均 200。
