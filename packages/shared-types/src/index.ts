@@ -508,9 +508,22 @@ export interface AccountRecordPage {
   total: number;
 }
 
+export interface AccountSyncFetchSettings {
+  /** 单次抓取数量上限; null = 沿用工作区默认（全量，受分页上限约束）。 */
+  max_contents: number | null;
+  /** 抓取范围起始日期 (YYYYMMDD); null = 不限制。 */
+  dateafter: string | null;
+  /** 抓取范围截止日期 (YYYYMMDD); null = 不限制。 */
+  datebefore: string | null;
+  /** 起始位置 (1-based 偏移，跳过前 N 条); null = 从头开始。 */
+  playlist_start: number | null;
+}
+
 export interface AccountSyncSettingsOverride {
   /** Per-account download policy, deep-merged over the workspace sync settings. */
   download: YtDlpDownloadSettings;
+  /** Per-account fetch window (count / date range / start); null = inherit. */
+  fetch?: AccountSyncFetchSettings | null;
 }
 
 export interface AccountSnapshotPage {

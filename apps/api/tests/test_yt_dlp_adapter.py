@@ -2,19 +2,27 @@
 
 These tests never touch the network: yt-dlp's subprocess call is replaced with
 canned JSON, exactly mirroring the structure yt-dlp emits for each platform.
-They verify (a) field mapping into the platform contract and (b) that the
-browser-simulation adapter is wired in as a fallback when yt-dlp yields nothing.
+They verify (a) field mapping into the platform contract and (b) that yt-dlp is
+the *primary* source — the browser-simulation adapter is only ever used as a
+fallback when yt-dlp yields *nothing* (empty first page) or hard-fails. A
+partial window (fewer items than requested but non-empty) is treated as the
+end of the catalogue and does NOT trigger a browser switch.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
-from app.adapters.platforms.base import AdapterPage, PlatformContentData
+from app.adapters.platforms.base import (
+    AdapterPage,
+    PlatformAccountData,
+    PlatformContentData,
+)
 from app.adapters.platforms.yt_dlp import (
     DouyinYtDlpAdapter,
     TikTokYtDlpAdapter,
@@ -215,19 +223,98 @@ async def test_tiktok_canonical_url_and_metrics():
 
 
 @pytest.mark.asyncio
-async def test_tiktok_partial_window_falls_back_to_browser():
+async def test_tiktok_partial_window_does_not_fallback():
     adapter = TikTokYtDlpAdapter()
-    # yt-dlp returns only one of the requested 5 → triggers the browser fallback
-    # for TikTok so the catalogue is not truncated.
+    # yt-dlp returns only one of the requested 5 on the FIRST page. Under the
+    # yt-dlp-primary policy a partial (non-empty) window is treated as the end
+    # of the catalogue — NOT a trigger for the browser fallback — so the single
+    # yt-dlp item is returned directly and pagination stops.
     _bind(adapter, [TIKTOK_VIDEO], [TIKTOK_VIDEO])
     ctx = make_ctx()
-    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    fallback_calls = {"n": 0}
+
+    class _CountingFallback:
+        async def list_contents(
+            self, ctx, external_account_id, *, published_after, cursor, page_size
+        ):
+            fallback_calls["n"] += 1
+            raise AssertionError("browser fallback must not fire on a partial window")
+
+    adapter._fb = _CountingFallback()  # type: ignore[assignment]
     page = await adapter.list_contents(
         ctx, "guitar_daily", published_after=None, cursor=None, page_size=5
     )
-    # The browser fallback's item replaces the partial yt-dlp window.
-    assert page.items[0].external_id == "fallback1"
+    assert len(page.items) == 1
+    assert page.items[0].external_id == "7372846510293"
     assert page.next_cursor is None
+    assert fallback_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_yt_dlp_single_null_payload_is_safe():
+    """yt-dlp emits a literal ``null`` for profiles it cannot resolve (e.g.
+    Douyin). The single-json runner must return an empty dict — never crash
+    with ``None.get(...)`` downstream (the root cause of the prior
+    ``unexpected_sync_error`` on Douyin accounts)."""
+    adapter = TikTokYtDlpAdapter()
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"null\n", b""
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    real = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    try:
+        obj, err = await adapter._run_yt_dlp_single("https://example.com/x")
+    finally:
+        asyncio.create_subprocess_exec = real
+    assert obj == {}
+    assert err == ""
+
+
+@pytest.mark.asyncio
+async def test_resolve_account_null_profile_falls_back_gracefully():
+    """When yt-dlp cannot resolve a profile (yields ``null`` → ``{}`` after the
+    safe guard) the adapter must fall back to the browser adapter rather than
+    raise. This is the exact path that previously crashed with
+    ``'NoneType' object has no attribute 'get'`` on Douyin accounts."""
+    adapter = DouyinYtDlpAdapter()
+
+    async def _empty_single(url, *, playlist_end=1):  # type: ignore[assignment]
+        return {}, ""
+
+    adapter._run_yt_dlp_single = _empty_single  # type: ignore[assignment]
+
+    resolved = SimpleNamespace(captured=False)
+
+    class _StubFallback:
+        async def resolve_account(self, ctx, locator):
+            resolved.captured = True
+            return PlatformAccountData(
+                external_id=locator,
+                username=locator,
+                display_name="From Browser",
+                profile_url="https://example.com/" + locator,
+                avatar_url=None,
+                description=None,
+                country=None,
+                language="zh",
+                is_verified=None,
+                source_kind="live",
+                provider="stub",
+                fetched_at=ctx.observed_at,
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    acc = await adapter.resolve_account(ctx, "theolympics")
+    assert resolved.captured is True
+    assert acc.display_name == "From Browser"
 
 
 class _StubFallback:

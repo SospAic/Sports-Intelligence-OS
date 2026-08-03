@@ -420,9 +420,16 @@ class YtDlpAdapter(PlatformAdapter):
         if not out:
             return {}, err_text
         try:
-            return json.loads(out.decode("utf-8", "replace")), err_text
+            obj = json.loads(out.decode("utf-8", "replace"))
         except json.JSONDecodeError as exc:
             raise TransientAdapterError(f"yt-dlp returned invalid JSON: {exc}") from exc
+        # yt-dlp can emit ``null`` (or a list/scalar) for profiles it cannot
+        # resolve — e.g. Douyin accounts it does not support. Treat any non-dict
+        # payload as "no profile" (empty dict) so the caller can decide whether
+        # to fall back, instead of crashing on ``None.get(...)`` downstream.
+        if not isinstance(obj, dict):
+            return {}, err_text
+        return obj, err_text
 
     # -- shared field extractors -------------------------------------------
 
@@ -562,32 +569,12 @@ class YtDlpAdapter(PlatformAdapter):
             fetched_at=ctx.observed_at,
             metadata={"method": "yt_dlp", "channel_id": channel_id},
         )
-        if avatar is None or description is None:
-            try:
-                fallback = await self._fallback().resolve_account(ctx, locator)
-            except Exception as exc:  # noqa: BLE001 - best-effort merge
-                logger.debug(
-                    "yt_dlp browser fallback for %s/%s avatar/description failed: %s",
-                    self.platform,
-                    handle,
-                    exc,
-                )
-                return result
-            return PlatformAccountData(
-                external_id=result.external_id,
-                username=result.username,
-                display_name=result.display_name,
-                profile_url=result.profile_url,
-                avatar_url=avatar if avatar is not None else fallback.avatar_url,
-                description=description if description is not None else fallback.description,
-                country=result.country,
-                language=result.language,
-                is_verified=result.is_verified,
-                source_kind=result.source_kind,
-                provider=result.provider,
-                fetched_at=result.fetched_at,
-                metadata={**result.metadata, "fallback_merged": True},
-            )
+        # yt-dlp is the primary, self-sufficient source. We deliberately do NOT
+        # trigger a browser fallback just because the avatar/description are
+        # missing — those are optional fields yt-dlp may legitimately omit, and
+        # the browser path is reserved for hard failures (no display name above,
+        # or a transient yt-dlp error in list_contents). Browser is only started
+        # when yt-dlp is unavailable, never to "fill gaps".
         return result
 
     async def fetch_account(
@@ -610,29 +597,12 @@ class YtDlpAdapter(PlatformAdapter):
             "video_count": int(playlist_count) if playlist_count is not None else None,
             "total_view_count": None,
         }
-        # yt-dlp cannot always read follower count (TikTok signature, paywalled
-        # channel). When it is missing, ask the browser adapter and merge its
-        # metrics in, filling only the gaps yt-dlp left behind.
-        if metrics["follower_count"] is None:
-            try:
-                fallback = await self._fallback().fetch_account_analytics(ctx, external_id)
-            except Exception as exc:  # noqa: BLE001 - best-effort merge
-                logger.debug(
-                    "yt_dlp browser fallback for %s/%s analytics failed: %s",
-                    self.platform,
-                    handle,
-                    exc,
-                )
-                fallback = None
-            if fallback is not None:
-                fb_metrics = dict(fallback.metrics)
-                merged: dict[str, int | float | None] = {
-                    key: (value if value is not None else fb_metrics.get(key))
-                    for key, value in metrics.items()
-                }
-                for key, value in fb_metrics.items():
-                    merged.setdefault(key, value)
-                metrics = merged
+        # yt-dlp is the sole source for analytics. We intentionally do NOT fall
+        # back to the browser when individual metrics (e.g. follower count on
+        # TikTok/Douyin) are unavailable — a partial result is still valid, and
+        # the browser adapter is reserved for hard yt-dlp failures only. Missing
+        # metrics are reported via ``unavailable_metrics`` so the UI can show
+        # "相关数据缺失" instead of silently switching acquisition strategy.
 
         unavailable = tuple(k for k, v in metrics.items() if v is None)
         return PlatformMetricsData(
@@ -683,7 +653,12 @@ class YtDlpAdapter(PlatformAdapter):
             if window <= 0:
                 return AdapterPage(items=(), next_cursor=None)
 
-        playlist_start = offset + 1
+        # Default windowed pagination; on the first page honour an optional
+        # per-account ``playlist_start`` (skip the first N works of the catalogue).
+        if offset == 0 and yt_cfg.get("playlist_start"):
+            playlist_start = int(yt_cfg["playlist_start"])
+        else:
+            playlist_start = offset + 1
         playlist_end = offset + window
         try:
             entries, _ = await self._run_yt_dlp(
@@ -757,29 +732,10 @@ class YtDlpAdapter(PlatformAdapter):
         if max_items is not None and next_offset >= int(max_items):
             will_continue = False
         next_cursor = str(next_offset) if will_continue else None
-        # For TikTok / Douyin, yt-dlp frequently returns a *partial* window and
-        # then signals end-of-list (next_cursor becomes None) even though the
-        # profile holds many more works. When that happens on the first page,
-        # hand the whole job to the browser adapter so the catalogue is complete.
-        if (
-            self.platform in ("tiktok", "douyin")
-            and cursor is None
-            and fetched < window
-        ):
-            logger.warning(
-                "yt_dlp returned a partial window (%d/%d) for %s/%s; browser fallback",
-                fetched,
-                window,
-                self.platform,
-                handle,
-            )
-            return await self._fallback().list_contents(
-                ctx,
-                external_account_id,
-                published_after=published_after,
-                cursor=cursor,
-                page_size=page_size,
-            )
+        # A partial window (fetched < window) is treated as the genuine end of
+        # the catalogue — NOT a signal to switch to the browser adapter. yt-dlp
+        # is the primary acquisition path; browser is only used on a hard
+        # failure (TransientAdapterError or an empty first page above).
         return AdapterPage(items=tuple(items), next_cursor=next_cursor)
 
     async def fetch_content(

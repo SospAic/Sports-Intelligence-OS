@@ -407,6 +407,21 @@ class PlatformSyncExecutor:
         if isinstance(override, dict) and isinstance(override.get("download"), dict):
             base_dl = dict(merged.get("download") or {})
             merged["download"] = self._deep_merge_download(base_dl, override["download"])
+        # Per-account fetch window (count / date range / start). These override
+        # the workspace-wide ``yt_dlp`` window and works cap for this account
+        # only, so an operator can e.g. sync a smaller slice of one account
+        # without touching the global policy.
+        fetch = override.get("fetch") if isinstance(override, dict) else None
+        if isinstance(fetch, dict):
+            if fetch.get("max_contents") is not None:
+                yt_cfg["max_items"] = int(fetch["max_contents"])
+            if fetch.get("dateafter") is not None:
+                yt_cfg["dateafter"] = fetch["dateafter"]
+            if fetch.get("datebefore") is not None:
+                yt_cfg["datebefore"] = fetch["datebefore"]
+            if fetch.get("playlist_start") is not None:
+                yt_cfg["playlist_start"] = int(fetch["playlist_start"])
+            merged["yt_dlp"] = {**(merged.get("yt_dlp") or {}), **yt_cfg}
         media_root = os.environ.get("SIO_MEDIA_ROOT", "/workspace/media")
         merged["media_root"] = os.path.join(media_root, str(account.workspace_id))
         return merged

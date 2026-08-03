@@ -198,15 +198,35 @@ class AccountPage(BaseModel):
     total: int
 
 
+class AccountSyncFetchSettings(StrictModel):
+    """Per-account catalogue fetch window, deep-merged over the workspace
+    ``sync_settings.yt_dlp`` window and works cap by the sync executor.
+
+    Every field is optional; ``None`` means "inherit the workspace default".
+    These are the controls surfaced in the per-sync "抓取数据设置" popup.
+    """
+
+    # 单次抓取数量: hard cap on how many works a single sync ingests.
+    max_contents: int | None = Field(default=None, ge=1, le=5000)
+    # 抓取范围 (YYYYMMDD). dateafter = 起始日期, datebefore = 截止日期.
+    dateafter: str | None = None
+    datebefore: str | None = None
+    # 起始位置: 1-based offset into the catalogue (skip the first N works).
+    playlist_start: int | None = Field(default=None, ge=1, le=100_000)
+
+
 class AccountSyncSettingsOverride(StrictModel):
     """Per-account override layered on top of the workspace sync settings.
 
-    Only the ``download`` sub-object is overridable today; it is deep-merged on
-    top of the workspace's ``download`` policy by the sync executor so a single
-    account can opt into e.g. video downloads without changing the workspace.
+    Two independent sub-objects are overridable, both deep-merged over the
+    workspace policy by the sync executor:
+
+    * ``download`` — the yt-dlp artifact download policy;
+    * ``fetch`` — the catalogue fetch window (count / date range / start).
     """
 
     download: YtDlpDownloadSettings
+    fetch: AccountSyncFetchSettings | None = None
 
 
 # -- Batch operations -------------------------------------------------------

@@ -2,6 +2,7 @@
 
 import type {
   AccountRecord,
+  AccountSyncFetchSettings,
   AccountSyncSettingsOverride,
   SyncSettingsRecord,
   YtDlpDownloadSettings,
@@ -14,6 +15,10 @@ import {
   DEFAULT_DOWNLOAD_SETTINGS,
   DownloadSettingsFields,
 } from "@/components/download-settings-fields";
+import {
+  DEFAULT_FETCH_SETTINGS,
+  FetchSettingsFields,
+} from "@/components/fetch-settings-fields";
 import { useToast } from "@/components/toast";
 import { apiRequest } from "@/lib/browser-api";
 import { Badge, buttonClass, secondaryButtonClass } from "@/components/ui";
@@ -31,6 +36,8 @@ export function SyncSettingsModal({
   const { notify } = useToast();
   const [settings, setSettings] =
     useState<YtDlpDownloadSettings>(DEFAULT_DOWNLOAD_SETTINGS);
+  const [fetch, setFetch] =
+    useState<AccountSyncFetchSettings>(DEFAULT_FETCH_SETTINGS);
   const [sourceLabel, setSourceLabel] = useState<string>("默认设置");
   const [busy, setBusy] = useState(false);
 
@@ -56,8 +63,21 @@ export function SyncSettingsModal({
           setSettings(workspace.config.download);
           setSourceLabel("工作区默认设置");
         }
+        // Fetch window: prefer a saved per-account override, else fall back to
+        // the workspace sync_settings (max_contents + yt_dlp date window).
+        if (override?.fetch) {
+          setFetch(override.fetch);
+        } else if (workspace?.config) {
+          const ws = workspace.config;
+          setFetch({
+            max_contents: ws.max_contents ?? null,
+            dateafter: ws.yt_dlp?.dateafter ?? null,
+            datebefore: ws.yt_dlp?.datebefore ?? null,
+            playlist_start: null,
+          });
+        }
       } catch {
-        // fall back to DEFAULT_DOWNLOAD_SETTINGS already in state
+        // fall back to DEFAULT_* already in state
       }
     })();
     return () => {
@@ -75,7 +95,7 @@ export function SyncSettingsModal({
           method: "PATCH",
           workspaceId,
           csrf: true,
-          body: JSON.stringify({ download: settings }),
+          body: JSON.stringify({ download: settings, fetch }),
         },
       );
       await apiRequest(`/accounts/${encodeURIComponent(account.id)}/sync`, {
@@ -83,7 +103,7 @@ export function SyncSettingsModal({
         workspaceId,
         csrf: true,
       });
-      notify("同步任务已排队，本次下载内容已保存为该账号独立配置");
+      notify("同步任务已排队，本次抓取与下载设置已保存为该账号独立配置");
       await onSynced();
       onClose();
     } catch (error) {
@@ -124,12 +144,22 @@ export function SyncSettingsModal({
             <X size={18} />
           </button>
         </div>
-        <div className="flex-1 space-y-4 overflow-y-auto p-5">
+        <div className="flex-1 space-y-5 overflow-y-auto p-5">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <Badge tone="info">{sourceLabel}</Badge>
             <span>每次同步均按此设置抓取，并保存为该账号独立配置</span>
           </div>
-          <DownloadSettingsFields value={settings} onChange={setSettings} />
+          <section className="space-y-2">
+            <h3 className="text-sm font-medium text-slate-200">下载内容</h3>
+            <DownloadSettingsFields value={settings} onChange={setSettings} />
+          </section>
+          <section className="space-y-2 border-t border-slate-800 pt-4">
+            <h3 className="text-sm font-medium text-slate-200">抓取数据设置</h3>
+            <p className="text-xs text-slate-500">
+              控制本次同步抓取的条数与范围（单次数量、起始位置、时间范围）
+            </p>
+            <FetchSettingsFields value={fetch} onChange={setFetch} />
+          </section>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-5 py-4">
           <button

@@ -141,7 +141,10 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
 
             if user_data:
                 display_name = user_data.get("nickname", "")
-                avatar_url = user_data.get("avatar_larger", {}).get("url_list", [None])[0]
+                # ``avatar_larger`` may be null (not just missing) on some
+                # profiles; coalesce to {} before indexing to avoid a crash.
+                avatar_larger = user_data.get("avatar_larger") or {}
+                avatar_url = (avatar_larger.get("url_list") or [None])[0]
                 description = user_data.get("signature") or None
                 unique_id = user_data.get("unique_id") or user_data.get("short_id")
 
@@ -160,8 +163,9 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                                 user_info = val.get("user", {}).get("user", {})
                                 if user_info.get("nickname"):
                                     display_name = user_info["nickname"]
+                                    avatar_larger = user_info.get("avatar_larger") or {}
                                     avatar_url = avatar_url or (
-                                        user_info.get("avatar_larger", {}).get("url_list", [None])[0]
+                                        (avatar_larger.get("url_list") or [None])[0]
                                     )
                                     description = description or user_info.get("signature") or None
                                     unique_id = unique_id or user_info.get("unique_id")
@@ -242,7 +246,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                 if render_data:
                     for _key, val in render_data.items():
                         if isinstance(val, dict):
-                            user_info = val.get("user", {}).get("user", {})
+                            user_info = (val.get("user") or {}).get("user", {})
                             if user_info:
                                 follower_count = user_info.get("follower_count")
                                 like_count = user_info.get("total_favorited")
@@ -327,8 +331,8 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                     aweme_id = aweme.get("aweme_id", "")
                     desc = aweme.get("desc", "").strip() or f"视频 {len(items) + 1}"
                     cover = None
-                    video_info = aweme.get("video", {})
-                    cover_obj = video_info.get("cover", {})
+                    video_info = aweme.get("video") or {}
+                    cover_obj = video_info.get("cover") or {}
                     cover_urls = cover_obj.get("url_list", [])
                     if cover_urls:
                         cover = cover_urls[0]
