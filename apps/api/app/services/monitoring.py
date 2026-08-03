@@ -32,6 +32,7 @@ from app.schemas.monitoring import (
     AccountRead,
     AccountSnapshotPage,
     AccountSnapshotRead,
+    AccountSyncSettingsOverride,
     AccountSyncStatus,
     AccountUpdate,
     ContentCalendarBucket,
@@ -263,6 +264,58 @@ class MonitoringService:
         if row is None:
             raise MonitoringNotFoundError("account was not found")
         return account_read(row)
+
+    async def get_account_sync_settings(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> AccountSyncSettingsOverride | None:
+        """Return the account's per-account sync settings override, or ``None``.
+
+        ``None`` means the account inherits the workspace-wide ``sync_settings``
+        policy. The override (when present) is deep-merged over the workspace
+        config by the sync executor.
+        """
+        row = await self._repository.get_account(workspace_id, account_id)
+        if row is None:
+            raise MonitoringNotFoundError("account was not found")
+        override = row[0].sync_settings_override
+        if not override:
+            return None
+        return AccountSyncSettingsOverride.model_validate(override)
+
+    async def update_account_sync_settings(
+        self,
+        workspace_id: UUID,
+        account_id: UUID,
+        actor_id: UUID,
+        payload: AccountSyncSettingsOverride,
+    ) -> AccountSyncSettingsOverride:
+        """Persist a per-account sync settings override (replaces any existing)."""
+        row = await self._repository.get_account(workspace_id, account_id)
+        if row is None:
+            raise MonitoringNotFoundError("account was not found")
+        account = row[0]
+        account.sync_settings_override = payload.model_dump()
+        now = datetime.now(UTC)
+        self._session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="monitoring.account.sync_settings.updated",
+                resource_type="account",
+                resource_id=account.id,
+                before_hash=None,
+                after_hash=None,
+                change_summary_json={"download": payload.model_dump()["download"]},
+                reason="per-account sync settings override update",
+                ip_hash=None,
+                trace_id=uuid4(),
+                created_at=now,
+            )
+        )
+        await self._session.commit()
+        return payload
 
     async def update_account(
         self,

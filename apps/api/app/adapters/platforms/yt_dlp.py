@@ -536,20 +536,24 @@ class YtDlpAdapter(PlatformAdapter):
             )
             return await self._fallback().resolve_account(ctx, locator)
 
+        # yt-dlp returned a usable profile. It often omits the avatar / bio, so
+        # when those are missing we re-query the browser adapter purely to fill
+        # them in — keeping the more precise yt-dlp display name and channel id.
         avatar = self._extract_thumbnail(data)
+        description = data.get("description")
         channel_id = data.get("channel_id") or data.get("uploader_id")
         language = (
             "en"
             if self.platform == "youtube"
             else ("zh" if self.platform == "douyin" else None)
         )
-        return PlatformAccountData(
+        result = PlatformAccountData(
             external_id=handle,
             username=handle,
             display_name=display,
             profile_url=self._account_url(handle),
             avatar_url=avatar,
-            description=data.get("description"),
+            description=description,
             country=None,
             language=language,
             is_verified=None,
@@ -558,6 +562,33 @@ class YtDlpAdapter(PlatformAdapter):
             fetched_at=ctx.observed_at,
             metadata={"method": "yt_dlp", "channel_id": channel_id},
         )
+        if avatar is None or description is None:
+            try:
+                fallback = await self._fallback().resolve_account(ctx, locator)
+            except Exception as exc:  # noqa: BLE001 - best-effort merge
+                logger.debug(
+                    "yt_dlp browser fallback for %s/%s avatar/description failed: %s",
+                    self.platform,
+                    handle,
+                    exc,
+                )
+                return result
+            return PlatformAccountData(
+                external_id=result.external_id,
+                username=result.username,
+                display_name=result.display_name,
+                profile_url=result.profile_url,
+                avatar_url=avatar if avatar is not None else fallback.avatar_url,
+                description=description if description is not None else fallback.description,
+                country=result.country,
+                language=result.language,
+                is_verified=result.is_verified,
+                source_kind=result.source_kind,
+                provider=result.provider,
+                fetched_at=result.fetched_at,
+                metadata={**result.metadata, "fallback_merged": True},
+            )
+        return result
 
     async def fetch_account(
         self, ctx: AdapterCallContext, external_id: str
@@ -573,20 +604,36 @@ class YtDlpAdapter(PlatformAdapter):
         except TransientAdapterError:
             data = {}
         follower = data.get("channel_follower_count") or data.get("subscriber_count")
-        if follower is None:
-            logger.info(
-                "yt_dlp follower extraction failed for %s/%s; using browser fallback",
-                self.platform,
-                handle,
-            )
-            return await self._fallback().fetch_account_analytics(ctx, external_id)
-
         playlist_count = data.get("playlist_count")
         metrics: dict[str, int | None] = {
-            "follower_count": int(follower),
+            "follower_count": int(follower) if follower is not None else None,
             "video_count": int(playlist_count) if playlist_count is not None else None,
             "total_view_count": None,
         }
+        # yt-dlp cannot always read follower count (TikTok signature, paywalled
+        # channel). When it is missing, ask the browser adapter and merge its
+        # metrics in, filling only the gaps yt-dlp left behind.
+        if metrics["follower_count"] is None:
+            try:
+                fallback = await self._fallback().fetch_account_analytics(ctx, external_id)
+            except Exception as exc:  # noqa: BLE001 - best-effort merge
+                logger.debug(
+                    "yt_dlp browser fallback for %s/%s analytics failed: %s",
+                    self.platform,
+                    handle,
+                    exc,
+                )
+                fallback = None
+            if fallback is not None:
+                fb_metrics = dict(fallback.metrics)
+                merged: dict[str, int | float | None] = {
+                    key: (value if value is not None else fb_metrics.get(key))
+                    for key, value in metrics.items()
+                }
+                for key, value in fb_metrics.items():
+                    merged.setdefault(key, value)
+                metrics = merged
+
         unavailable = tuple(k for k, v in metrics.items() if v is None)
         return PlatformMetricsData(
             external_id=handle,
@@ -710,6 +757,29 @@ class YtDlpAdapter(PlatformAdapter):
         if max_items is not None and next_offset >= int(max_items):
             will_continue = False
         next_cursor = str(next_offset) if will_continue else None
+        # For TikTok / Douyin, yt-dlp frequently returns a *partial* window and
+        # then signals end-of-list (next_cursor becomes None) even though the
+        # profile holds many more works. When that happens on the first page,
+        # hand the whole job to the browser adapter so the catalogue is complete.
+        if (
+            self.platform in ("tiktok", "douyin")
+            and cursor is None
+            and fetched < window
+        ):
+            logger.warning(
+                "yt_dlp returned a partial window (%d/%d) for %s/%s; browser fallback",
+                fetched,
+                window,
+                self.platform,
+                handle,
+            )
+            return await self._fallback().list_contents(
+                ctx,
+                external_account_id,
+                published_after=published_after,
+                cursor=cursor,
+                page_size=page_size,
+            )
         return AdapterPage(items=tuple(items), next_cursor=next_cursor)
 
     async def fetch_content(

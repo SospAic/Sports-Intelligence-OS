@@ -3,9 +3,11 @@
 import type {
   AccountRecord,
   AccountRecordPage,
+  AccountSyncSettingsOverride,
   PlatformRecord,
   SyncRunPage,
   SyncRunRecord,
+  YtDlpDownloadSettings,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
 import type { ColumnDef, VisibilityState } from "@tanstack/react-table";
@@ -27,7 +29,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
+import {
+  DEFAULT_DOWNLOAD_SETTINGS,
+  DownloadSettingsFields,
+} from "@/components/download-settings-fields";
 import { ExternalImage } from "@/components/external-image";
+import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import { useToast } from "@/components/toast";
 import {
   Badge,
@@ -103,6 +110,27 @@ function readLocalAccountView(): AccountViewPrefs {
 function writeLocalAccountView(prefs: AccountViewPrefs) {
   try {
     window.localStorage.setItem("sio-account-view", JSON.stringify(prefs));
+  } catch {
+    // localStorage unavailable; ignore
+  }
+}
+
+const DOWNLOAD_DEFAULTS_KEY = "sio-account-download-defaults";
+
+function readLocalDownloadDefaults(): YtDlpDownloadSettings {
+  if (typeof window === "undefined") return DEFAULT_DOWNLOAD_SETTINGS;
+  try {
+    const raw = window.localStorage.getItem(DOWNLOAD_DEFAULTS_KEY);
+    if (!raw) return DEFAULT_DOWNLOAD_SETTINGS;
+    return { ...DEFAULT_DOWNLOAD_SETTINGS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_DOWNLOAD_SETTINGS;
+  }
+}
+
+function writeLocalDownloadDefaults(d: YtDlpDownloadSettings) {
+  try {
+    window.localStorage.setItem(DOWNLOAD_DEFAULTS_KEY, JSON.stringify(d));
   } catch {
     // localStorage unavailable; ignore
   }
@@ -437,6 +465,9 @@ export function AccountsClient() {
   const [drawerAccount, setDrawerAccount] = useState<AccountRecord | null>(
     null,
   );
+  const [downloadDefaults, setDownloadDefaults] =
+    useState<YtDlpDownloadSettings>(() => readLocalDownloadDefaults());
+  const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
   const serverPrefsApplied = useRef(false);
 
   const serverPrefs = useQuery({
@@ -554,7 +585,7 @@ export function AccountsClient() {
     if (!workspaceId) return;
     setPending(true);
     try {
-      await apiRequest<AccountRecord>("/accounts", {
+      const created = await apiRequest<AccountRecord>("/accounts", {
         method: "POST",
         workspaceId,
         csrf: true,
@@ -564,7 +595,19 @@ export function AccountsClient() {
           metadata: {},
         }),
       });
-      notify("账号已添加；真实数据将在同步成功后出现。");
+      // Persist the chosen download policy as this account's per-account sync
+      // override (requirement 1) and remember it locally for the next add.
+      await apiRequest<AccountSyncSettingsOverride>(
+        `/accounts/${encodeURIComponent(created.id)}/sync-settings`,
+        {
+          method: "PATCH",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({ download: downloadDefaults }),
+        },
+      ).catch(() => null);
+      writeLocalDownloadDefaults(downloadDefaults);
+      notify("账号已添加；默认下载设置已保存，真实数据将在同步成功后出现。");
       setCreating(false);
       await client.invalidateQueries({ queryKey: ["accounts"] });
     } catch (error) {
@@ -573,32 +616,9 @@ export function AccountsClient() {
       setPending(false);
     }
   }
-  async function sync(id: string) {
-    if (!workspaceId) return;
-    try {
-      await apiRequest(`/accounts/${id}/sync`, {
-        method: "POST",
-        workspaceId,
-        csrf: true,
-      });
-      notify("同步任务已进入队列");
-      await client.invalidateQueries({ queryKey: ["accounts"] });
-    } catch (error) {
-      if (error instanceof Error) {
-        // 422 = skeleton adapter or disabled account; give a friendlier message
-        const apiErr = error as { status?: number; code?: string };
-        if (apiErr.status === 422 && apiErr.code === "sync_validation_error") {
-          notify(
-            "该账号当前无法同步，可能适配器尚未实现或账号已停用。请检查平台配置后重试。",
-            "error",
-          );
-          return;
-        }
-        notify(error.message, "error");
-      } else {
-        notify("同步失败", "error");
-      }
-    }
+  function openSync(account: AccountRecord) {
+    if (!canEdit || !account.is_active) return;
+    setSyncTarget(account);
   }
   const columns: ColumnDef<AccountRecord, unknown>[] = [
     {
@@ -711,7 +731,7 @@ export function AccountsClient() {
               disabled={
                 !canEdit || !row.original.is_active || isSyncing || isSkeleton
               }
-              onClick={() => sync(row.original.id)}
+              onClick={() => openSync(row.original)}
               title={
                 !row.original.is_active
                   ? "账号已停用"
@@ -904,6 +924,20 @@ export function AccountsClient() {
             className={inputClass}
             placeholder="显示名称（可选，同步后自动获取）"
           />
+          <div className="space-y-3 md:col-span-2 xl:col-span-3">
+            <div>
+              <h3 className="text-sm font-medium text-slate-200">
+                下载内容默认设置
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                为该账号设置默认的同步下载内容；保存后也会被记录，下次添加账号时自动沿用。
+              </p>
+            </div>
+            <DownloadSettingsFields
+              value={downloadDefaults}
+              onChange={setDownloadDefaults}
+            />
+          </div>
           <div className="flex gap-2">
             <button disabled={pending} className={buttonClass}>
               {pending ? "保存中…" : "保存账号"}
@@ -952,6 +986,18 @@ export function AccountsClient() {
         <SyncDetailDrawer
           account={drawerAccount}
           onClose={() => setDrawerAccount(null)}
+        />
+      )}
+      {syncTarget && (
+        <SyncSettingsModal
+          account={syncTarget}
+          onClose={() => setSyncTarget(null)}
+          onSynced={async () => {
+            await client.invalidateQueries({ queryKey: ["accounts"] });
+            await client.invalidateQueries({
+              queryKey: ["account-latest-run", syncTarget.id],
+            });
+          }}
         />
       )}
     </main>

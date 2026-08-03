@@ -69,7 +69,7 @@ export function AccountCompare() {
   const accounts = useQuery({
     queryKey: ["accounts-all", workspaceId],
     queryFn: () =>
-      apiRequest<{ items: AccountRecord[] }>("/accounts?page_size=200", {
+      apiRequest<{ items: AccountRecord[] }>("/accounts?page_size=100", {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),

@@ -302,7 +302,9 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             url = TIKTOK_PROFILE_URL.format(username=username)
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
-            await self._scroll_page(page, times=3)
+            # Scroll further than the default (10×) so TikTok lazily renders more
+            # of the video grid before we scrape the anchors.
+            await self._scroll_page(page, times=10)
 
             # The video grid renders as anchors whose href contains "/video/".
             # (Legacy selectors such as [data-e2e='user-post-item'] are no longer

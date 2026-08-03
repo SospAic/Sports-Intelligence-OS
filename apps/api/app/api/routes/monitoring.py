@@ -29,6 +29,7 @@ from app.schemas.monitoring import (
     AccountRead,
     AccountSnapshotPage,
     AccountSort,
+    AccountSyncSettingsOverride,
     AccountUpdate,
     ContentCalendarResponse,
     ContentCreate,
@@ -262,6 +263,37 @@ async def get_account(
     account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
 ) -> AccountRead:
     return await MonitoringService(db).get_account(workspace.workspace_id, account_id)
+
+
+@router.get(
+    "/accounts/{account_id}/sync-settings",
+    response_model=AccountSyncSettingsOverride | None,
+)
+async def get_account_sync_settings(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> AccountSyncSettingsOverride | None:
+    """Return the account's per-account sync settings override (None = inherit)."""
+    return await MonitoringService(db).get_account_sync_settings(
+        workspace.workspace_id, account_id
+    )
+
+
+@router.patch(
+    "/accounts/{account_id}/sync-settings",
+    response_model=AccountSyncSettingsOverride,
+)
+async def update_account_sync_settings(
+    account_id: UUID,
+    payload: AccountSyncSettingsOverride,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> AccountSyncSettingsOverride:
+    """Set a per-account sync settings override layered on the workspace policy."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await MonitoringService(db).update_account_sync_settings(
+        workspace.workspace_id, account_id, auth.user.id, payload
+    )
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountRead)

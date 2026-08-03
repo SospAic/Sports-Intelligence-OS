@@ -498,6 +498,7 @@ export interface AccountRecord extends MonitoringAccountSummary {
   updated_at: string;
   latest_snapshot: AccountSnapshot | null;
   follower_growth_24h: number | null;
+  sync_settings_override?: AccountSyncSettingsOverride | null;
 }
 
 export interface AccountRecordPage {
@@ -505,6 +506,11 @@ export interface AccountRecordPage {
   page: number;
   page_size: number;
   total: number;
+}
+
+export interface AccountSyncSettingsOverride {
+  /** Per-account download policy, deep-merged over the workspace sync settings. */
+  download: YtDlpDownloadSettings;
 }
 
 export interface AccountSnapshotPage {

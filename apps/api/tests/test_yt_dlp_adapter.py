@@ -201,8 +201,10 @@ async def test_tiktok_canonical_url_and_metrics():
     adapter = TikTokYtDlpAdapter()
     _bind(adapter, [TIKTOK_VIDEO], [TIKTOK_VIDEO])
     ctx = make_ctx()
+    # page_size == returned count → full window, so the yt-dlp result is used
+    # directly (the tiktok/douyin partial-window browser fallback stays idle).
     page = await adapter.list_contents(
-        ctx, "guitar_daily", published_after=None, cursor=None, page_size=5
+        ctx, "guitar_daily", published_after=None, cursor=None, page_size=1
     )
     content = page.items[0]
     assert content.external_id == "7372846510293"
@@ -210,6 +212,22 @@ async def test_tiktok_canonical_url_and_metrics():
     analytics = await adapter.fetch_content_analytics(ctx, [content.external_id])
     assert analytics[0].metrics["like_count"] == 98765
     assert analytics[0].metrics["share_count"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_tiktok_partial_window_falls_back_to_browser():
+    adapter = TikTokYtDlpAdapter()
+    # yt-dlp returns only one of the requested 5 → triggers the browser fallback
+    # for TikTok so the catalogue is not truncated.
+    _bind(adapter, [TIKTOK_VIDEO], [TIKTOK_VIDEO])
+    ctx = make_ctx()
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    page = await adapter.list_contents(
+        ctx, "guitar_daily", published_after=None, cursor=None, page_size=5
+    )
+    # The browser fallback's item replaces the partial yt-dlp window.
+    assert page.items[0].external_id == "fallback1"
+    assert page.next_cursor is None
 
 
 class _StubFallback:

@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+from app.schemas.settings import YtDlpDownloadSettings
+
 SourceKind = Literal["live", "imported"]
 AccountSyncStatus = Literal[
     "never", "queued", "syncing", "success", "degraded", "error", "disabled", "cancelled"
@@ -194,6 +196,17 @@ class AccountPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class AccountSyncSettingsOverride(StrictModel):
+    """Per-account override layered on top of the workspace sync settings.
+
+    Only the ``download`` sub-object is overridable today; it is deep-merged on
+    top of the workspace's ``download`` policy by the sync executor so a single
+    account can opt into e.g. video downloads without changing the workspace.
+    """
+
+    download: YtDlpDownloadSettings
 
 
 # -- Batch operations -------------------------------------------------------

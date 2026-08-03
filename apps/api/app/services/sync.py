@@ -400,9 +400,36 @@ class PlatformSyncExecutor:
         # artifacts (thumbnail / subtitles / video) during the sync.
         if sync_cfg.get("download"):
             merged["download"] = sync_cfg["download"]
+        # Per-account override: deep-merge the account's ``download`` on top of
+        # the workspace policy so a single account can opt into e.g. video
+        # downloads without changing the workspace-wide settings.
+        override = account.sync_settings_override
+        if isinstance(override, dict) and isinstance(override.get("download"), dict):
+            base_dl = dict(merged.get("download") or {})
+            merged["download"] = self._deep_merge_download(base_dl, override["download"])
         media_root = os.environ.get("SIO_MEDIA_ROOT", "/workspace/media")
         merged["media_root"] = os.path.join(media_root, str(account.workspace_id))
         return merged
+
+    @staticmethod
+    def _deep_merge_download(
+        base: Mapping[str, Any], override: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Recursively merge ``override`` onto ``base``.
+
+        ``override`` values win on conflict; nested dicts are merged rather than
+        replaced so a partial override does not wipe sibling keys.
+        """
+
+        result: dict[str, Any] = dict(base)
+        for key, value in override.items():
+            if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
+                result[key] = PlatformSyncExecutor._deep_merge_download(
+                    result[key], value  # type: ignore[arg-type]
+                )
+            else:
+                result[key] = value
+        return result
 
     async def execute_account_run(self, run_id: UUID) -> None:
         run = await self.repository.get_run(run_id)

@@ -114,6 +114,13 @@ class Account(TimestampMixin, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Per-account override of the workspace-wide sync settings. ``None`` means
+    # the account inherits the workspace policy. When set, it carries the same
+    # shape as a subset of ``SyncSettingsConfig`` (currently ``{"download": {...}}``)
+    # and is deep-merged on top of the workspace config by the sync executor.
+    sync_settings_override: Mapped[dict[str, Any] | None] = mapped_column(
+        "sync_settings_override", JSON, nullable=True
+    )
 
     workspace: Mapped[Workspace] = relationship()
     platform: Mapped[Platform] = relationship(back_populates="accounts")

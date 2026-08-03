@@ -29,6 +29,7 @@ import { useMemo, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
+import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import {
   NeedsConditionBadge,
   TrafficSourceBreakdown,
@@ -548,6 +549,7 @@ export function AccountDetailClient({ id }: { id: string }) {
   const [contentSort, setContentSort] = useUrlState("csort", "published_at");
   const publishedFrom = resolvePublishedFrom(range, from || null);
   const [cancelling, setCancelling] = useState(false);
+  const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
   const paths = buildAccountDetailPaths(id);
   const contentsPath = buildAccountDetailPaths(id, {
     sort: contentSort,
@@ -622,33 +624,6 @@ export function AccountDetailClient({ id }: { id: string }) {
       ),
     enabled: Boolean(workspaceId),
   });
-  async function sync() {
-    if (!workspaceId) return;
-    try {
-      await apiRequest(`/accounts/${id}/sync`, {
-        method: "POST",
-        workspaceId,
-        csrf: true,
-      });
-      notify("同步任务已排队");
-      await qc.invalidateQueries({ queryKey: ["account"] });
-      await qc.invalidateQueries({ queryKey: ["account-runs", id] });
-    } catch (error) {
-      if (error instanceof Error) {
-        const apiErr = error as { status?: number; code?: string };
-        if (apiErr.status === 422 && apiErr.code === "sync_validation_error") {
-          notify(
-            "该账号当前无法同步，可能适配器尚未实现或账号已停用。请检查平台配置后重试。",
-            "error",
-          );
-          return;
-        }
-        notify(error.message, "error");
-      } else {
-        notify("同步失败", "error");
-      }
-    }
-  }
   async function cancelSync(runId?: string) {
     if (!workspaceId || !runId) return;
     setCancelling(true);
@@ -798,7 +773,7 @@ export function AccountDetailClient({ id }: { id: string }) {
                   <>
                     <button
                       className={buttonClass}
-                      onClick={sync}
+                      onClick={() => setSyncTarget(item)}
                       disabled={!item.is_active}
                     >
                       <RefreshCw size={15} />
@@ -1010,7 +985,10 @@ export function AccountDetailClient({ id }: { id: string }) {
                       title="终止正在进行的同步任务"
                     />
                   ) : (
-                    <button className={buttonClass} onClick={sync}>
+                    <button
+                      className={buttonClass}
+                      onClick={() => setSyncTarget(item)}
+                    >
                       <RefreshCw size={15} />
                       立即同步
                     </button>
@@ -1341,6 +1319,17 @@ export function AccountDetailClient({ id }: { id: string }) {
             保存设置
           </button>
         </form>
+      )}
+      {syncTarget && (
+        <SyncSettingsModal
+          account={syncTarget}
+          onClose={() => setSyncTarget(null)}
+          onSynced={async () => {
+            await qc.invalidateQueries({ queryKey: ["account", id] });
+            await qc.invalidateQueries({ queryKey: ["account-runs", id] });
+            await qc.invalidateQueries({ queryKey: ["account-contents", id] });
+          }}
+        />
       )}
     </main>
   );
