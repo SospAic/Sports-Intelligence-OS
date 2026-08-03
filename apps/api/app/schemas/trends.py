@@ -169,3 +169,109 @@ class CrossPlatformLinkPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+# ---------------------------------------------------------------------------
+# 衍生话题 (Derivative Topics)
+# ---------------------------------------------------------------------------
+
+
+class DerivativeTopicRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    workspace_id: UUID
+    source_topic_id: UUID | None = None
+    platform: str
+    kind: str
+    angle: str | None = None
+    title: str
+    description: str | None = None
+    predicted_heat_score: float | None = None
+    evidence: dict[str, Any] = Field(
+        validation_alias="evidence_json", default_factory=dict
+    )
+    ai_rationale: str | None = None
+    status: str
+    confidence: float
+    adopted_generation_id: UUID | None = None
+    observed_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class DerivativeTopicPage(BaseModel):
+    items: list[DerivativeTopicRead]
+    page: int
+    page_size: int
+    total: int
+
+
+class DerivativeGenerateRequest(BaseModel):
+    topic_id: UUID
+
+
+class DerivativeGenerateResponse(BaseModel):
+    status: str
+    notice: str | None = None
+    items: list[DerivativeTopicRead] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# 智能搜索 (Smart Search Analysis)
+# ---------------------------------------------------------------------------
+
+
+class SearchRequest(BaseModel):
+    query_text: str
+    platform: str = "all"
+    limit: int = 10
+
+
+class SearchQueryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    workspace_id: UUID
+    query_text: str
+    platform_scope: str
+    status: str
+    requested_by: UUID | None = None
+    result_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class SearchAnalysisRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    workspace_id: UUID
+    search_query_id: UUID
+    related_hotness: float | None = None
+    volume_estimate: dict[str, Any] | None = None
+    sentiment: str | None = None
+    timeline_phases: list[Any] | None = None
+    platform_distribution: dict[str, Any] | None = None
+    related_derivative_topics: list[Any] | None = None
+    summary: str | None = None
+    sources: list[Any] | None = None
+    model_used: str | None = None
+    raw_llm: dict[str, Any] | None = None
+    results_json: list[Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SearchQueryPage(BaseModel):
+    items: list[SearchQueryRead]
+    page: int
+    page_size: int
+    total: int
+
+
+class SearchAnalysisResponse(BaseModel):
+    query: SearchQueryRead
+    analysis: SearchAnalysisRead
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    notice: str | None = None

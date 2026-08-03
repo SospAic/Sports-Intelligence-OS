@@ -73,7 +73,7 @@ test.describe("Keyboard navigation", () => {
 
   test("Enter activates focused navigation link", async ({ page }) => {
     const nav = page.getByRole("navigation", { name: "主导航" });
-    const trendsLink = nav.getByRole("link", { name: "趋势中心" });
+    const trendsLink = nav.getByRole("link", { name: "热点情报中心" });
 
     await trendsLink.focus();
     await page.keyboard.press("Enter");

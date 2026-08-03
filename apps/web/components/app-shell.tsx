@@ -114,7 +114,7 @@ const navigationGroups: ReadonlyArray<{
     label: "洞察",
     items: [
       ["仪表盘", "/dashboard", Gauge],
-      ["趋势中心", "/trends", TrendingUp],
+      ["热点情报中心", "/trends", TrendingUp],
       ["账号监控", "/accounts", UsersRound],
       ["作品数据", "/contents", Video],
       ["新闻热点", "/news", Newspaper],

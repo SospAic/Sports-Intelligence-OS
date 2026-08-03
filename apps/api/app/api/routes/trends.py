@@ -1,7 +1,7 @@
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api.dependencies import (
     CsrfProtectedAuth,
@@ -12,12 +12,23 @@ from app.api.dependencies import (
 from app.schemas.trends import (
     CrossPlatformLinkPage,
     CrossPlatformLinkRead,
+    DerivativeGenerateRequest,
+    DerivativeGenerateResponse,
+    DerivativeTopicPage,
+    DerivativeTopicRead,
     ScoreExplanation,
+    SearchAnalysisRead,
+    SearchAnalysisResponse,
+    SearchQueryPage,
+    SearchQueryRead,
+    SearchRequest,
     TrendDashboard,
     TrendKeywordSnapshotRead,
     TrendTopicPage,
     TrendVideoPage,
 )
+from app.services.derivative_engine import DerivativeService
+from app.services.search_analysis import SearchAnalysisService
 from app.services.trends import TrendService
 
 router = APIRouter(prefix="/trends", tags=["trends"])
@@ -200,3 +211,136 @@ async def reject_cross_platform_link(
     svc = CrossPlatformClusterService(db)
     link = await svc.reject_link(workspace.workspace_id, link_id)
     return CrossPlatformLinkRead.model_validate(link)
+
+
+# ---------------------------------------------------------------------------
+# 衍生话题 (Derivative Topics)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/derivatives", response_model=DerivativeTopicPage)
+async def list_derivatives(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+    topic_id: UUID | None = None,
+    kind: str | None = None,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> DerivativeTopicPage:
+    """List derivative topics (existing-on-platform + AI-predicted)."""
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    items, total = await svc.list_derivatives(
+        workspace.workspace_id, topic_id=topic_id, kind=kind, page=page, page_size=page_size
+    )
+    return DerivativeTopicPage(
+        items=[DerivativeTopicRead.model_validate(i) for i in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.post("/derivatives/generate", response_model=DerivativeGenerateResponse, status_code=202)
+async def generate_derivatives(
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+    payload: DerivativeGenerateRequest,
+) -> DerivativeGenerateResponse:
+    """Cluster existing derivatives + generate AI-predicted angles for a topic."""
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    items, notice = await svc.generate_for_topic(
+        workspace.workspace_id, payload.topic_id, workspace.auth.user.id
+    )
+    return DerivativeGenerateResponse(
+        status="completed",
+        notice=notice,
+        items=[DerivativeTopicRead.model_validate(i) for i in items],
+    )
+
+
+@router.post("/derivatives/{derivative_id}/adopt", response_model=DerivativeTopicRead)
+async def adopt_derivative(
+    derivative_id: UUID,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> DerivativeTopicRead:
+    """Mark a derivative topic as adopted (hand off to creation flow)."""
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    item = await svc.adopt(workspace.workspace_id, derivative_id, workspace.auth.user.id)
+    return DerivativeTopicRead.model_validate(item)
+
+
+# ---------------------------------------------------------------------------
+# 智能搜索 (Smart Search Analysis)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/search", response_model=SearchAnalysisResponse, status_code=202)
+async def run_search(
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+    payload: SearchRequest,
+) -> SearchAnalysisResponse:
+    """Run a natural-language search across platforms and analyse the results."""
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
+    query, analysis, results, notice = await svc.analyze(
+        workspace.workspace_id,
+        workspace.auth.user.id,
+        payload.query_text,
+        payload.platform,
+        payload.limit,
+    )
+    return SearchAnalysisResponse(
+        query=SearchQueryRead.model_validate(query),
+        analysis=SearchAnalysisRead.model_validate(analysis),
+        results=results,
+        notice=notice,
+    )
+
+
+@router.get("/search", response_model=SearchQueryPage)
+async def list_searches(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> SearchQueryPage:
+    """List past smart-search queries for the workspace."""
+    svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
+    items, total = await svc.list_queries(workspace.workspace_id, page=page, page_size=page_size)
+    return SearchQueryPage(
+        items=[SearchQueryRead.model_validate(i) for i in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.get("/search/{query_id}", response_model=SearchAnalysisResponse)
+async def get_search(
+    query_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> SearchAnalysisResponse:
+    """Fetch a single smart-search query + its analysis (with raw results)."""
+    svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
+    query, analysis = await svc.get_analysis(workspace.workspace_id, query_id)
+    results = analysis.results_json or []
+    return SearchAnalysisResponse(
+        query=SearchQueryRead.model_validate(query),
+        analysis=SearchAnalysisRead.model_validate(analysis),
+        results=results,
+        notice=None,
+    )

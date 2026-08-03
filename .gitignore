@@ -58,3 +58,6 @@ storage_state*.json
 
 # Docker overrides
 docker-compose.override.yml
+
+# Project memory / local workspace data (not source-controlled)
+.workbuddy/

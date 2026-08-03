@@ -37,6 +37,8 @@ import { useWorkspace } from "@/components/app-shell";
 import { ExternalImage } from "@/components/external-image";
 import { ScoreExplanationPanel } from "@/components/score-explanation";
 import { useToast } from "@/components/toast";
+import { DerivativesPanel } from "@/components/derivatives-panel";
+import { SearchPanel } from "@/components/search-panel";
 import {
   Badge,
   PageHeader,
@@ -725,6 +727,15 @@ function SortDropdown({
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
+const MODULE_TABS: {
+  key: "trends" | "derivatives" | "search";
+  label: string;
+}[] = [
+  { key: "trends", label: "趋势榜单" },
+  { key: "derivatives", label: "衍生话题" },
+  { key: "search", label: "智能搜索" },
+];
+
 export function TrendsClient() {
   const { workspaceId } = useWorkspace();
   const { notify } = useToast();
@@ -736,6 +747,7 @@ export function TrendsClient() {
   const platform = platformRaw as Platform;
   const [collecting, setCollecting] = useState(false);
   const [category, setCategory] = useUrlState("category", "全部");
+  const [tab, setTab] = useState<"trends" | "derivatives" | "search">("trends");
 
   // Pagination & sort state for videos
   const [videoPage, setVideoPage] = useState(1);
@@ -969,9 +981,9 @@ export function TrendsClient() {
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
       {/* Header */}
       <PageHeader
-        eyebrow="Trend Analysis"
-        title="趋势中心"
-        description="跨平台真实视频样本、派生热门话题与高潜内容发现"
+        eyebrow="Hotspot Intelligence"
+        title="热点情报中心"
+        description="跨平台真实视频样本、热点衍生话题与智能搜索分析"
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -989,8 +1001,27 @@ export function TrendsClient() {
         }
       />
 
-      {/* Platform Filter Tabs */}
-      <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50 p-2">
+      {/* Module Tabs: 趋势榜单 / 衍生话题 / 智能搜索 */}
+      <div className="flex gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-1.5">
+        {MODULE_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              tab === t.key
+                ? "bg-cyan-500 text-slate-950"
+                : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "trends" && (
+        <>
+          {/* Platform Filter Tabs */}
+          <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50 p-2">
         {PLATFORM_TABS.map((tab) => (
           <button
             key={tab.key}
@@ -1517,6 +1548,12 @@ export function TrendsClient() {
             detail="请先配置官方 API，或完成公开页面采集条件确认并添加监控账号，然后点击「采集真实数据」。"
           />
         )}
+        </>
+      )}
+
+      {tab === "derivatives" && <DerivativesPanel workspaceId={workspaceId!} />}
+
+      {tab === "search" && <SearchPanel workspaceId={workspaceId!} />}
     </main>
   );
 }
