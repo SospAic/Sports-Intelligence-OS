@@ -59,6 +59,22 @@
   - **测试库陈 schema**：持久化测试库 `sports_intelligence_test` 因 `create_all` 不 alter 既有表而滞后（缺 `audit_entries.status` 等新列），导致 27 项非相关测试误报失败。已 `DROP DATABASE` 重建，由 `create_all` 按当前模型重建全部表。
 - **验证状态**：后端 `ruff check` 全绿；关联 44 项测试全过（`test_yt_dlp_adapter` / `test_settings` / `test_monitoring_api` / `test_sync_cancel` / `test_sync_degraded_status` / `test_account_content_summary` / `test_accounts_batch_compare`）；全量后端套件后台复跑中。前端 `tsc`/`eslint` 此前已通过（Part B 改动未触及前端逻辑以外的类型）。改动仅本地、未推送，待 Docker 构建 + `alembic upgrade head` 实机验收后提交。
 
+### 2026-08-03 yt-dlp 参数全面页面化（用户要求"把所有参数都加到页面"）
+
+- **动机**：用户认为设置页可配的 yt-dlp 参数太少，要求先把 yt-dlp 的全部相关参数都暴露到「同步设置」Tab，由用户后续挑选启用哪些。
+- **后端 Schema（`schemas/settings.py`）**：`YtDlpSettings` 在原有 `dateafter/datebefore/playlist_start/extra_args` 基础上，**新增 27 个字段**并分组：
+  - 日期范围：`daterange`
+  - 播放列表与数量：`playlist_items` / `playlist_reverse` / `playlist_random` / `no_playlist` / `flat_playlist`
+  - 筛选与排序：`sort` / `match_filter` / `match_title` / `reject_title` / `age_limit` / `min_duration` / `max_duration` / `min_filesize` / `max_filesize`
+  - 网络与限流：`proxy` / `socket_timeout` / `retries` / `fragment_retries` / `sleep_interval` / `max_sleep_interval` / `sleep_requests` / `limit_rate` / `geo_bypass` / `geo_bypass_country` / `geo_verification_proxy`
+  - 提取与输出：`ignore_errors`（默认 True）/ `no_warnings`（默认 True）
+  - `DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"]` 同步补齐上述默认（空串 / null / False，布尔默认 True），保证读取端始终拿到完整键。
+- **适配器（`adapters/platforms/yt_dlp.py`）**：新增 `YTDLP_FIELD_SPECS`（字段名→CLI 旗标→类型映射，排除已由执行器处理的 `dateafter/datebefore/playlist_start` 与自由 `extra_args`）+ 静态方法 `_render_structured(yt_cfg)`，把结构化字段翻译为 yt-dlp CLI 参数（bool 仅为真时输出旗标、int 输出 `--flag N`、str 非空时输出 `--flag value`）。`_run_yt_dlp` 新增 `structured` 形参，原先硬编码的 `--ignore-errors`/`--no-warnings` 改为由 `structured` 按默认值驱动（单视频抓取 `fetch_content` 显式传 `{"ignore_errors": True}` 保持原行为；`--dump-single-json` 路径保持不变）。`list_contents` 把整个 `yt_cfg` 作为 `structured` 透传给命令构建；`extra_args` 透传时跳过已结构化的键，避免重复旗标。
+- **共享类型（`packages/shared-types/src/index.ts`）**：`YtDlpSettings` 接口补齐全部新字段（int 类为 `number | null`）。
+- **前端（`sync-settings-panel.tsx`）**：重写为按 5 个分组（时间与日期范围 / 播放列表与数量 / 筛选与排序 / 网络与限流 / 提取与输出）渲染所有 yt-dlp 字段，含统一的字段渲染器（text/int/bool），保留 `max_contents` / `skip_existing` / `dateafter` / `datebefore` / `playlist_start` 与自由 `extra_args` JSON（兜底任意未建模参数）；`disabled` 按 `canEdit` 控制；保存时把空 int 归为 null、bool 归为布尔、字符串归为串，并回填 `dateafter/datebefore/playlist_start/extra_args`。
+- **测试**：桩函数（`_bind._fake`、`_empty`×2、`_windowed`）增加 `structured` 形参以兼容新签名；新增 `test_structured_yt_dlp_params_reach_adapter`（结构化策略整包透传）、`test_render_structured_translates_fields_to_flags`（bool/int/str 翻译正确、False 不出旗标）、`test_render_structured_skips_empty_and_none`。
+- **验证状态**：`ruff check` 全绿；`test_yt_dlp_adapter.py` + `test_settings.py` 共 21 passed；前端 `tsc --noEmit` 0 错误。无需新迁移（新字段仅在既有 `sync_settings.config` JSON 内，旧存储由 `DEFAULT_SYNC_SETTINGS_CONFIG` 合并补齐）。待 `docker compose build api worker beat web` + `up -d` 实机验收后提交。
+
 ### 2026-08-01 账号监控基线升级与字段可用性渲染
 > - **Docker 现已安装**（本地 `Docker version 29.6.2`）。历史记录中反复出现的"本机无 Docker/Podman，无法实机验收"表述已过时；应按规定在具备 Docker Compose v2 的环境执行 `docs/FIRST_DELIVERY_REPORT.md` 的目标环境验收，仍不得把 Mock / 静态 Compose 校验描述为 PostgreSQL/Redis/真实平台成功。
 > - **Bilibili 适配器声明失真**：2026-07-28 记录称"完整实现 `BilibiliAdapter`（约 779 行）"，但当前代码仅有 `apps/api/app/adapters/platforms/bilibili_browser.py`（`BilibiliBrowserAdapter`，基于 Playwright 的合规公开页抓取，匿名优先，登录墙场景失败），**不存在独立的 `bilibili.py` / `class BilibiliAdapter`**。以当前代码为准。

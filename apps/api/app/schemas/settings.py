@@ -168,14 +168,61 @@ class PlatformCredentialRead(BaseModel):
 # -- Synchronisation settings (workspace-scoped fetch policy) ---------------
 
 class YtDlpSettings(BaseModel):
-    """yt-dlp window / passthrough parameters applied to every sync in a workspace."""
+    """yt-dlp parameters applied to every sync in a workspace.
+
+    Structured fields are translated to yt-dlp CLI flags by the adapter (see
+    ``YtDlpAdapter``). ``dateafter`` / ``datebefore`` / ``playlist_start`` feed
+    the executor's windowing directly; the free-form ``extra_args`` passthrough
+    covers any yt-dlp option not modelled here. Empty / ``None`` values mean
+    "do not pass this flag", so the operator toggles only what they need.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
+    # --- window (consumed by the sync executor, not as raw flags) ---
     # YYYYMMDD strings; empty means "no bound" so the full back-catalogue is fetched.
     dateafter: str = Field(default="", max_length=8)
     datebefore: str = Field(default="", max_length=8)
     playlist_start: int = Field(default=1, ge=1, le=100_000)
+
+    # --- date range ---
+    daterange: str = Field(default="", max_length=17)
+
+    # --- playlist shape ---
+    playlist_items: str = Field(default="", max_length=256)
+    playlist_reverse: bool = False
+    playlist_random: bool = False
+    no_playlist: bool = False
+    flat_playlist: bool = False
+
+    # --- filtering / sorting ---
+    sort: str = Field(default="", max_length=256)
+    match_filter: str = Field(default="", max_length=1024)
+    match_title: str = Field(default="", max_length=512)
+    reject_title: str = Field(default="", max_length=512)
+    age_limit: int | None = Field(default=None, ge=0, le=21)
+    min_duration: int | None = Field(default=None, ge=0)
+    max_duration: int | None = Field(default=None, ge=0)
+    min_filesize: str = Field(default="", max_length=32)
+    max_filesize: str = Field(default="", max_length=32)
+
+    # --- network / throttling ---
+    proxy: str = Field(default="", max_length=2048)
+    socket_timeout: int | None = Field(default=None, ge=0)
+    retries: int | None = Field(default=None, ge=0)
+    fragment_retries: int | None = Field(default=None, ge=0)
+    sleep_interval: int | None = Field(default=None, ge=0)
+    max_sleep_interval: int | None = Field(default=None, ge=0)
+    sleep_requests: int | None = Field(default=None, ge=0)
+    limit_rate: str = Field(default="", max_length=64)
+    geo_bypass: bool = False
+    geo_bypass_country: str = Field(default="", max_length=8)
+    geo_verification_proxy: str = Field(default="", max_length=2048)
+
+    # --- extraction / output behaviour (default on to match prior behaviour) ---
+    ignore_errors: bool = True
+    no_warnings: bool = True
+
     extra_args: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -209,6 +256,39 @@ class SyncSettingsRead(BaseModel):
 DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
     "max_contents": None,
     "skip_existing": True,
-    "yt_dlp": {"dateafter": "", "datebefore": "", "playlist_start": 1, "extra_args": {}},
+    "yt_dlp": {
+        "dateafter": "",
+        "datebefore": "",
+        "playlist_start": 1,
+        "daterange": "",
+        "playlist_items": "",
+        "playlist_reverse": False,
+        "playlist_random": False,
+        "no_playlist": False,
+        "flat_playlist": False,
+        "sort": "",
+        "match_filter": "",
+        "match_title": "",
+        "reject_title": "",
+        "age_limit": None,
+        "min_duration": None,
+        "max_duration": None,
+        "min_filesize": "",
+        "max_filesize": "",
+        "proxy": "",
+        "socket_timeout": None,
+        "retries": None,
+        "fragment_retries": None,
+        "sleep_interval": None,
+        "max_sleep_interval": None,
+        "sleep_requests": None,
+        "limit_rate": "",
+        "geo_bypass": False,
+        "geo_bypass_country": "",
+        "geo_verification_proxy": "",
+        "ignore_errors": True,
+        "no_warnings": True,
+        "extra_args": {},
+    },
 }
 

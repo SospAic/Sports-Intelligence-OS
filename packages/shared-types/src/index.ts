@@ -304,6 +304,34 @@ export interface YtDlpSettings {
   dateafter: string;
   datebefore: string;
   playlist_start: number;
+  daterange: string;
+  playlist_items: string;
+  playlist_reverse: boolean;
+  playlist_random: boolean;
+  no_playlist: boolean;
+  flat_playlist: boolean;
+  sort: string;
+  match_filter: string;
+  match_title: string;
+  reject_title: string;
+  age_limit: number | null;
+  min_duration: number | null;
+  max_duration: number | null;
+  min_filesize: string;
+  max_filesize: string;
+  proxy: string;
+  socket_timeout: number | null;
+  retries: number | null;
+  fragment_retries: number | null;
+  sleep_interval: number | null;
+  max_sleep_interval: number | null;
+  sleep_requests: number | null;
+  limit_rate: string;
+  geo_bypass: boolean;
+  geo_bypass_country: string;
+  geo_verification_proxy: string;
+  ignore_errors: boolean;
+  no_warnings: boolean;
   extra_args: Record<string, unknown>;
 }
 

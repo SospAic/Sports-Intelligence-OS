@@ -84,6 +84,7 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
         dateafter=None,
         datebefore=None,
         extra_args=None,
+        structured=None,
     ):
         if "videos" in url:
             return list(video_entries), ""
@@ -247,6 +248,7 @@ async def test_fallback_used_when_yt_dlp_empty():
         dateafter=None,
         datebefore=None,
         extra_args=None,
+        structured=None,
     ):  # type: ignore[assignment]
         return [], "ERROR: unsupported"
 
@@ -274,7 +276,7 @@ async def test_empty_trailing_page_does_not_fallback():
     adapter._fb = _StubFallback()  # type: ignore[assignment]
 
     async def _empty(url, *, playlist_start=None, playlist_end=None, dateafter=None,
-                    datebefore=None, extra_args=None):
+                    datebefore=None, extra_args=None, structured=None):
         return [], ""
 
     adapter._run_yt_dlp = _empty  # type: ignore[assignment]
@@ -301,12 +303,14 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
         dateafter=None,
         datebefore=None,
         extra_args=None,
+        structured=None,
     ):
         captured["dateafter"] = dateafter
         captured["datebefore"] = datebefore
         captured["extra_args"] = extra_args
         captured["playlist_start"] = playlist_start
         captured["playlist_end"] = playlist_end
+        captured["structured"] = structured
         start = (playlist_start or 1) - 1
         end = playlist_end if playlist_end is not None else len(all_entries)
         return all_entries[start:end], ""
@@ -390,3 +394,64 @@ async def test_extra_args_passthrough_to_yt_dlp():
         ctx, "olympics", published_after=None, cursor=None, page_size=10
     )
     assert captured["extra_args"] == {"match_filter": "test", "geo_bypass": True}
+
+
+@pytest.mark.asyncio
+async def test_structured_yt_dlp_params_reach_adapter():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    ctx.config = {
+        "yt_dlp": {
+            "proxy": "http://proxy:8080",
+            "sort": "view_count",
+            "geo_bypass": True,
+            "age_limit": 18,
+            "ignore_errors": True,
+            "no_warnings": True,
+            "playlist_reverse": False,  # falsy bool → must NOT emit a flag
+        }
+    }
+    await adapter.list_contents(
+        ctx, "olympics", published_after=None, cursor=None, page_size=10
+    )
+    # The structured policy is forwarded wholesale to the command builder.
+    assert captured["structured"] == {
+        "proxy": "http://proxy:8080",
+        "sort": "view_count",
+        "geo_bypass": True,
+        "age_limit": 18,
+        "ignore_errors": True,
+        "no_warnings": True,
+        "playlist_reverse": False,
+    }
+
+
+def test_render_structured_translates_fields_to_flags():
+    args = YtDlpAdapter._render_structured(
+        {
+            "proxy": "http://proxy:8080",
+            "sort": "view_count",
+            "geo_bypass": True,
+            "age_limit": 18,
+            "playlist_reverse": False,
+            "ignore_errors": False,
+            "no_warnings": True,
+        }
+    )
+    assert "--proxy" in args and args[args.index("--proxy") + 1] == "http://proxy:8080"
+    assert "--sort" in args and args[args.index("--sort") + 1] == "view_count"
+    assert "--age-limit" in args and args[args.index("--age-limit") + 1] == "18"
+    # bool True → flag present; bool False → flag absent
+    assert "--geo-bypass" in args
+    assert "--no-warnings" in args
+    assert "--ignore-errors" not in args
+    assert "--playlist-reverse" not in args
+
+
+def test_render_structured_skips_empty_and_none():
+    args = YtDlpAdapter._render_structured(
+        {"proxy": "", "age_limit": None, "geo_bypass": False}
+    )
+    assert args == []

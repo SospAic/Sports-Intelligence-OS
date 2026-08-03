@@ -50,6 +50,44 @@ logger = logging.getLogger(__name__)
 # per-video metadata, and we never want a hung subprocess to block a worker.
 YTDLP_TIMEOUT_SECONDS = 180
 
+# Structured ``sync_settings.yt_dlp`` fields that map to a yt-dlp CLI flag.
+# ``dateafter`` / ``datebefore`` / ``playlist_start`` are handled by the sync
+# executor's windowing (not as raw flags here), and ``extra_args`` is a
+# free-form passthrough, so neither appears in this table. Each entry is
+# ``(field_name, cli_flag_without_dashes, kind)`` where kind is one of
+# "bool" (flag present only when True), "int" (``--flag N``) or "str".
+YTDLP_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
+    ("daterange", "daterange", "str"),
+    ("playlist_items", "playlist-items", "str"),
+    ("playlist_reverse", "playlist-reverse", "bool"),
+    ("playlist_random", "playlist-random", "bool"),
+    ("no_playlist", "no-playlist", "bool"),
+    ("flat_playlist", "flat-playlist", "bool"),
+    ("sort", "sort", "str"),
+    ("match_filter", "match-filter", "str"),
+    ("match_title", "match-title", "str"),
+    ("reject_title", "reject-title", "str"),
+    ("age_limit", "age-limit", "int"),
+    ("min_duration", "min-duration", "int"),
+    ("max_duration", "max-duration", "int"),
+    ("min_filesize", "min-filesize", "str"),
+    ("max_filesize", "max-filesize", "str"),
+    ("proxy", "proxy", "str"),
+    ("socket_timeout", "socket-timeout", "int"),
+    ("retries", "retries", "int"),
+    ("fragment_retries", "fragment-retries", "int"),
+    ("sleep_interval", "sleep-interval", "int"),
+    ("max_sleep_interval", "max-sleep-interval", "int"),
+    ("sleep_requests", "sleep-requests", "int"),
+    ("limit_rate", "limit-rate", "str"),
+    ("geo_bypass", "geo-bypass", "bool"),
+    ("geo_bypass_country", "geo-bypass-country", "str"),
+    ("geo_verification_proxy", "geo-verification-proxy", "str"),
+    ("ignore_errors", "ignore-errors", "bool"),
+    ("no_warnings", "no-warnings", "bool"),
+)
+YTDLP_SPEC_KEYS: frozenset[str] = frozenset(spec[0] for spec in YTDLP_FIELD_SPECS)
+
 
 def _build_descriptor(key: str, name: str) -> AdapterDescriptor:
     return AdapterDescriptor(
@@ -142,6 +180,29 @@ class YtDlpAdapter(PlatformAdapter):
 
     # -- yt-dlp process ----------------------------------------------------
 
+    @staticmethod
+    def _render_structured(yt_cfg: Mapping[str, Any]) -> list[str]:
+        """Translate structured ``yt_dlp`` fields into yt-dlp CLI args.
+
+        ``bool`` fields emit their flag only when truthy; ``int`` fields emit
+        ``--flag N`` when not ``None``; ``str`` fields emit ``--flag value``
+        when non-empty. This keeps the command minimal — unset options simply
+        aren't passed.
+        """
+        args: list[str] = []
+        for field, flag, kind in YTDLP_FIELD_SPECS:
+            val = yt_cfg.get(field)
+            if kind == "bool":
+                if val is True:
+                    args.append(f"--{flag}")
+            elif kind == "int":
+                if val is not None:
+                    args += [f"--{flag}", str(int(val))]
+            else:  # "str"
+                if val not in (None, ""):
+                    args += [f"--{flag}", str(val)]
+        return args
+
     async def _run_yt_dlp(
         self,
         url: str,
@@ -151,6 +212,7 @@ class YtDlpAdapter(PlatformAdapter):
         dateafter: str | None = None,
         datebefore: str | None = None,
         extra_args: Mapping[str, Any] | None = None,
+        structured: Mapping[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         """Run yt-dlp and return ``(parsed_entries, stderr_text)``.
 
@@ -161,9 +223,12 @@ class YtDlpAdapter(PlatformAdapter):
         ``playlist_start`` / ``playlist_end`` drive windowed pagination so a
         single sync can page past yt-dlp's default 50-item ceiling. ``dateafter``
         / ``datebefore`` are ``YYYYMMDD`` strings forwarded to yt-dlp's date
-        filter. ``extra_args`` is a flat passthrough of additional yt-dlp
-        options (``{"match_filter": "...", "geo_bypass": True}``) operator-tuned
-        via the workspace's centralised ``sync_settings`` policy.
+        filter. ``structured`` carries the remaining modelled ``yt_dlp`` fields
+        (sorting, filtering, network throttling, …) translated by
+        :meth:`_render_structured`. ``extra_args`` is a flat passthrough of any
+        additional yt-dlp options operator-tuned via the workspace's centralised
+        ``sync_settings`` policy (structured keys are skipped to avoid duplicate
+        flags).
         """
         cmd: list[str] = [
             sys.executable,
@@ -171,9 +236,7 @@ class YtDlpAdapter(PlatformAdapter):
             "yt_dlp",
             "--dump-json",
             "--skip-download",
-            "--no-warnings",
             "--no-progress",
-            "--ignore-errors",
         ]
         if playlist_start is not None:
             cmd += ["--playlist-start", str(playlist_start)]
@@ -183,8 +246,14 @@ class YtDlpAdapter(PlatformAdapter):
             cmd += ["--dateafter", dateafter]
         if datebefore:
             cmd += ["--datebefore", datebefore]
+        # Structured fields (sorting / filtering / network / behaviour). The
+        # global policy defaults keep --ignore-errors / --no-warnings enabled.
+        cmd += self._render_structured(structured or {})
         if extra_args:
             for key, value in extra_args.items():
+                if key in YTDLP_SPEC_KEYS:
+                    # already emitted via structured rendering
+                    continue
                 if value is None or value is False:
                     continue
                 flag = f"--{key.replace('_', '-')}"
@@ -473,6 +542,7 @@ class YtDlpAdapter(PlatformAdapter):
                 dateafter=dateafter,
                 datebefore=datebefore,
                 extra_args=extra_args if isinstance(extra_args, dict) else None,
+                structured=yt_cfg if isinstance(yt_cfg, dict) else None,
             )
         except TransientAdapterError as exc:
             logger.warning(
@@ -533,7 +603,9 @@ class YtDlpAdapter(PlatformAdapter):
         if self.platform == "youtube":
             url = f"https://www.youtube.com/watch?v={external_id}"
             try:
-                entries, _ = await self._run_yt_dlp(url)
+                entries, _ = await self._run_yt_dlp(
+                    url, structured={"ignore_errors": True, "no_warnings": True}
+                )
             except TransientAdapterError:
                 entries = []
             if entries:

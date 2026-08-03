@@ -1,6 +1,6 @@
 "use client";
 
-import type { SyncSettingsRecord } from "@sio/shared-types";
+import type { SyncSettingsRecord, YtDlpSettings } from "@sio/shared-types";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw, Save } from "lucide-react";
@@ -20,6 +20,180 @@ function dateInputToYmd(value?: string): string {
   return /^\d{8}$/.test(clean) ? clean : "";
 }
 
+type YtFieldValue = string | boolean | null;
+type FieldType = "text" | "int" | "bool";
+
+interface FieldDef {
+  key: keyof YtDlpSettings;
+  label: string;
+  type: FieldType;
+  placeholder?: string;
+  help?: string;
+}
+
+interface FieldGroup {
+  title: string;
+  description?: string;
+  fields: FieldDef[];
+}
+
+// Comprehensive, categorised set of yt-dlp parameters surfaced as form
+// controls. Operators can enable only what they need; the adapter translates
+// the non-empty ones into CLI flags. Anything not modelled here can still be
+// passed via the free-form "extra_args" JSON below.
+const YTDLP_FIELD_GROUPS: FieldGroup[] = [
+  {
+    title: "时间与日期范围",
+    description: "限定抓取作品的时间窗口；留空表示不限制。",
+    fields: [
+      {
+        key: "daterange",
+        label: "日期区间 (daterange)",
+        type: "text",
+        placeholder: "YYYYMMDD-YYYYMMDD",
+        help: "只抓取区间内的作品，如 20240101-20241231",
+      },
+    ],
+  },
+  {
+    title: "播放列表与数量",
+    description: "控制账号作品列表的截取与展开方式。",
+    fields: [
+      {
+        key: "playlist_items",
+        label: "指定条目 (playlist_items)",
+        type: "text",
+        placeholder: "1,3,5-7",
+        help: "只抓取指定编号的条目",
+      },
+      { key: "playlist_reverse", label: "倒序抓取 (playlist_reverse)", type: "bool" },
+      { key: "playlist_random", label: "随机顺序 (playlist_random)", type: "bool" },
+      {
+        key: "no_playlist",
+        label: "仅单视频非列表 (no_playlist)",
+        type: "bool",
+        help: "遇到列表 URL 时只抓单个视频",
+      },
+      {
+        key: "flat_playlist",
+        label: "扁平播放列表 (flat_playlist)",
+        type: "bool",
+        help: "不递归展开嵌套播放列表",
+      },
+    ],
+  },
+  {
+    title: "筛选与排序",
+    description: "按条件过滤作品或对列表排序。",
+    fields: [
+      {
+        key: "sort",
+        label: "排序方式 (sort)",
+        type: "text",
+        placeholder: "view_count",
+        help: "如 view_count、upload_date、-playlist_index",
+      },
+      {
+        key: "match_filter",
+        label: "匹配过滤器 (match_filter)",
+        type: "text",
+        placeholder: "like_count > 1000",
+        help: "yt-dlp 匹配表达式语法",
+      },
+      {
+        key: "match_title",
+        label: "标题匹配 (match_title)",
+        type: "text",
+        placeholder: "正则",
+        help: "标题包含该正则才抓取",
+      },
+      {
+        key: "reject_title",
+        label: "标题排除 (reject_title)",
+        type: "text",
+        placeholder: "正则",
+        help: "标题包含该正则则跳过",
+      },
+      {
+        key: "age_limit",
+        label: "年龄限制 (age_limit, 岁)",
+        type: "int",
+        help: "仅抓取不低于该年龄分级的内容",
+      },
+      { key: "min_duration", label: "最短时长秒 (min_duration)", type: "int" },
+      { key: "max_duration", label: "最长时长秒 (max_duration)", type: "int" },
+      { key: "min_filesize", label: "最小文件大小 (min_filesize)", type: "text", placeholder: "10M" },
+      { key: "max_filesize", label: "最大文件大小 (max_filesize)", type: "text", placeholder: "1G" },
+    ],
+  },
+  {
+    title: "网络与限流",
+    description: "控制请求代理、超时、重试与限速，降低被限流风险。",
+    fields: [
+      { key: "proxy", label: "代理 (proxy)", type: "text", placeholder: "http://host:port" },
+      { key: "socket_timeout", label: "套接字超时秒 (socket_timeout)", type: "int" },
+      { key: "retries", label: "重试次数 (retries)", type: "int" },
+      { key: "fragment_retries", label: "分片重试 (fragment_retries)", type: "int" },
+      { key: "sleep_interval", label: "请求间隔秒 (sleep_interval)", type: "int" },
+      { key: "max_sleep_interval", label: "最大间隔秒 (max_sleep_interval)", type: "int" },
+      { key: "sleep_requests", label: "每 N 请求休眠 (sleep_requests)", type: "int" },
+      { key: "limit_rate", label: "下载限速 (limit_rate)", type: "text", placeholder: "1M" },
+      { key: "geo_bypass", label: "绕过地理限制 (geo_bypass)", type: "bool" },
+      { key: "geo_bypass_country", label: "绕过国家 (geo_bypass_country)", type: "text", placeholder: "US" },
+      {
+        key: "geo_verification_proxy",
+        label: "地理验证代理 (geo_verification_proxy)",
+        type: "text",
+        placeholder: "http://host:port",
+      },
+    ],
+  },
+  {
+    title: "提取与输出",
+    description: "抓取过程的容错与日志行为。",
+    fields: [
+      {
+        key: "ignore_errors",
+        label: "忽略错误继续 (ignore_errors)",
+        type: "bool",
+        help: "默认开启，单个作品失败不影响其余",
+      },
+      { key: "no_warnings", label: "禁用警告 (no_warnings)", type: "bool" },
+    ],
+  },
+];
+
+const DEFAULT_YT: Record<string, YtFieldValue> = {
+  daterange: "",
+  playlist_items: "",
+  playlist_reverse: false,
+  playlist_random: false,
+  no_playlist: false,
+  flat_playlist: false,
+  sort: "",
+  match_filter: "",
+  match_title: "",
+  reject_title: "",
+  age_limit: null,
+  min_duration: null,
+  max_duration: null,
+  min_filesize: "",
+  max_filesize: "",
+  proxy: "",
+  socket_timeout: null,
+  retries: null,
+  fragment_retries: null,
+  sleep_interval: null,
+  max_sleep_interval: null,
+  sleep_requests: null,
+  limit_rate: "",
+  geo_bypass: false,
+  geo_bypass_country: "",
+  geo_verification_proxy: "",
+  ignore_errors: true,
+  no_warnings: true,
+};
+
 export function SyncSettingsPanel() {
   const { workspaceId, role } = useWorkspace();
   const { notify } = useToast();
@@ -38,6 +212,7 @@ export function SyncSettingsPanel() {
   const [dateAfter, setDateAfter] = useState("");
   const [dateBefore, setDateBefore] = useState("");
   const [playlistStart, setPlaylistStart] = useState("1");
+  const [yt, setYt] = useState<Record<string, YtFieldValue>>(DEFAULT_YT);
   const [extraArgs, setExtraArgs] = useState("{}");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -50,35 +225,66 @@ export function SyncSettingsPanel() {
     setDateAfter(ymdToDateInput(cfg.yt_dlp.dateafter));
     setDateBefore(ymdToDateInput(cfg.yt_dlp.datebefore));
     setPlaylistStart(String(cfg.yt_dlp.playlist_start ?? 1));
+    const source = cfg.yt_dlp as unknown as Record<string, unknown>;
+    const nextYt: Record<string, YtFieldValue> = { ...DEFAULT_YT };
+    for (const group of YTDLP_FIELD_GROUPS) {
+      for (const f of group.fields) {
+        const raw = source[f.key as string];
+        if (f.type === "bool") {
+          nextYt[f.key as string] = Boolean(raw);
+        } else if (f.type === "int") {
+          nextYt[f.key as string] = raw == null || raw === "" ? null : String(raw);
+        } else {
+          nextYt[f.key as string] = raw == null ? "" : String(raw);
+        }
+      }
+    }
+    setYt(nextYt);
     setExtraArgs(JSON.stringify(cfg.yt_dlp.extra_args ?? {}, null, 2));
     setHydrated(true);
   }, [data.data, hydrated]);
 
-  async function saveSettings(form: FormData) {
+  async function saveSettings() {
     if (!workspaceId) return;
     setPending(true);
     try {
       let parsedExtra: Record<string, unknown> = {};
-      const rawExtra = String(form.get("extra_args") ?? "{}").trim();
+      const rawExtra = extraArgs.trim();
       if (rawExtra) {
         try {
           const parsed = JSON.parse(rawExtra);
-          parsedExtra = parsed && typeof parsed === "object" ? parsed : {};
+          parsedExtra =
+            parsed && typeof parsed === "object"
+              ? (parsed as Record<string, unknown>)
+              : {};
         } catch {
           notify("附加参数（extra_args）不是合法 JSON", "error");
           return;
         }
       }
+      const ytBody: Record<string, unknown> = {};
+      for (const group of YTDLP_FIELD_GROUPS) {
+        for (const f of group.fields) {
+          const value = yt[f.key as string];
+          if (f.type === "int") {
+            ytBody[f.key as string] = value == null || value === "" ? null : Number(value);
+          } else if (f.type === "bool") {
+            ytBody[f.key as string] = Boolean(value);
+          } else {
+            ytBody[f.key as string] = value == null ? "" : String(value);
+          }
+        }
+      }
+      ytBody.dateafter = dateInputToYmd(dateAfter);
+      ytBody.datebefore = dateInputToYmd(dateBefore);
+      ytBody.playlist_start = Number(playlistStart) || 1;
+      ytBody.extra_args = parsedExtra;
+
       const body = {
         config: {
           max_contents: maxContents.trim() ? Number(maxContents) : null,
           skip_existing: skipExisting,
-          yt_dlp: {
-            dateafter: dateInputToYmd(dateAfter),
-            datebefore: dateInputToYmd(dateBefore),
-            playlist_start: Number(playlistStart) || 1,
-            extra_args: parsedExtra,
-          },
+          yt_dlp: ytBody,
         },
       };
       await apiRequest("/settings/sync", {
@@ -116,7 +322,13 @@ export function SyncSettingsPanel() {
       )}
       {data.data && (
         <Panel className="p-5">
-          <form action={saveSettings} className="grid gap-4">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveSettings();
+            }}
+            className="grid gap-5"
+          >
             <label className="grid gap-2 text-sm">
               单次同步最多抓取作品数
               <input
@@ -131,6 +343,7 @@ export function SyncSettingsPanel() {
                 disabled={!canEdit}
               />
             </label>
+
             <div className="grid grid-cols-2 gap-4">
               <label className="grid gap-2 text-sm">
                 仅抓取此日期之后（dateafter）
@@ -155,6 +368,7 @@ export function SyncSettingsPanel() {
                 />
               </label>
             </div>
+
             <div className="grid grid-cols-2 gap-4">
               <label className="grid gap-2 text-sm">
                 播放列表起始位置（playlist_start）
@@ -179,6 +393,81 @@ export function SyncSettingsPanel() {
                 已存在的作品跳过更新（仅刷新指标，不覆盖标题 / 封面）
               </label>
             </div>
+
+            {YTDLP_FIELD_GROUPS.map((group) => (
+              <fieldset
+                key={group.title}
+                className="grid gap-3 rounded-lg border border-slate-700/60 p-4"
+              >
+                <legend className="px-1 text-xs font-medium uppercase tracking-wide text-cyan-300">
+                  {group.title}
+                </legend>
+                {group.description && (
+                  <p className="text-xs text-slate-500">{group.description}</p>
+                )}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {group.fields.map((f) => {
+                    const value = yt[f.key as string];
+                    if (f.type === "bool") {
+                      return (
+                        <label
+                          key={f.key as string}
+                          className="flex items-start gap-2 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={Boolean(value)}
+                            onChange={(e) =>
+                              setYt((prev) => ({
+                                ...prev,
+                                [f.key as string]: e.target.checked,
+                              }))
+                            }
+                            disabled={!canEdit}
+                          />
+                          <span>
+                            <span className="block">{f.label}</span>
+                            {f.help && (
+                              <span className="block text-xs text-slate-500">
+                                {f.help}
+                              </span>
+                            )}
+                          </span>
+                        </label>
+                      );
+                    }
+                    return (
+                      <label key={f.key as string} className="grid gap-2 text-sm">
+                        <span>
+                          {f.label}
+                          {f.help && (
+                            <span className="ml-1 text-xs text-slate-500">
+                              — {f.help}
+                            </span>
+                          )}
+                        </span>
+                        <input
+                          type={f.type === "int" ? "number" : "text"}
+                          min={f.type === "int" ? "0" : undefined}
+                          className={inputClass}
+                          value={value == null ? "" : String(value)}
+                          placeholder={f.placeholder}
+                          onChange={(e) =>
+                            setYt((prev) => ({
+                              ...prev,
+                              [f.key as string]: e.target.value,
+                            }))
+                          }
+                          disabled={!canEdit}
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </fieldset>
+            ))}
+
             <label className="grid gap-2 text-sm">
               额外 yt-dlp 参数（extra_args，JSON）
               <textarea
@@ -191,10 +480,16 @@ export function SyncSettingsPanel() {
               />
             </label>
             <p className="text-xs text-slate-500">
-              行业实践：用日期区间缩小范围、控制单次量级可显著降低被限流与超时风险；同步间隔请在账号的「同步周期」中设置。留空字段表示不施加该限制。
+              行业实践：用日期区间缩小范围、控制单次量级、设置请求间隔与限速可显著降低被限流与超时风险；
+              同步间隔请在账号的「同步周期」中设置。上方结构化字段已覆盖常用 yt-dlp 参数；
+              若仍需其他参数，可在 extra_args 中按 <code>{"{ \"参数名\": 值 }"}</code> 形式自由追加。
             </p>
             {canEdit && (
-              <button className={`${buttonClass} w-full justify-center`} disabled={pending}>
+              <button
+                type="submit"
+                className={`${buttonClass} w-full justify-center`}
+                disabled={pending}
+              >
                 <Save size={14} />
                 {pending ? "保存中…" : "保存同步设置"}
               </button>
@@ -211,7 +506,8 @@ export function SyncSettingsPanel() {
           <li>默认对每个账号执行<strong>全量抓取</strong>，不再区分增量与全量；历史作品会被一并拉取回填。</li>
           <li>「单次同步最多抓取作品数」为空时，抓取受平台分页上限约束；设置数值可硬性限制单次量级。</li>
           <li>遇到已存在的作品时，由「已存在的作品跳过更新」决定是跳过还是覆盖可编辑字段（指标始终刷新）。</li>
-          <li>日期区间（dateafter / datebefore）以 YYYYMMDD 形式传给 yt-dlp，用于限定作品时间范围。</li>
+          <li>日期区间（dateafter / datebefore / daterange）以 YYYYMMDD 形式传给 yt-dlp，用于限定作品时间范围。</li>
+          <li>其余 yt-dlp 参数（排序、筛选、代理、限速、地理绕过等）仅在填写时生效，留空表示不施加该限制。</li>
         </ul>
       </Panel>
     </div>
