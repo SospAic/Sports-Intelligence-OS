@@ -20,7 +20,11 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.adapters.platforms.base import AdapterCapability, AdapterDescriptor
+from app.adapters.platforms.base import (
+    AdapterCallContext,
+    AdapterCapability,
+    AdapterDescriptor,
+)
 from app.adapters.platforms.stubs import SkeletonPlatformAdapter
 from app.core.config import Settings
 from app.db.base import Base
@@ -182,6 +186,71 @@ class _SkeletonTestAdapter(SkeletonPlatformAdapter):
         config_fields=(),
         source_kinds=frozenset({"live"}),
     )
+
+
+class _PartialAnalyticsTestAdapter(RealShapedTestAdapter):
+    """Simulates a yt-dlp-style adapter that fetched successfully but the
+    platform (TikTok/Douyin) omits follower/video/view counts. The fetch is
+    genuinely successful — the missing fields are a platform limitation, not a
+    failed extraction — so ``analytics_fetched`` is True and the missing fields
+    ride along in ``unavailable_metrics``."""
+
+    async def fetch_account_analytics(
+        self, ctx: AdapterCallContext, external_id: str
+    ) -> "PlatformMetricsData":  # type: ignore[name-defined]  # noqa: F821
+        from app.adapters.platforms.base import PlatformMetricsData
+
+        return PlatformMetricsData(
+            external_id=external_id,
+            captured_at=ctx.observed_at,
+            metrics={
+                "follower_count": None,
+                "following_count": None,
+                "total_like_count": None,
+                "total_view_count": None,
+                "video_count": None,
+                "engagement_rate": None,
+            },
+            source_kind="live",
+            provider=self.key,
+            fetched_at=ctx.observed_at,
+            unavailable_metrics=("follower_count", "video_count", "total_view_count"),
+            metadata={"method": "yt_dlp", "analytics_fetched": True},
+        )
+
+
+async def test_partial_analytics_successful_fetch_is_success_not_degraded() -> None:
+    """Regression: a successful yt-dlp fetch whose platform omits some metrics
+    (TikTok/Douyin) must end as 'success' (with unavailable_metrics), NOT
+    'degraded'. Previously the 'all key metrics None' heuristic falsely flagged
+    every TikTok/Douyin sync as a failed metric extraction, so the UI showed
+    '同步失败 / 指标提取失败，仅更新了账号资料' on every run."""
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
+
+    registry = _build_registry(_PartialAnalyticsTestAdapter())
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
+
+    settings = _build_settings()
+    async with maker() as session:
+        await PlatformSyncExecutor(session, registry, settings).execute_account_run(run_id)
+
+    async with maker() as session:
+        account = await session.get(Account, account_id)
+        run = await session.get(SyncRun, run_id)
+        assert run.status == "success", run.error_message
+        assert account.sync_status == "success"
+        assert account.last_sync_error_code is None
+        assert account.last_sync_error_message is None
+    await engine.dispose()
 
 
 async def test_skeleton_adapter_sync_ends_in_error_and_releases_lock() -> None:

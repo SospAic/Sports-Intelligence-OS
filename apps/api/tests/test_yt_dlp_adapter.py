@@ -22,6 +22,7 @@ from app.adapters.platforms.base import (
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
+    TransientAdapterError,
 )
 from app.adapters.platforms.yt_dlp import (
     DouyinYtDlpAdapter,
@@ -220,6 +221,52 @@ async def test_tiktok_canonical_url_and_metrics():
     analytics = await adapter.fetch_content_analytics(ctx, [content.external_id])
     assert analytics[0].metrics["like_count"] == 98765
     assert analytics[0].metrics["share_count"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_tiktok_analytics_partial_fetch_is_not_degraded():
+    # TikTok/Douyin user pages via yt-dlp rarely expose follower/video counts,
+    # but the fetch still returns a real account object. The adapter must report
+    # ``analytics_fetched=True`` and surface the missing fields via
+    # ``unavailable_metrics`` rather than signalling a failed extraction.
+    adapter = TikTokYtDlpAdapter()
+    profile = {
+        "id": "MS4wLjABAAAAexample",
+        "title": "guitar_daily",
+        "uploader": "guitar_daily",
+        "webpage_url": "https://www.tiktok.com/@guitar_daily",
+    }
+
+    async def _fake_single(url, *, playlist_end=1):
+        return profile, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is True
+    assert analytics.metrics["follower_count"] is None
+    assert analytics.metrics["video_count"] is None
+    assert analytics.metrics["total_view_count"] is None
+    assert {"follower_count", "video_count", "total_view_count"}.issubset(
+        set(analytics.unavailable_metrics)
+    )
+
+
+@pytest.mark.asyncio
+async def test_tiktok_analytics_transient_failure_reports_not_fetched():
+    # A genuinely empty yt-dlp result (transient failure) must be reported as
+    # ``analytics_fetched=False`` so the sync engine can still flag it degraded.
+    adapter = TikTokYtDlpAdapter()
+
+    async def _fake_single(url, *, playlist_end=1):
+        raise TransientAdapterError("yt-dlp timed out")
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is False
+    assert analytics.metrics["follower_count"] is None
+    assert analytics.metrics["video_count"] is None
 
 
 @pytest.mark.asyncio

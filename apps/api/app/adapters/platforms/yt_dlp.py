@@ -590,6 +590,15 @@ class YtDlpAdapter(PlatformAdapter):
             data, _ = await self._run_yt_dlp_single(self._account_url(handle), playlist_end=1)
         except TransientAdapterError:
             data = {}
+        # ``analytics_fetched`` tells the sync engine whether yt-dlp actually
+        # returned an account object. TikTok/Douyin user pages frequently omit
+        # follower / video / view counts through yt-dlp, yet the fetch still
+        # succeeds (the profile and the content list are fully extractable). That
+        # is a *platform limitation*, not a failed extraction, so it must NOT be
+        # reported as a degraded sync — the missing fields are surfaced via
+        # ``unavailable_metrics``. Only a genuinely empty result (a transient
+        # yt-dlp failure swallowed above) should be treated as degraded.
+        analytics_fetched = bool(data)
         follower = data.get("channel_follower_count") or data.get("subscriber_count")
         playlist_count = data.get("playlist_count")
         metrics: dict[str, int | None] = {
@@ -613,7 +622,7 @@ class YtDlpAdapter(PlatformAdapter):
             provider=self.key,
             fetched_at=ctx.observed_at,
             unavailable_metrics=unavailable,
-            metadata={"method": "yt_dlp"},
+            metadata={"method": "yt_dlp", "analytics_fetched": analytics_fetched},
         )
 
     async def list_contents(

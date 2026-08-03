@@ -783,13 +783,24 @@ class PlatformSyncExecutor:
         account.source_url = data.profile_url
         self.session.add(self._account_snapshot(account, metrics))
         await self.session.flush()
-        # Data-quality check: if ALL key metrics are None the extraction likely failed.
+        # Degradation means the account analytics *genuinely* could not be
+        # obtained (e.g. yt-dlp returned nothing due to a transient error), not
+        # that the source merely omits some fields. yt-dlp-style adapters report
+        # an explicit ``analytics_fetched`` flag; adapters that don't set it fall
+        # back to the legacy heuristic (all key metrics None). A successful fetch
+        # whose source simply doesn't expose follower/video counts (TikTok/Douyin
+        # via yt-dlp) is a platform limitation surfaced via ``unavailable_metrics``
+        # and must not be reported as a failed sync.
         m = metrics.metrics
-        metrics_degraded = (
-            m.get("follower_count") is None
-            and m.get("video_count") is None
-            and m.get("total_view_count") is None
-        )
+        analytics_fetched = metrics.metadata.get("analytics_fetched")
+        if analytics_fetched is not None:
+            metrics_degraded = not bool(analytics_fetched)
+        else:
+            metrics_degraded = (
+                m.get("follower_count") is None
+                and m.get("video_count") is None
+                and m.get("total_view_count") is None
+            )
         return 1, 1, metrics_degraded
 
     def _account_snapshot(self, account: Account, data: PlatformMetricsData) -> AccountSnapshot:
