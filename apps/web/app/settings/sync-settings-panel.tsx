@@ -194,6 +194,50 @@ const DEFAULT_YT: Record<string, YtFieldValue> = {
   no_warnings: true,
 };
 
+// yt-dlp *download* toggles — what media to archive locally during a sync.
+// Defaults: cover thumbnail + subtitles on, auto subs / video / info-json off.
+const DOWNLOAD_FIELDS: { key: string; label: string; type: FieldType; help?: string; placeholder?: string }[] = [
+  { key: "write_thumbnail", label: "下载封面缩略图 (write_thumbnail)", type: "bool" },
+  { key: "write_subtitles", label: "下载字幕 (write_subtitles)", type: "bool" },
+  {
+    key: "write_auto_subtitles",
+    label: "下载自动生成字幕 (write_auto_subtitles)",
+    type: "bool",
+    help: "平台自动语音识别字幕，质量低于人工字幕",
+  },
+  {
+    key: "subtitle_langs",
+    label: "字幕语言 (subtitle_langs)",
+    type: "text",
+    placeholder: "zh.*,en.*",
+    help: "逗号分隔的语言代码，如 zh.*,en.*,ja",
+  },
+  {
+    key: "download_video",
+    label: "下载视频文件 (download_video)",
+    type: "bool",
+    help: "⚠️ 体积大，会显著消耗磁盘与带宽；按需开启",
+  },
+  {
+    key: "video_format",
+    label: "视频格式 (video_format)",
+    type: "text",
+    placeholder: "best",
+    help: "yt-dlp 格式选择表达式，如 best[height<=720]",
+  },
+  { key: "write_info_json", label: "下载原始信息 (write_info_json)", type: "bool" },
+];
+
+const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
+  write_thumbnail: true,
+  write_subtitles: true,
+  write_auto_subtitles: false,
+  subtitle_langs: "zh.*,en.*",
+  download_video: false,
+  video_format: "best",
+  write_info_json: false,
+};
+
 export function SyncSettingsPanel() {
   const { workspaceId, role } = useWorkspace();
   const { notify } = useToast();
@@ -213,6 +257,7 @@ export function SyncSettingsPanel() {
   const [dateBefore, setDateBefore] = useState("");
   const [playlistStart, setPlaylistStart] = useState("1");
   const [yt, setYt] = useState<Record<string, YtFieldValue>>(DEFAULT_YT);
+  const [download, setDownload] = useState<Record<string, YtFieldValue>>(DEFAULT_DOWNLOAD);
   const [extraArgs, setExtraArgs] = useState("{}");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -240,6 +285,17 @@ export function SyncSettingsPanel() {
       }
     }
     setYt(nextYt);
+    const dlSource = (cfg.download ?? {}) as unknown as Record<string, unknown>;
+    const nextDl: Record<string, YtFieldValue> = { ...DEFAULT_DOWNLOAD };
+    for (const f of DOWNLOAD_FIELDS) {
+      const raw = dlSource[f.key];
+      if (f.type === "bool") {
+        nextDl[f.key] = Boolean(raw);
+      } else {
+        nextDl[f.key] = raw == null ? "" : String(raw);
+      }
+    }
+    setDownload(nextDl);
     setExtraArgs(JSON.stringify(cfg.yt_dlp.extra_args ?? {}, null, 2));
     setHydrated(true);
   }, [data.data, hydrated]);
@@ -280,11 +336,19 @@ export function SyncSettingsPanel() {
       ytBody.playlist_start = Number(playlistStart) || 1;
       ytBody.extra_args = parsedExtra;
 
+      const downloadBody: Record<string, unknown> = {};
+      for (const f of DOWNLOAD_FIELDS) {
+        const value = download[f.key];
+        downloadBody[f.key] =
+          f.type === "bool" ? Boolean(value) : value == null ? "" : String(value);
+      }
+
       const body = {
         config: {
           max_contents: maxContents.trim() ? Number(maxContents) : null,
           skip_existing: skipExisting,
           yt_dlp: ytBody,
+          download: downloadBody,
         },
       };
       await apiRequest("/settings/sync", {
@@ -467,6 +531,68 @@ export function SyncSettingsPanel() {
                 </div>
               </fieldset>
             ))}
+
+            <fieldset className="grid gap-3 rounded-lg border border-amber-700/50 p-4">
+              <legend className="px-1 text-xs font-medium uppercase tracking-wide text-amber-300">
+                媒体下载
+              </legend>
+              <p className="text-xs text-slate-500">
+                同步时把对应媒体文件归档到本地，供详情页「媒体资源」展示。默认已开启封面与字幕；
+                <strong className="text-amber-300">下载视频会显著消耗磁盘与带宽，请按需开启</strong>。
+              </p>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {DOWNLOAD_FIELDS.map((f) => {
+                  const value = download[f.key];
+                  if (f.type === "bool") {
+                    return (
+                      <label
+                        key={f.key}
+                        className="flex items-start gap-2 text-sm"
+                      >
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={Boolean(value)}
+                          onChange={(e) =>
+                            setDownload((prev) => ({
+                              ...prev,
+                              [f.key]: e.target.checked,
+                            }))
+                          }
+                          disabled={!canEdit}
+                        />
+                        <span>
+                          <span className="block">{f.label}</span>
+                          {f.help && (
+                            <span className="block text-xs text-slate-500">{f.help}</span>
+                          )}
+                        </span>
+                      </label>
+                    );
+                  }
+                  return (
+                    <label key={f.key} className="grid gap-2 text-sm">
+                      <span>
+                        {f.label}
+                        {f.help && (
+                          <span className="ml-1 text-xs text-slate-500">— {f.help}</span>
+                        )}
+                      </span>
+                      <input
+                        type="text"
+                        className={inputClass}
+                        value={value == null ? "" : String(value)}
+                        placeholder={f.placeholder}
+                        onChange={(e) =>
+                          setDownload((prev) => ({ ...prev, [f.key]: e.target.value }))
+                        }
+                        disabled={!canEdit}
+                      />
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
 
             <label className="grid gap-2 text-sm">
               额外 yt-dlp 参数（extra_args，JSON）

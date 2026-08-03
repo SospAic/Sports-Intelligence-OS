@@ -341,6 +341,7 @@ class ContentRead(BaseModel):
     fetched_at: datetime
     source_url: str | None
     raw_payload_ref: str | None
+    media: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     latest_snapshot: ContentSnapshotRead | None = None

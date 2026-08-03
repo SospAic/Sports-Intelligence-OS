@@ -97,6 +97,13 @@ class PlatformContentData:
     provider: str
     fetched_at: datetime
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Optional local media produced by a download-capable adapter (yt-dlp).
+    # ``None`` means no files were archived. When present it carries the
+    # workspace-relative directory plus the discovered file basenames:
+    #   {"base": "<workspace_id>/<account>/<external_id>",
+    #    "thumbnail": "id.webp", "video": "id.mp4", "info_json": "id.info.json",
+    #    "subtitles": [{"lang": "zh-Hans", "file": "id.zh-Hans.vtt"}]}
+    media: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)

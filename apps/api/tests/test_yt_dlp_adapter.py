@@ -8,6 +8,7 @@ browser-simulation adapter is wired in as a fallback when yt-dlp yields nothing.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -85,6 +86,8 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
         datebefore=None,
         extra_args=None,
         structured=None,
+        download=None,
+        media_dir=None,
     ):
         if "videos" in url:
             return list(video_entries), ""
@@ -249,6 +252,8 @@ async def test_fallback_used_when_yt_dlp_empty():
         datebefore=None,
         extra_args=None,
         structured=None,
+        download=None,
+        media_dir=None,
     ):  # type: ignore[assignment]
         return [], "ERROR: unsupported"
 
@@ -276,7 +281,8 @@ async def test_empty_trailing_page_does_not_fallback():
     adapter._fb = _StubFallback()  # type: ignore[assignment]
 
     async def _empty(url, *, playlist_start=None, playlist_end=None, dateafter=None,
-                    datebefore=None, extra_args=None, structured=None):
+                    datebefore=None, extra_args=None, structured=None,
+                    download=None, media_dir=None):
         return [], ""
 
     adapter._run_yt_dlp = _empty  # type: ignore[assignment]
@@ -304,6 +310,8 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
         datebefore=None,
         extra_args=None,
         structured=None,
+        download=None,
+        media_dir=None,
     ):
         captured["dateafter"] = dateafter
         captured["datebefore"] = datebefore
@@ -311,6 +319,8 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
         captured["playlist_start"] = playlist_start
         captured["playlist_end"] = playlist_end
         captured["structured"] = structured
+        captured["download"] = download
+        captured["media_dir"] = media_dir
         start = (playlist_start or 1) - 1
         end = playlist_end if playlist_end is not None else len(all_entries)
         return all_entries[start:end], ""
@@ -455,3 +465,63 @@ def test_render_structured_skips_empty_and_none():
         {"proxy": "", "age_limit": None, "geo_bypass": False}
     )
     assert args == []
+
+
+def test_any_download_enabled():
+    assert YouTubeYtDlpAdapter._any_download_enabled(None) is False
+    assert YouTubeYtDlpAdapter._any_download_enabled({}) is False
+    assert YouTubeYtDlpAdapter._any_download_enabled({"write_thumbnail": True}) is True
+    assert (
+        YouTubeYtDlpAdapter._any_download_enabled(
+            {"download_video": False, "write_subtitles": False}
+        )
+        is False
+    )
+    assert YouTubeYtDlpAdapter._any_download_enabled({"download_video": True}) is True
+
+
+def test_collect_media_classifies_files(tmp_path):
+    video_id = "abc123"
+    media_root = tmp_path
+    media_dir = tmp_path / "handle"
+    d = media_dir / video_id
+    d.mkdir(parents=True)
+    (d / f"{video_id}.webp").write_bytes(b"x")
+    (d / f"{video_id}.zh-Hans.vtt").write_text("x")
+    (d / f"{video_id}.en.vtt").write_text("x")
+    (d / f"{video_id}.info.json").write_text("{}")
+    (d / f"{video_id}.mp4").write_bytes(b"x")
+
+    result = YouTubeYtDlpAdapter._collect_media(
+        str(media_root), str(media_dir), video_id
+    )
+    assert result is not None
+    assert result["base"] == os.path.join("handle", video_id)
+    assert result["thumbnail"] == f"{video_id}.webp"
+    assert result["video"] == f"{video_id}.mp4"
+    assert result["info_json"] == f"{video_id}.info.json"
+    assert {s["lang"] for s in result["subtitles"]} == {"zh-Hans", "en"}
+
+
+def test_collect_media_none_when_absent(tmp_path):
+    assert (
+        YouTubeYtDlpAdapter._collect_media(str(tmp_path), str(tmp_path / "h"), "nope")
+        is None
+    )
+
+
+def test_media_route_blocks_path_traversal(tmp_path):
+    import app.api.routes.media as media_mod
+
+    original = media_mod.MEDIA_ROOT
+    media_mod.MEDIA_ROOT = str(tmp_path)
+    try:
+        # Enough ".." to climb above MEDIA_ROOT entirely → must be rejected.
+        assert (
+            media_mod._safe_media_path("ws/h/abc", "../../../../../../../etc/passwd")
+            is None
+        )
+        ok = media_mod._safe_media_path("ws/h/abc", "abc.mp4")
+        assert ok == str(tmp_path / "ws" / "h" / "abc" / "abc.mp4")
+    finally:
+        media_mod.MEDIA_ROOT = original

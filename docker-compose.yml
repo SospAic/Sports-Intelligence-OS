@@ -51,6 +51,7 @@ x-backend-environment: &backend-environment
   SIO_NOTIFICATION_ENCRYPTION_KEY: ${SIO_NOTIFICATION_ENCRYPTION_KEY:-}
   SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS: ${SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS:-10}
   SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS: ${SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS:-3}
+  SIO_MEDIA_ROOT: ${SIO_MEDIA_ROOT:-/workspace/media}
 
 services:
   postgres:
@@ -98,6 +99,7 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/workspace/data:ro
+      - ./media:/workspace/media
     depends_on:
       postgres:
         condition: service_healthy
@@ -122,6 +124,8 @@ services:
       context: .
       dockerfile: deploy/api.Dockerfile
     environment: *backend-environment
+    volumes:
+      - ./media:/workspace/media
     command:
       [
         "celery",

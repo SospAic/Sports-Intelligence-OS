@@ -71,7 +71,15 @@ _TRUNCATE_ALL = (
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db() -> Iterator[None]:
-    """Create the dedicated test database and schema once per session."""
+    """Create (or recreate) the dedicated test database and schema per session.
+
+    The database is dropped and rebuilt each session so schema changes in the
+    models (new columns / tables) are always reflected. A persistent test
+    database would keep its stale schema because ``Base.metadata.create_all``
+    only ever *adds* missing tables — it never alters tables that already
+    exist, which is exactly how a just-added column (e.g. ``content_items.media``)
+    gets silently missed and breaks every test touching that table.
+    """
     admin_engine = create_engine(
         f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/postgres",
         isolation_level="AUTOCOMMIT",
@@ -81,8 +89,18 @@ def setup_test_db() -> Iterator[None]:
             text("SELECT 1 FROM pg_database WHERE datname = :name"),
             {"name": POSTGRES_TEST_DB},
         ).scalar()
-        if not exists:
-            conn.execute(text(f'CREATE DATABASE "{POSTGRES_TEST_DB}"'))
+        if exists:
+            # Force-disconnect any lingering sessions, then drop so a stale
+            # schema can never block a fresh build from the current models.
+            conn.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :name AND pid <> pg_backend_pid()"
+                ),
+                {"name": POSTGRES_TEST_DB},
+            )
+            conn.execute(text(f'DROP DATABASE "{POSTGRES_TEST_DB}"'))
+        conn.execute(text(f'CREATE DATABASE "{POSTGRES_TEST_DB}"'))
     admin_engine.dispose()
 
     engine = create_engine(PG_SYNC_URL)

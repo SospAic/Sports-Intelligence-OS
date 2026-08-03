@@ -335,12 +335,23 @@ export interface YtDlpSettings {
   extra_args: Record<string, unknown>;
 }
 
+export interface YtDlpDownloadSettings {
+  write_thumbnail: boolean;
+  write_subtitles: boolean;
+  write_auto_subtitles: boolean;
+  subtitle_langs: string;
+  download_video: boolean;
+  video_format: string;
+  write_info_json: boolean;
+}
+
 export interface SyncSettingsConfig {
   /** Max works a single sync ingests; null = full catalogue (bounded by pagination). */
   max_contents: number | null;
   /** Skip already-known works (only refresh metrics) instead of overwriting. */
   skip_existing: boolean;
   yt_dlp: YtDlpSettings;
+  download: YtDlpDownloadSettings;
 }
 
 export interface SyncSettingsRecord {
@@ -589,6 +600,16 @@ export interface ContentRecord {
   updated_at: string;
   latest_snapshot: ContentSnapshot | null;
   view_growth_24h: number | null;
+  media: ContentMedia | null;
+}
+
+/** Local media archived during a sync (thumbnail / video / subtitles / info-json). */
+export interface ContentMedia {
+  base: string;
+  thumbnail?: string | null;
+  video?: string | null;
+  info_json?: string | null;
+  subtitles?: { lang: string; file: string }[] | null;
 }
 
 export interface ContentRecordPage {

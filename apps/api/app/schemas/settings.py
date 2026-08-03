@@ -226,13 +226,45 @@ class YtDlpSettings(BaseModel):
     extra_args: dict[str, Any] = Field(default_factory=dict)
 
 
+class YtDlpDownloadSettings(BaseModel):
+    """yt-dlp *download* toggles — what media to archive during a sync.
+
+    These drive yt-dlp's file-producing flags (``--write-thumbnail``,
+    ``--write-sub`` / ``--write-auto-sub`` / ``--sub-langs``,
+    ``--write-info-json``) and, when ``download_video`` is on, remove the
+    default ``--skip-download`` so the actual video is fetched with the chosen
+    ``video_format``. Produced files are written under the workspace media root
+    and referenced from ``ContentItem.media`` for the detail page to render.
+
+    Defaults follow the chosen policy: cover thumbnail + subtitles on, auto
+    subtitles / video / info-json off (video is heavy — opt in deliberately).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    write_thumbnail: bool = True
+    write_subtitles: bool = True
+    write_auto_subtitles: bool = False
+    subtitle_langs: str = Field(default="zh.*,en.*", max_length=256)
+    download_video: bool = False
+    video_format: str = Field(default="best", max_length=256)
+    write_info_json: bool = False
+
+    @model_validator(mode="after")
+    def _validate_video_prereq(self) -> YtDlpDownloadSettings:
+        if self.download_video and not self.video_format.strip():
+            raise ValueError("video_format is required when download_video is enabled")
+        return self
+
+
 class SyncSettingsConfig(BaseModel):
     """Global fetch policy shared by every account in a workspace.
 
     ``max_contents`` caps how many works a single sync run ingests (``None`` =
     unbounded, limited only by the platform pagination window). ``skip_existing``
     controls whether already-known works are refreshed or left untouched. The
-    ``yt_dlp`` sub-object carries the yt-dlp-specific window / passthrough args.
+    ``yt_dlp`` sub-object carries the yt-dlp-specific window / passthrough args;
+    ``download`` carries the yt-dlp file-producing download toggles.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -240,6 +272,7 @@ class SyncSettingsConfig(BaseModel):
     max_contents: int | None = Field(default=None, ge=1, le=5000)
     skip_existing: bool = True
     yt_dlp: YtDlpSettings = Field(default_factory=YtDlpSettings)
+    download: YtDlpDownloadSettings = Field(default_factory=YtDlpDownloadSettings)
 
 
 class SyncSettingsUpdate(BaseModel):
@@ -289,6 +322,15 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "ignore_errors": True,
         "no_warnings": True,
         "extra_args": {},
+    },
+    "download": {
+        "write_thumbnail": True,
+        "write_subtitles": True,
+        "write_auto_subtitles": False,
+        "subtitle_langs": "zh.*,en.*",
+        "download_video": False,
+        "video_format": "best",
+        "write_info_json": False,
     },
 }
 

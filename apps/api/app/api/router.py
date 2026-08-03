@@ -5,6 +5,7 @@ from app.api.routes import (
     automation,
     editorial_rules,
     generation,
+    media,
     monitoring,
     news,
     operations,
@@ -30,3 +31,4 @@ api_router.include_router(trends.router)
 api_router.include_router(operations.router)
 api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
+api_router.include_router(media.router)

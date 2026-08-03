@@ -234,6 +234,12 @@ class ContentItem(TimestampMixin, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Local media archived during sync (thumbnail / video / subtitles / info
+    # json). ``None`` when no download toggles are enabled. Stored as a relative
+    # reference map consumed by the API ``/media`` route and the detail page.
+    media: Mapped[dict[str, Any] | None] = mapped_column(
+        "media", JSON, nullable=True
+    )
 
     platform: Mapped[Platform] = relationship(back_populates="contents")
     account: Mapped[Account] = relationship(back_populates="contents")

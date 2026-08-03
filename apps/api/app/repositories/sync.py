@@ -120,4 +120,8 @@ class SyncRepository:
             **DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"],
             **(stored.get("yt_dlp") or {}),
         }
+        merged["download"] = {
+            **DEFAULT_SYNC_SETTINGS_CONFIG["download"],
+            **(stored.get("download") or {}),
+        }
         return merged

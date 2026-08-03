@@ -26,6 +26,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
@@ -139,6 +141,67 @@ class YtDlpAdapter(PlatformAdapter):
             h = h.rstrip("/").split("/")[-1]
         return h.strip("@").strip()
 
+    @staticmethod
+    def _safe_dir(name: str) -> str:
+        """Turn an arbitrary handle into a filesystem-safe directory name."""
+        cleaned = re.sub(r"[^A-Za-z0-9_@.-]", "_", name or "unknown")
+        return cleaned[:120] or "unknown"
+
+    @staticmethod
+    def _any_download_enabled(download: Mapping[str, Any] | None) -> bool:
+        if not isinstance(download, dict):
+            return False
+        return bool(
+            download.get("write_thumbnail")
+            or download.get("write_subtitles")
+            or download.get("write_auto_subtitles")
+            or download.get("write_info_json")
+            or download.get("download_video")
+        )
+
+    @staticmethod
+    def _collect_media(
+        media_root: str, media_dir: str, video_id: str
+    ) -> dict[str, Any] | None:
+        """Scan the per-video output dir and classify discovered files.
+
+        Returns ``None`` when nothing was written. ``base`` is the
+        workspace-relative path under ``media_root`` used by the ``/media``
+        route to resolve files safely.
+        """
+        d = os.path.join(media_dir, video_id)
+        if not os.path.isdir(d):
+            return None
+        try:
+            base = os.path.relpath(d, media_root)
+        except ValueError:
+            base = video_id
+        thumbnail = video = info_json = None
+        subtitles: list[dict[str, str]] = []
+        for fn in os.listdir(d):
+            low = fn.lower()
+            if low.endswith(".info.json"):
+                info_json = fn
+            elif low.endswith((".vtt", ".srt", ".ass", ".sbv", ".lrc")):
+                lang = ""
+                if fn.startswith(video_id + "."):
+                    lang = fn[len(video_id) + 1 : -len(os.path.splitext(fn)[1])]
+                subtitles.append({"lang": lang, "file": fn})
+            elif low.endswith((".mp4", ".webm", ".mkv", ".mov", ".flv", ".m4v", ".avi")):
+                video = fn
+            elif low.endswith((".webp", ".jpg", ".jpeg", ".png")):
+                thumbnail = fn
+        result: dict[str, Any] = {"base": base}
+        if thumbnail:
+            result["thumbnail"] = thumbnail
+        if video:
+            result["video"] = video
+        if info_json:
+            result["info_json"] = info_json
+        if subtitles:
+            result["subtitles"] = subtitles
+        return result if (thumbnail or video or info_json or subtitles) else None
+
     def _account_url(self, handle: str) -> str:
         if self.platform == "youtube":
             return f"https://www.youtube.com/@{handle}"
@@ -213,6 +276,8 @@ class YtDlpAdapter(PlatformAdapter):
         datebefore: str | None = None,
         extra_args: Mapping[str, Any] | None = None,
         structured: Mapping[str, Any] | None = None,
+        download: Mapping[str, Any] | None = None,
+        media_dir: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         """Run yt-dlp and return ``(parsed_entries, stderr_text)``.
 
@@ -229,15 +294,25 @@ class YtDlpAdapter(PlatformAdapter):
         additional yt-dlp options operator-tuned via the workspace's centralised
         ``sync_settings`` policy (structured keys are skipped to avoid duplicate
         flags).
+
+        When ``download`` enables any file-producing toggle and ``media_dir`` is
+        provided, yt-dlp additionally writes those artifacts (thumbnail /
+        subtitles / info-json / video) to ``media_dir`` via an ``%(id)s``
+        output template; ``--skip-download`` is dropped only when the operator
+        explicitly opts into ``download_video``.
         """
         cmd: list[str] = [
             sys.executable,
             "-m",
             "yt_dlp",
             "--dump-json",
-            "--skip-download",
             "--no-progress",
         ]
+        download_enabled = self._any_download_enabled(download)
+        if not (download_enabled and download.get("download_video")):
+            # Default: scrape metadata only. Only drop this when the operator
+            # explicitly wants the actual video file downloaded.
+            cmd.append("--skip-download")
         if playlist_start is not None:
             cmd += ["--playlist-start", str(playlist_start)]
         if playlist_end is not None:
@@ -249,6 +324,21 @@ class YtDlpAdapter(PlatformAdapter):
         # Structured fields (sorting / filtering / network / behaviour). The
         # global policy defaults keep --ignore-errors / --no-warnings enabled.
         cmd += self._render_structured(structured or {})
+        if download_enabled and media_dir:
+            cmd += ["-o", os.path.join(media_dir, "%(id)s", "%(id)s.%(ext)s")]
+            if download.get("write_thumbnail"):
+                cmd.append("--write-thumbnail")
+            if download.get("write_subtitles"):
+                cmd.append("--write-sub")
+            if download.get("write_auto_subtitles"):
+                cmd.append("--write-auto-sub")
+            sub_langs = download.get("subtitle_langs")
+            if sub_langs and str(sub_langs).strip():
+                cmd += ["--sub-langs", str(sub_langs).strip()]
+            if download.get("write_info_json"):
+                cmd.append("--write-info-json")
+            if download.get("download_video") and download.get("video_format"):
+                cmd += ["-f", str(download["video_format"]).strip()]
         if extra_args:
             for key, value in extra_args.items():
                 if key in YTDLP_SPEC_KEYS:
@@ -381,7 +471,11 @@ class YtDlpAdapter(PlatformAdapter):
         return {k: int(v) for k, v in raw.items() if isinstance(v, (int, float))}
 
     def _entry_to_content(
-        self, entry: Mapping[str, Any], handle: str, ctx: AdapterCallContext
+        self,
+        entry: Mapping[str, Any],
+        handle: str,
+        ctx: AdapterCallContext,
+        media: Mapping[str, Any] | None = None,
     ) -> PlatformContentData:
         video_id = str(entry.get("id") or "")
         title = (entry.get("title") or "").strip()
@@ -416,6 +510,7 @@ class YtDlpAdapter(PlatformAdapter):
                 "method": "yt_dlp",
                 **{f"yt_{k}": v for k, v in metrics.items()},
             },
+            media=media,
         )
 
     # -- PlatformAdapter contract -----------------------------------------
@@ -522,6 +617,15 @@ class YtDlpAdapter(PlatformAdapter):
         datebefore = yt_cfg.get("datebefore") if isinstance(yt_cfg, dict) else None
         max_items = yt_cfg.get("max_items") if isinstance(yt_cfg, dict) else None
         extra_args = yt_cfg.get("extra_args") if isinstance(yt_cfg, dict) else None
+        # Download policy (yt-dlp file-producing flags). When enabled we stage
+        # artifacts under a per-account media dir resolved from the workspace
+        # media root; the sync executor stores the produced paths on the row.
+        download_cfg = cfg.get("download") if isinstance(cfg.get("download"), dict) else None
+        media_root = cfg.get("media_root") if isinstance(cfg.get("media_root"), str) else None
+        media_dir = None
+        if download_cfg and media_root and self._any_download_enabled(download_cfg):
+            media_dir = os.path.join(media_root, self._safe_dir(handle))
+            os.makedirs(media_dir, exist_ok=True)
         if published_after is not None and not dateafter:
             dateafter = published_after.strftime("%Y%m%d")
 
@@ -543,6 +647,8 @@ class YtDlpAdapter(PlatformAdapter):
                 datebefore=datebefore,
                 extra_args=extra_args if isinstance(extra_args, dict) else None,
                 structured=yt_cfg if isinstance(yt_cfg, dict) else None,
+                download=download_cfg,
+                media_dir=media_dir,
             )
         except TransientAdapterError as exc:
             logger.warning(
@@ -582,7 +688,16 @@ class YtDlpAdapter(PlatformAdapter):
 
         items: list[PlatformContentData] = []
         for entry in entries[:window]:
-            content = self._entry_to_content(entry, handle, ctx)
+            media = None
+            vid = entry.get("id")
+            if media_dir and media_root and vid:
+                # ``media_root`` is workspace-scoped (MEDIA_ROOT/<ws>); the
+                # relative ``base`` stored on the row must be relative to the
+                # global MEDIA_ROOT so the ``/media`` route resolves it.
+                media = self._collect_media(
+                    os.path.dirname(media_root), media_dir, str(vid)
+                )
+            content = self._entry_to_content(entry, handle, ctx, media=media)
             items.append(content)
             self._cache[content.external_id] = self._metrics_from_entry(entry)
 

@@ -1,4 +1,5 @@
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -395,6 +396,12 @@ class PlatformSyncExecutor:
             yt_cfg["max_items"] = sync_cfg["max_contents"]
         merged = dict(config)
         merged["yt_dlp"] = {**(merged.get("yt_dlp") or {}), **yt_cfg}
+        # Download policy + the workspace media root so the adapter can archive
+        # artifacts (thumbnail / subtitles / video) during the sync.
+        if sync_cfg.get("download"):
+            merged["download"] = sync_cfg["download"]
+        media_root = os.environ.get("SIO_MEDIA_ROOT", "/workspace/media")
+        merged["media_root"] = os.path.join(media_root, str(account.workspace_id))
         return merged
 
     async def execute_account_run(self, run_id: UUID) -> None:
@@ -951,6 +958,7 @@ class PlatformSyncExecutor:
                 fetched_at=data.fetched_at,
                 source_url=data.canonical_url,
                 raw_payload_ref=None,
+                media=dict(data.media) if data.media else None,
             )
             self.session.add(content)
         elif skip_existing:
@@ -976,6 +984,7 @@ class PlatformSyncExecutor:
             content.source_provider = data.provider
             content.fetched_at = data.fetched_at
             content.source_url = data.canonical_url
+            content.media = dict(data.media) if data.media else None
         return content, created, skipped
 
     def _content_snapshot(self, content_id: UUID, data: PlatformMetricsData) -> ContentSnapshot:
