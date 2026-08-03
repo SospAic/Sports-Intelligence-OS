@@ -128,6 +128,13 @@ class YtDlpAdapter(PlatformAdapter):
     def __init__(self) -> None:
         self._fb: PlatformAdapter | None = None
         self._cache: dict[str, dict[str, int]] = {}
+        # Per-run memo of ``_run_yt_dlp_single`` results, keyed by URL. A single
+        # sync run calls ``resolve_account`` and ``fetch_account_analytics`` on the
+        # same channel URL; without this, yt-dlp is launched twice for the
+        # identical channel object — a needless full subprocess per account. The
+        # cache lives only for the adapter instance (one sync run / worker
+        # process), so it never serves stale data across accounts or runs.
+        self._single_json_cache: dict[str, tuple[dict[str, Any], str]] = {}
 
     # -- URL builders -------------------------------------------------------
 
@@ -431,6 +438,27 @@ class YtDlpAdapter(PlatformAdapter):
             return {}, err_text
         return obj, err_text
 
+    async def _run_yt_dlp_single_cached(
+        self, url: str, *, playlist_end: int = 1
+    ) -> tuple[dict[str, Any], str]:
+        """``_run_yt_dlp_single`` with a per-instance memo.
+
+        ``resolve_account`` and ``fetch_account_analytics`` both query the same
+        channel URL during one sync run; the memo collapses those into a single
+        yt-dlp invocation, removing a redundant full subprocess per account. A
+        cached failure (empty dict from a swallowed TransientAdapterError) is
+        also reused — the identical command would fail again anyway, so retrying
+        would only add latency. The cache is scoped to the adapter instance, so
+        it never leaks across accounts or runs.
+        """
+
+        cached = self._single_json_cache.get(url)
+        if cached is not None:
+            return cached
+        result = await self._run_yt_dlp_single(url, playlist_end=playlist_end)
+        self._single_json_cache[url] = result
+        return result
+
     # -- shared field extractors -------------------------------------------
 
     @staticmethod
@@ -531,7 +559,7 @@ class YtDlpAdapter(PlatformAdapter):
     ) -> PlatformAccountData:
         handle = self._normalize_handle(locator)
         try:
-            data, _ = await self._run_yt_dlp_single(self._account_url(handle), playlist_end=1)
+            data, _ = await self._run_yt_dlp_single_cached(self._account_url(handle), playlist_end=1)
         except TransientAdapterError:
             data = {}
         display = data.get("uploader") or data.get("channel")
@@ -587,7 +615,7 @@ class YtDlpAdapter(PlatformAdapter):
     ) -> PlatformMetricsData:
         handle = self._normalize_handle(external_id)
         try:
-            data, _ = await self._run_yt_dlp_single(self._account_url(handle), playlist_end=1)
+            data, _ = await self._run_yt_dlp_single_cached(self._account_url(handle), playlist_end=1)
         except TransientAdapterError:
             data = {}
         # ``analytics_fetched`` tells the sync engine whether yt-dlp actually

@@ -1087,3 +1087,53 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - 后端：ruff 通过；`sync.py` 语法 `py_compile` 通过；新增 2 个 `_config_for` 单测（强制缩略图 / 显式关闭被尊重）。
 - 前端：`tsc --noEmit` 0 错；`eslint` 0 错（仅 `content-detail-client.tsx` 既有 `<img>` 警告，非本次引入）；`media.test.ts` 8 passed（含 `contentCoverUrl` 与 `/api/v1/media/` 透传）。
 - 部署：标准 `docker compose build api worker beat web` + `up -d` 重建并应用；web 镜像已触发 `docker compose build web` 验证编译。
+
+---
+
+## 2026-08-03（续）：同步被误报「指标提取失败，仅更新了账号资料」
+
+用户报障：「同步再次提示失败：同步失败 指标提取失败，仅更新了账号资料」。分析日志与数据库后定位根因并修复。
+
+### 根因（诊断）
+- 受影响账号均为 **TikTok / Douyin**（实际 adapter_key = `tiktok_ytdlp` / `douyin_ytdlp`）：`@olympics`、`@nba`、`@boltmotivation`、抖音「的抖音」等，约 5 个账号持续 `sync_status=degraded`、`last_sync_error_code=account_metrics_extraction_failed`。
+- 数据库 `account_snapshots` 证实：这些账号的资料与作品列表**都成功同步**（TikTok 已入库 195 条），但 `follower_count / video_count / total_view_count` 三项**全部为 NULL**，且 `unavailable_metrics = ["follower_count","video_count","total_view_count"]`。
+- 代码路径：`yt_dlp.fetch_account_analytics` 对 TikTok/Douyin 经 yt-dlp 几乎取不到 `channel_follower_count`/`playlist_count`（且 `total_view_count` 硬编码 `None`）；`_sync_account` 的降级判定是「三项关键指标全为 None → degraded」。于是**每次 TikTok/Douyin 同步都被恒定误判为降级**，UI 显示「同步失败 / 指标提取失败，仅更新了账号资料」——而资料与作品其实都已更新。属误报，非真实采集失败。
+- Bilibili 的 `retry_exhausted`（LoginRequiredError）是另一独立问题，本次未动。
+
+### 修复
+- `apps/api/app/adapters/platforms/yt_dlp.py` `fetch_account_analytics`：新增 `analytics_fetched = bool(data)` 标志，区分「yt-dlp 真正取到账号对象（平台不暴露指标，属平台限制）」与「抓取真正失败（空结果 / 瞬态错误）」；缺失指标仍经 `unavailable_metrics` 上报。
+- `apps/api/app/services/sync.py` `_sync_account`：降级判定优先采用适配器显式 `analytics_fetched` 标志——仅当抓取**真正失败**才降级；未设置该标志的适配器（如原生 TikTok/Douyin/Browser 适配器）回退原「三项全 None」启发式，保留既有 `test_degraded/success` 语义。
+- 结果：TikTok/Douyin 经 yt-dlp 的成功部分抓取将标记为 `success`（资料+作品已更新），缺失指标在详情以「相关数据缺失」呈现，不再误报失败。真正抓取失败仍会 `degraded` 并保留错误码。
+
+### 验证
+- 后端单测：`test_sync_degraded_status.py` + `test_yt_dlp_adapter.py` 共 **30 passed**（含 3 个新增回归用例：部分抓取=success 非 degraded、瞬态失败=analytics_fetched False、yt-dlp 适配器标志正确）；ruff 绿。
+- 部署：`docker compose build api worker beat` 重建含修复的镜像（运行中容器此前是旧构建，需重建）。
+
+### 已知限制
+- TikTok/Douyin 经 yt-dlp 的粉丝数/作品数/播放数仍可能缺（平台不暴露）。若要补全，需在 `fetch_account_analytics` 增加浏览器适配器兜底或官方 API，属独立增强项，本次未做以免扩大风险。
+
+---
+
+## 2026-08-03（续二）：同步进度细化 + 去除重复 yt-dlp 账号抓取
+
+用户两点反馈：(1) 同步进度详情再细一点（如「获取到 X 条作品」「正在获取第 X 条作品详情」）；(2) 同步任务太慢，要求「按 yt-dlp 运行速度执行，不要额外加延时」。
+
+### 排查结论（延时）
+- **同步路径无任何人为 sleep/限速**：`sync.py` 内容循环无 `asyncio.sleep`；yt-dlp 适配器的 `--sleep-interval`/`--sleep-requests` 在 `settings` 默认 `None`（即不生效）；`sync_account` celery 任务无 `rate_limit`；`fetch_content_analytics` 读取内存缓存（不额外起网络请求）。
+- **真实额外延时**：`_sync_account` 对同一账号 URL 先后调用 `resolve_account`（→ `_run_yt_dlp_single`）与 `fetch_account_analytics`（→ `_run_yt_dlp_single`），**每个账号同步多跑了一次完整的 yt-dlp 子进程**。这是非 yt-dlp 原生速度的冗余开销，是「太慢」的主因之一。
+
+### 修复
+- `yt_dlp.py`：`YtDlpAdapter` 增加 per-instance `_single_json_cache`，新增 `_run_yt_dlp_single_cached()`；`resolve_account` 与 `fetch_account_analytics` 改走缓存。同一账号一次同步只起 **1 次** yt-dlp 取频道对象（缓存按 URL 隔离，仅存活于适配器实例/本次同步，不会跨账号或跨次串数据；失败空结果也复用，避免重复失败重试）。
+- 进度细化（`sync.py`）：
+  - `_sync_account` 在资料取到后、读指标前补一条 `正在读取公开指标` 心跳。
+  - `_sync_contents` 每页列表返回后即上报 `已获取第 {p+1}/{limit} 页作品列表，本页 N 条，累计 M 条`；
+  - 页内每处理 25 条（及末条）上报 `正在获取第 {累计} 条作品详情（本页 i/N，累计 M 条）`，并保持每 25 条一次轻量 commit 让前端轮询可见；
+  - 页末上报 `本页 K 条作品已入库，累计 M 条，正在计算指标`。前端原本就用 `progress_message` + `items_processed/items_total` 渲染，无需改前端。
+  - 计数口径不变：`run.items_processed` 仍按每页全部条目（含被拒）递增，仅改为循环内逐条累加（去掉页末一次性 `+= len(page.items)`）。
+
+### 验证
+- 后端单测：**31 passed**（新增 `test_account_stage_reuses_single_yt_dlp_run` 断言账号阶段两次取频道仅触发 1 次 `_run_yt_dlp_single`）；ruff 绿。
+- 部署：`docker compose build api worker beat` 重建含修复镜像（运行中容器为旧构建需重建）。
+
+### 说明
+- 分页本身（每个窗口 1 次 yt-dlp 列表调用、`sync_page_limit` 默认 20 页 × 50 条）是 yt-dlp 原生分页成本，属用户接受的「yt-dlp 运行速度」，未改动；本次仅去掉了账号阶段多余的整次抓取。

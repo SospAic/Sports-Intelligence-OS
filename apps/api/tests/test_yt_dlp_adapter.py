@@ -178,6 +178,29 @@ async def test_youtube_resolve_and_analytics():
 
 
 @pytest.mark.asyncio
+async def test_account_stage_reuses_single_yt_dlp_run():
+    """``resolve_account`` and ``fetch_account_analytics`` both query the same
+    channel URL during one sync run. The per-instance memo must collapse them
+    into a single yt-dlp invocation — a redundant second subprocess per account
+    is exactly the extra latency we removed (an account sync should run at
+    yt-dlp's native speed, not pay for the channel object twice)."""
+
+    from unittest.mock import AsyncMock
+
+    adapter = YouTubeYtDlpAdapter()
+    single = dict(YOUTUBE_CHANNEL)
+    single.setdefault("playlist_count", 500)
+    fake = AsyncMock(return_value=(single, ""))
+    adapter._run_yt_dlp_single = fake  # type: ignore[assignment]
+    ctx = make_ctx()
+
+    await adapter.resolve_account(ctx, "@olympics")
+    await adapter.fetch_account_analytics(ctx, "olympics")
+
+    assert fake.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_youtube_list_and_content_analytics_cache():
     adapter = YouTubeYtDlpAdapter()
     _bind(adapter, [YOUTUBE_VIDEO], [YOUTUBE_CHANNEL])

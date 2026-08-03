@@ -528,7 +528,9 @@ class PlatformSyncExecutor:
             await self.session.commit()
             if await self._aborted(run):
                 return
-            created, updated, metrics_degraded = await self._sync_account(account, adapter, ctx)
+            created, updated, metrics_degraded = await self._sync_account(
+                account, adapter, ctx, run
+            )
             self._set_progress(run, 25, "content_list", "账号资料已完成，正在获取作品列表")
             await self.session.commit()
             content_created, content_updated = await self._sync_contents(
@@ -752,6 +754,7 @@ class PlatformSyncExecutor:
         account: Account,
         adapter: PlatformAdapter,
         ctx: AdapterCallContext,
+        run: SyncRun,
     ) -> tuple[int, int, bool]:
         data = await adapter.resolve_account(ctx, account.external_id)
         if not data.external_id.strip() or not data.display_name.strip():
@@ -760,6 +763,8 @@ class PlatformSyncExecutor:
             raise AdapterContractError("account response contains an error-page title")
         if data.profile_url and not data.profile_url.lower().startswith(("https://", "http://")):
             raise AdapterContractError("account response contains an invalid profile URL")
+        self._set_progress(run, 18, "account_profile", "账号资料已获取，正在读取公开指标")
+        await self.session.commit()
         metrics = await adapter.fetch_account_analytics(ctx, data.external_id)
         original_locator = account.external_id
         account.external_id = data.external_id
@@ -862,7 +867,20 @@ class PlatformSyncExecutor:
                 cursor=cursor,
                 page_size=window,
             )
+            batch_total = len(page.items)
             page_items: list[ContentItem] = []
+            # Per-page heartbeat: tell the UI exactly how many works were just
+            # listed and the running total, instead of only updating once the
+            # whole page (upsert + analytics) is done.
+            self._set_progress(
+                run,
+                30 + round(55 * page_index / self.settings.sync_page_limit),
+                "content_list",
+                f"已获取第 {page_index + 1}/{self.settings.sync_page_limit} 页作品列表，"
+                f"本页 {batch_total} 条，累计 {run.items_processed} 条",
+            )
+            await self.session.commit()
+            page_processed = 0
             for data in page.items:
                 rejection = self._content_rejection_reason(data)
                 if rejection is not None:
@@ -883,6 +901,12 @@ class PlatformSyncExecutor:
                         "rejected_items": rejected,
                     }
                     continue
+                # Count every listed work (including rejected ones) so the live
+                # counter matches the per-page total, then drive a fine-grained
+                # progress heartbeat every 25 works during the slow per-item
+                # upsert/analytics phase.
+                run.items_processed += 1
+                page_processed += 1
                 content, was_created, was_skipped = await self._upsert_content(
                     account, data, skip_existing=skip_existing
                 )
@@ -890,6 +914,19 @@ class PlatformSyncExecutor:
                 created += int(was_created)
                 skipped += int(was_skipped)
                 updated += int((not was_created) and (not was_skipped))
+                if page_processed % 25 == 0 or page_processed == batch_total:
+                    self._set_progress(
+                        run,
+                        min(
+                            30
+                            + round(55 * (page_index + 0.5) / self.settings.sync_page_limit),
+                            85,
+                        ),
+                        "content_metrics",
+                        f"正在获取第 {run.items_processed} 条作品详情"
+                        f"（本页 {page_processed}/{batch_total}，累计 {run.items_processed} 条）",
+                    )
+                    await self.session.commit()
             await self.session.flush()
             analytics = await adapter.fetch_content_analytics(
                 ctx, [item.external_id for item in page_items]
@@ -900,7 +937,6 @@ class PlatformSyncExecutor:
                 if matched_content is not None and analytics_data.metrics:
                     self.session.add(self._content_snapshot(matched_content.id, analytics_data))
             synthesized = self._synthesize_content_snapshots(adapter, ctx, page_items, analytics)
-            run.items_processed += len(page.items)
             run.records_created = created
             # Field updates + browser-derived snapshots both count as updates.
             run.records_updated = updated + synthesized
@@ -913,7 +949,7 @@ class PlatformSyncExecutor:
                 run,
                 min(progress, 85),
                 "content_metrics",
-                f"已处理 {run.items_processed} 个作品，正在同步作品指标",
+                f"本页 {len(page_items)} 条作品已入库，累计 {run.items_processed} 条，正在计算指标",
             )
             if not page.next_cursor:
                 run.items_total = run.items_processed
