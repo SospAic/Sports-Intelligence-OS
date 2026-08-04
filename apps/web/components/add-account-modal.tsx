@@ -15,7 +15,7 @@ import {
   DownloadSettingsFields,
 } from "@/components/download-settings-fields";
 import { useToast } from "@/components/toast";
-import { apiRequest } from "@/lib/browser-api";
+import { ApiError, apiRequest } from "@/lib/browser-api";
 import { buttonClass, inputClass, secondaryButtonClass } from "@/components/ui";
 
 const DOWNLOAD_DEFAULTS_KEY = "sio-account-download-defaults";
@@ -49,9 +49,12 @@ function writeLocalDownloadDefaults(d: YtDlpDownloadSettings) {
 export function AddAccountModal({
   onClose,
   onCreated,
+  onDuplicate,
 }: {
   onClose: () => void;
   onCreated: () => void | Promise<void>;
+  /** Called when the server rejects the new account as a duplicate (HTTP 409). */
+  onDuplicate?: (externalId: string) => void;
 }) {
   const { workspaceId } = useWorkspace();
   const { notify } = useToast();
@@ -127,7 +130,15 @@ export function AddAccountModal({
       await onCreated();
       onClose();
     } catch (error) {
-      notify(error instanceof Error ? error.message : "添加失败", "error");
+      if (error instanceof ApiError && error.status === 409) {
+        // Account already exists — bubble + list highlight are handled by the
+        // parent (the toast already renders bottom-right by design).
+        notify("该账号已存在，已在监控列表中定位", "error");
+        onDuplicate?.(trimmed);
+        onClose();
+      } else {
+        notify(error instanceof Error ? error.message : "添加失败", "error");
+      }
     } finally {
       setPending(false);
     }

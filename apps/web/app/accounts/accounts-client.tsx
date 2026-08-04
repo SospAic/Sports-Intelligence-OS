@@ -435,6 +435,7 @@ export function AccountsClient() {
     () => readLocalAccountView().visibility,
   );
   const [creating, setCreating] = useState(false);
+  const [highlightExternalId, setHighlightExternalId] = useState<string | null>(null);
   const [drawerAccount, setDrawerAccount] = useState<AccountRecord | null>(
     null,
   );
@@ -850,6 +851,15 @@ export function AccountsClient() {
           onCreated={() => {
             /* modal refreshes the accounts list itself */
           }}
+          onDuplicate={(externalId) => {
+            // Surface the existing account in the list and flash its row.
+            setQuery(externalId);
+            setPlatform("");
+            setActiveState("all");
+            setPage(1);
+            setHighlightExternalId(externalId);
+            window.setTimeout(() => setHighlightExternalId(null), 3200);
+          }}
         />
       )}
       {accounts.isLoading ? (
@@ -873,6 +883,9 @@ export function AccountsClient() {
           onPageChange={setPage}
           empty="尚未添加监控账号"
           getRowId={(row) => row.id}
+          getRowClassName={(row) =>
+            row.external_id === highlightExternalId ? "animate-account-flash" : ""
+          }
           columnVisibility={columnVisibility}
           onColumnVisibilityChange={setColumnVisibility}
           virtualized={virtualized}

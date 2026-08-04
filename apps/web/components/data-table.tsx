@@ -30,6 +30,7 @@ export function DataTable<T>({
   onPageChange,
   empty = "暂无数据",
   getRowId,
+  getRowClassName,
   columnVisibility,
   onColumnVisibilityChange,
   density = "comfortable",
@@ -45,6 +46,7 @@ export function DataTable<T>({
   onPageChange?: (page: number) => void;
   empty?: string;
   getRowId?: (row: T) => string;
+  getRowClassName?: (row: T) => string;
   columnVisibility?: VisibilityState;
   onColumnVisibilityChange?: Dispatch<SetStateAction<VisibilityState>>;
   density?: "compact" | "comfortable";
@@ -191,7 +193,10 @@ export function DataTable<T>({
               </>
             ) : (
               rows.map((row) => (
-                <tr className="hover:bg-slate-900/60" key={row.id}>
+                <tr
+                  className={`hover:bg-slate-900/60 ${getRowClassName?.(row.original) ?? ""}`}
+                  key={row.id}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <td
                       className={`whitespace-nowrap px-4 align-middle text-slate-300 ${density === "compact" ? "py-1.5" : "py-3"}`}
