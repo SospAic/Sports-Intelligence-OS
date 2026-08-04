@@ -670,9 +670,8 @@ class SettingsService:
         """Return the workspace's global fetch policy, with defaults filled in."""
 
         row = await self._sync_settings_row(workspace_id)
-        read = self._sync_settings_read(row)
-        read.sync_task_max_retries = await self.effective_sync_task_max_retries()
-        return read
+        effective = await self.effective_sync_task_max_retries()
+        return self._sync_settings_read(row, effective)
 
     async def update_sync_settings(
         self, workspace_id: UUID, actor_id: UUID, payload: SyncSettingsUpdate
@@ -710,9 +709,8 @@ class SettingsService:
         )
         await self.session.commit()
         await self.session.refresh(row)
-        read = self._sync_settings_read(row)
-        read.sync_task_max_retries = await self.effective_sync_task_max_retries()
-        return read
+        effective = await self.effective_sync_task_max_retries()
+        return self._sync_settings_read(row, effective)
 
     async def get_runtime_override(self, key: str) -> Any | None:
         """Return the stored override value for ``key``, or ``None`` if unset."""
@@ -754,16 +752,24 @@ class SettingsService:
             ),
         )
 
-    def _sync_settings_read(self, row: SyncSettings | None) -> SyncSettingsRead:
+    def _sync_settings_read(
+        self, row: SyncSettings | None, sync_task_max_retries: int
+    ) -> SyncSettingsRead:
         if row is None:
-            return SyncSettingsRead(config=SyncSettingsConfig(**DEFAULT_SYNC_SETTINGS_CONFIG))
+            return SyncSettingsRead(
+                config=SyncSettingsConfig(**DEFAULT_SYNC_SETTINGS_CONFIG),
+                sync_task_max_retries=sync_task_max_retries,
+            )
         stored = dict(row.config or {})
         merged: dict[str, Any] = {**DEFAULT_SYNC_SETTINGS_CONFIG, **stored}
         merged["yt_dlp"] = {
             **DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"],
             **(stored.get("yt_dlp") or {}),
         }
-        return SyncSettingsRead(config=SyncSettingsConfig(**merged))
+        return SyncSettingsRead(
+            config=SyncSettingsConfig(**merged),
+            sync_task_max_retries=sync_task_max_retries,
+        )
 
     async def llm_setting(self, workspace_id: UUID) -> LLMProviderSettingRead:
         setting = await self._llm_row(workspace_id)

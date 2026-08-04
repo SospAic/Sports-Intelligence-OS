@@ -38,6 +38,25 @@ def test_runtime_settings_are_detailed_but_do_not_expose_credentials(
     assert "password=" not in serialized
 
 
+def test_sync_settings_loads_with_effective_retry_count(
+    client: TestClient,
+) -> None:
+    """GET /settings/sync must succeed even before any row exists.
+
+    Regression guard for the Pydantic ValidationError that occurred because
+    ``SyncSettingsRead`` required ``sync_task_max_retries`` but
+    ``_sync_settings_read`` constructed the object without it.
+    """
+
+    authenticate(client)
+    response = client.get("/api/v1/settings/sync")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert isinstance(body["sync_task_max_retries"], int)
+    assert 0 <= body["sync_task_max_retries"] <= 10
+    assert "config" in body
+
+
 def test_workspace_llm_configuration_is_encrypted_masked_and_used_by_descriptors(
     client: TestClient,
     database_path: Path,
