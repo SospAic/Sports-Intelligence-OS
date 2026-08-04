@@ -708,7 +708,7 @@ class YtDlpAdapter(PlatformAdapter):
                 **{f"yt_{k}": v for k, v in metrics.items()},
             },
             media=media,
-            tags=_clean_tags(entry.get("tags")),
+            tags=self._clean_tags(entry.get("tags")),
         )
 
     # -- PlatformAdapter contract -----------------------------------------
