@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/browser-api";
+import { useWorkspace } from "@/components/app-shell";
 import {
   Bar,
   BarChart,
@@ -63,6 +64,7 @@ const MODES: { key: string; label: string; hint: string }[] = [
 const DAY_OPTIONS = [7, 30, 90];
 
 export function AnalyticsClient() {
+  const { workspaceId } = useWorkspace();
   const [selected, setSelected] = useState<string[]>([]); // 空 = 全部平台
   const [category, setCategory] = useState<string>(""); // 空 = 全部分类
   const [days, setDays] = useState<number>(30);
@@ -75,8 +77,12 @@ export function AnalyticsClient() {
   const qs = params.toString();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["trends-aggregate", qs],
-    queryFn: () => apiRequest<Agg>(`/trends/aggregate?${qs}`, {}),
+    queryKey: ["trends-aggregate", qs, workspaceId],
+    enabled: Boolean(workspaceId),
+    queryFn: () =>
+      apiRequest<Agg>(`/trends/aggregate?${qs}`, {
+        workspaceId: workspaceId ?? undefined,
+      }),
   });
 
   const activePlatforms = selected.length

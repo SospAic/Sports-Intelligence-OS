@@ -1103,6 +1103,7 @@ class PlatformSyncExecutor:
             select(ContentItem).where(
                 ContentItem.workspace_id == account.workspace_id,
                 ContentItem.platform_id == account.platform_id,
+                ContentItem.account_id == account.id,
                 ContentItem.external_id == data.external_id,
             )
         )

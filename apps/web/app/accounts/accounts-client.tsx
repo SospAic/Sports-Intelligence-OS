@@ -3,11 +3,9 @@
 import type {
   AccountRecord,
   AccountRecordPage,
-  AccountSyncSettingsOverride,
   PlatformRecord,
   SyncRunPage,
   SyncRunRecord,
-  YtDlpDownloadSettings,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient, useQueries } from "@tanstack/react-query";
 import type { ColumnDef, VisibilityState } from "@tanstack/react-table";
@@ -29,12 +27,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
-import {
-  DEFAULT_DOWNLOAD_SETTINGS,
-  DownloadSettingsFields,
-} from "@/components/download-settings-fields";
 import { ExternalImage } from "@/components/external-image";
 import { SyncSettingsModal } from "@/components/sync-settings-modal";
+import { AddAccountModal } from "@/components/add-account-modal";
 import { useToast } from "@/components/toast";
 import {
   Badge,
@@ -110,27 +105,6 @@ function readLocalAccountView(): AccountViewPrefs {
 function writeLocalAccountView(prefs: AccountViewPrefs) {
   try {
     window.localStorage.setItem("sio-account-view", JSON.stringify(prefs));
-  } catch {
-    // localStorage unavailable; ignore
-  }
-}
-
-const DOWNLOAD_DEFAULTS_KEY = "sio-account-download-defaults";
-
-function readLocalDownloadDefaults(): YtDlpDownloadSettings {
-  if (typeof window === "undefined") return DEFAULT_DOWNLOAD_SETTINGS;
-  try {
-    const raw = window.localStorage.getItem(DOWNLOAD_DEFAULTS_KEY);
-    if (!raw) return DEFAULT_DOWNLOAD_SETTINGS;
-    return { ...DEFAULT_DOWNLOAD_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_DOWNLOAD_SETTINGS;
-  }
-}
-
-function writeLocalDownloadDefaults(d: YtDlpDownloadSettings) {
-  try {
-    window.localStorage.setItem(DOWNLOAD_DEFAULTS_KEY, JSON.stringify(d));
   } catch {
     // localStorage unavailable; ignore
   }
@@ -461,17 +435,10 @@ export function AccountsClient() {
     () => readLocalAccountView().visibility,
   );
   const [creating, setCreating] = useState(false);
-  const [pending, setPending] = useState(false);
   const [drawerAccount, setDrawerAccount] = useState<AccountRecord | null>(
     null,
   );
-  const [downloadDefaults, setDownloadDefaults] =
-    useState<YtDlpDownloadSettings>(() => readLocalDownloadDefaults());
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
-  // Requirement: offer "add account + sync immediately" so a freshly added
-  // account pulls real data in one step instead of waiting for the next
-  // scheduled sync. Defaults to on; the user can uncheck to add without syncing.
-  const [syncImmediately, setSyncImmediately] = useState(true);
   const serverPrefsApplied = useRef(false);
 
   const serverPrefs = useQuery({
@@ -583,62 +550,6 @@ export function AccountsClient() {
       notify("视图设置已同步到服务端");
     } catch {
       notify("视图设置已保存到当前浏览器（服务端同步失败）");
-    }
-  }
-  async function createAccount(form: FormData) {
-    if (!workspaceId) return;
-    setPending(true);
-    try {
-      const created = await apiRequest<AccountRecord>("/accounts", {
-        method: "POST",
-        workspaceId,
-        csrf: true,
-        body: JSON.stringify({
-          external_id: form.get("external_id"),
-          display_name: form.get("display_name") || null,
-          metadata: {},
-        }),
-      });
-      // Persist the chosen download policy as this account's per-account sync
-      // override (requirement 1) and remember it locally for the next add.
-      await apiRequest<AccountSyncSettingsOverride>(
-        `/accounts/${encodeURIComponent(created.id)}/sync-settings`,
-        {
-          method: "PATCH",
-          workspaceId,
-          csrf: true,
-          body: JSON.stringify({ download: downloadDefaults }),
-        },
-      ).catch(() => null);
-      writeLocalDownloadDefaults(downloadDefaults);
-      // Requirement: optionally trigger a real sync right after the account is
-      // created, so the user sees live data without waiting for the scheduler.
-      let syncQueued = true;
-      if (syncImmediately) {
-        syncQueued = await apiRequest(
-          `/accounts/${encodeURIComponent(created.id)}/sync`,
-          {
-            method: "POST",
-            workspaceId,
-            csrf: true,
-          },
-        )
-          .then(() => true)
-          .catch(() => false);
-      }
-      notify(
-        syncImmediately
-          ? syncQueued
-            ? "账号已添加并触发同步；真实数据将在同步完成后出现。"
-            : "账号已添加，但立即同步未能启动（适配器可能尚未实现或账号已停用），你可稍后在账号行手动同步。"
-          : "账号已添加；默认下载设置已保存，真实数据将在同步成功后出现。",
-      );
-      setCreating(false);
-      await client.invalidateQueries({ queryKey: ["accounts"] });
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "添加失败", "error");
-    } finally {
-      setPending(false);
     }
   }
   function openSync(account: AccountRecord) {
@@ -934,61 +845,12 @@ export function AccountsClient() {
         </select>
       </div>
       {creating && (
-        <form
-          action={createAccount}
-          className="grid gap-3 rounded-2xl border border-cyan-900/60 bg-slate-950/70 p-5 md:grid-cols-2 xl:grid-cols-3"
-        >
-          <input
-            name="external_id"
-            required
-            className={`${inputClass} md:col-span-2 xl:col-span-2`}
-            placeholder="账号主页网址（如 https://youtube.com/@xxx、https://tiktok.com/@xxx）"
-          />
-          <input
-            name="display_name"
-            className={inputClass}
-            placeholder="显示名称（可选，同步后自动获取）"
-          />
-          <div className="space-y-3 md:col-span-2 xl:col-span-3">
-            <div>
-              <h3 className="text-sm font-medium text-slate-200">
-                下载内容默认设置
-              </h3>
-              <p className="mt-0.5 text-xs text-slate-500">
-                为该账号设置默认的同步下载内容；保存后也会被记录，下次添加账号时自动沿用。
-              </p>
-            </div>
-            <DownloadSettingsFields
-              value={downloadDefaults}
-              onChange={setDownloadDefaults}
-            />
-          </div>
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300 md:col-span-2 xl:col-span-3">
-            <input
-              type="checkbox"
-              checked={syncImmediately}
-              onChange={(event) => setSyncImmediately(event.target.checked)}
-              className="size-4 rounded border-slate-600 bg-slate-900 accent-cyan-500"
-            />
-            添加后立即同步（创建账号后立刻触发一次真实数据同步）
-          </label>
-          <div className="flex gap-2">
-            <button disabled={pending} className={buttonClass}>
-              {pending ? "保存中…" : "保存账号"}
-            </button>
-            <button
-              type="button"
-              className={secondaryButtonClass}
-              onClick={() => setCreating(false)}
-            >
-              取消
-            </button>
-          </div>
-          <p className="text-xs text-slate-500 md:col-span-2">
-            只需粘贴账号主页网址，系统会自动识别平台（YouTube / TikTok / 抖音 / Bilibili），无需手动选择。
-            添加账号不会伪造统计数据；只有 Adapter 同步成功后才会写入真实快照。
-          </p>
-        </form>
+        <AddAccountModal
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            /* modal refreshes the accounts list itself */
+          }}
+        />
       )}
       {accounts.isLoading ? (
         <div className="rounded-2xl border border-slate-800">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
   ArrowUp,
@@ -39,6 +39,7 @@ import { ScoreExplanationPanel } from "@/components/score-explanation";
 import { useToast } from "@/components/toast";
 import { DerivativesPanel } from "@/components/derivatives-panel";
 import { SearchPanel } from "@/components/search-panel";
+import { AnalyticsClient } from "./analytics/analytics-client";
 import {
   Badge,
   PageHeader,
@@ -728,12 +729,13 @@ function SortDropdown({
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 const MODULE_TABS: {
-  key: "trends" | "derivatives" | "search";
+  key: "trends" | "derivatives" | "search" | "analytics";
   label: string;
 }[] = [
   { key: "trends", label: "趋势榜单" },
   { key: "derivatives", label: "衍生话题" },
   { key: "search", label: "智能搜索" },
+  { key: "analytics", label: "情报分析" },
 ];
 
 export function TrendsClient() {
@@ -742,12 +744,14 @@ export function TrendsClient() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const [liveConnected, setLiveConnected] = useState(false);
 
   const [platformRaw] = useUrlState("platform", "all");
   const platform = platformRaw as Platform;
   const [collecting, setCollecting] = useState(false);
   const [category, setCategory] = useUrlState("category", "全部");
-  const [tab, setTab] = useState<"trends" | "derivatives" | "search">("trends");
+  const [tab, setTab] = useState<"trends" | "derivatives" | "search" | "analytics">("trends");
 
   // Pagination & sort state for videos
   const [videoPage, setVideoPage] = useState(1);
@@ -899,6 +903,35 @@ export function TrendsClient() {
     prevVideoPageRef.current = videoPage;
   }, [isLoadMore, videos.isSuccess, videos.data, videoPage]);
 
+  // ─── Real-time dashboard stream (SSE) ──────────────────────────────────────
+  // Subscribes to /trends/stream and merges each pushed dashboard snapshot into
+  // the react-query cache, so the platform-overview cards update live without
+  // polling. Replaces the previously static dashboard view (STATUS.md known
+  // limitation: 趋势分析实时更新). The browser auto-reconnects on error.
+  useEffect(() => {
+    if (!workspaceId) return;
+    const source = new EventSource(
+      `/api/v1/trends/stream?interval=5`,
+    );
+    source.onopen = () => setLiveConnected(true);
+    source.onmessage = (event) => {
+      try {
+        const snapshot = JSON.parse(event.data) as DashboardResponse;
+        queryClient.setQueryData(
+          ["trends-dashboard", workspaceId],
+          snapshot,
+        );
+      } catch {
+        // Ignore malformed frames; the next tick will refresh.
+      }
+    };
+    source.onerror = () => setLiveConnected(false);
+    return () => {
+      source.close();
+      setLiveConnected(false);
+    };
+  }, [workspaceId, queryClient]);
+
   // ─── Actions ─────────────────────────────────────────────────────────────
 
   async function collectData() {
@@ -990,6 +1023,12 @@ export function TrendsClient() {
         description="跨平台真实视频样本、热点衍生话题与智能搜索分析"
         actions={
           <div className="flex items-center gap-2">
+            {liveConnected && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-medium text-emerald-300 ring-1 ring-emerald-500/30">
+                <span className="size-1.5 animate-pulse rounded-full bg-emerald-400" />
+                实时
+              </span>
+            )}
             <button
               className={buttonClass}
               onClick={collectData}
@@ -1562,6 +1601,8 @@ export function TrendsClient() {
       {tab === "derivatives" && <DerivativesPanel workspaceId={workspaceId!} />}
 
       {tab === "search" && <SearchPanel workspaceId={workspaceId!} />}
+
+      {tab === "analytics" && <AnalyticsClient />}
     </main>
   );
 }

@@ -96,6 +96,8 @@ services:
       - -c
       - cd apps/api && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
+      # NOTE: host port 8000 was unreachable because Windows (Hyper-V/WinNAT)
+      # reserves TCP 7998-8097. Using 18000 (outside the reserved range).
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/workspace/data:ro
@@ -189,6 +191,8 @@ services:
   proxy:
     image: caddy:2.10-alpine
     ports:
+      # NOTE: host port 8080 was unreachable because Windows (Hyper-V/WinNAT)
+      # reserves TCP 7998-8097. Using 8200 (outside the reserved range).
       - "8080:80"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro

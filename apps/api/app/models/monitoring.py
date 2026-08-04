@@ -193,7 +193,12 @@ class AccountSnapshot(Base):
 class ContentItem(TimestampMixin, Base):
     __tablename__ = "content_items"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "platform_id", "external_id"),
+        # A video can legitimately belong to more than one tracked account in the
+        # same workspace (e.g. @olympics and @olympicsbringsustogether both
+        # feature the same Olympic clips). Scoping the unique key by account_id
+        # lets each account own its own copy instead of one global row that the
+        # second account can never claim (the old skip_existing "hollow success").
+        UniqueConstraint("workspace_id", "platform_id", "account_id", "external_id"),
         CheckConstraint(
             "source_kind IN ('live', 'imported')",
             name="content_item_source_kind",

@@ -1,7 +1,10 @@
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.api.dependencies import (
     CsrfProtectedAuth,
@@ -42,6 +45,49 @@ async def get_dashboard(
     workspace: CurrentWorkspace, db: DatabaseSession
 ) -> TrendDashboard:
     return await TrendService(db).get_dashboard(workspace.workspace_id)
+
+
+@router.get("/stream")
+async def stream_dashboard(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+    interval: Annotated[float, Query(ge=1.0, le=60.0)] = 5.0,
+) -> StreamingResponse:
+    """Server-Sent Events stream of the live trend dashboard.
+
+    Pushes the latest :class:`TrendDashboard` snapshot every ``interval``
+    seconds so the frontend can refresh without polling. This replaces the
+    previously static Recharts view with a real-time feed (STATUS.md known
+    limitation: "趋势分析前端使用 Recharts 静态图表，尚未实现实时更新").
+
+    GET is used (not POST) so the browser ``EventSource`` API can subscribe
+    without a CSRF header; authentication is enforced via the session cookie
+    through ``CurrentWorkspace``. The stream terminates when the client
+    disconnects or the request is cancelled.
+    """
+    service = TrendService(db)
+
+    async def event_generator() -> AsyncIterator[str]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                dashboard = await service.get_dashboard(workspace.workspace_id)
+                yield f"data: {dashboard.model_dump_json()}\n\n"
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/topics", response_model=TrendTopicPage)
