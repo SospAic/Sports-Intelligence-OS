@@ -604,6 +604,88 @@ def test_cancel_sync_run_route_returns_404_for_missing_run(
     assert response.json()["code"] == "sync_resource_not_found"
 
 
+@pytest.mark.asyncio
+async def test_sync_run_detail_endpoint_returns_ordered_tracklog(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /accounts/{id}/sync-runs/{run_id} must return the run plus its full,
+    ordered tracklog — including per-item failures captured during a resilient
+    sync. Exercises the real HTTP surface (auth, routing, schema) end to end."""
+    from app.adapters.platforms.base import PlatformContentData
+    from app.services.sync import PlatformSyncExecutor
+
+    dispatched: list[UUID] = []
+    monkeypatch.setattr(
+        "app.services.sync.enqueue_platform_sync", lambda run_id: dispatched.append(run_id)
+    )
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+
+    queued = client.post(
+        f"/api/v1/accounts/{account['id']}/sync",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert queued.status_code == 202, queued.text
+    run_id = queued.json()["id"]
+
+    class FailingItemExecutor(PlatformSyncExecutor):
+        async def _upsert_content(self, acc, data: PlatformContentData, skip_existing=False):  # type: ignore[override]
+            if data.external_id == "c3":
+                raise RuntimeError("simulated upsert failure for c3")
+            return await super()._upsert_content(acc, data, skip_existing=skip_existing)
+
+    settings = Settings(
+        environment="test",
+        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
+        redis_url="redis://127.0.0.1:6399/15",
+        secret_key="test-only-secret-not-used-in-production",
+        sync_page_limit=2,
+    )
+    engine = create_async_engine(settings.database_url)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    from app.adapters.platforms.registry import build_platform_adapter_registry
+
+    registry = build_platform_adapter_registry(settings)
+    registry.replace(RealShapedTestAdapter(key="youtube_browser", content_count=8))
+    try:
+        async with session_factory() as session:
+            await FailingItemExecutor(session, registry, settings).execute_account_run(
+                UUID(run_id)
+            )
+    finally:
+        for adapter in registry.values():
+            close = getattr(adapter, "aclose", None)
+            if close is not None:
+                await close()
+        await engine.dispose()
+
+    detail = client.get(
+        f"/api/v1/accounts/{account['id']}/sync-runs/{run_id}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["run"]["id"] == run_id
+    assert body["run"]["status"] == "success"
+    assert body["run"]["metadata"]["items_failed"] == 1
+    events = body["events"]
+    assert events, "detail route must return the tracklog events"
+    # Events must be returned in ascending sequence order.
+    assert [e["sequence"] for e in events] == sorted(e["sequence"] for e in events)
+    item_errors = [e for e in events if e["event_type"] == "item" and e["level"] == "error"]
+    assert len(item_errors) == 1
+    assert item_errors[0]["payload"]["external_id"] == "c3"
+    assert events[-1]["event_type"] == "summary"
+
+    # A missing run must 404 rather than fabricate a tracklog.
+    missing = client.get(
+        f"/api/v1/accounts/{account['id']}/sync-runs/{uuid4()}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "sync_resource_not_found"
+
+
 def test_operations_cancel_unsupported_category_returns_501(
     client: TestClient,
 ) -> None:

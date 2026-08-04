@@ -788,3 +788,93 @@ def test_media_route_blocks_path_traversal(tmp_path):
         assert ok == str(tmp_path / "ws" / "h" / "abc" / "abc.mp4")
     finally:
         media_mod.MEDIA_ROOT = original
+
+
+def _capture_cmd(adapter, *, single=True, retries=None):
+    """Run a yt-dlp command builder with a stubbed subprocess and return the
+    exact argv without executing anything on the network."""
+    import asyncio
+
+    captured: dict[str, list[str]] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"{}" if single else b"", b""
+
+    async def _fake_exec(*args, **kwargs):
+        captured["cmd"] = list(args)
+        return _FakeProc()
+
+    real = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    loop = asyncio.new_event_loop()
+    try:
+        if single:
+            if retries is None:
+                coro = adapter._run_yt_dlp_single("https://example.com/x")
+            else:
+                coro = adapter._run_yt_dlp_single("https://example.com/x", retries=retries)
+            loop.run_until_complete(coro)
+        else:
+            if retries is None:
+                loop.run_until_complete(adapter._run_yt_dlp("https://example.com/x"))
+            else:
+                loop.run_until_complete(
+                    adapter._run_yt_dlp(
+                        "https://example.com/x", structured={"retries": retries}
+                    )
+                )
+    finally:
+        asyncio.create_subprocess_exec = real
+        loop.close()
+    return captured["cmd"]
+
+
+def test_single_json_defaults_to_ten_retries():
+    """yt-dlp's built-in ``--retries`` must be pinned to the default (10) on the
+    account-data / analytics single-json invocation when no override is set."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=True)
+    idx = cmd.index("--retries")
+    assert cmd[idx + 1] == "10"
+
+
+def test_single_json_honours_retry_override():
+    """An explicit ``retries`` argument must flow through to ``--retries``."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=True, retries=3)
+    idx = cmd.index("--retries")
+    assert cmd[idx + 1] == "3"
+
+
+def test_list_contents_defaults_to_ten_retries():
+    """The content-list (per-page) invocation must also pin ``--retries 10`` by
+    default, injected into the structured field rendering."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=False)
+    assert "--retries" in cmd
+    assert cmd[cmd.index("--retries") + 1] == "10"
+
+
+def test_resolve_retries_reads_sync_settings_override():
+    """``_resolve_retries`` honours ``sync_settings.yt_dlp.retries`` and falls
+    back to the module default on missing / invalid values."""
+    adapter = YouTubeYtDlpAdapter()
+
+    class _Ctx:
+        config = {"yt_dlp": {"retries": 5}}
+
+    assert adapter._resolve_retries(_Ctx()) == 5
+
+    class _CtxDefault:
+        config = {}
+
+    assert adapter._resolve_retries(_CtxDefault()) == 10
+
+    class _CtxBad:
+        config = {"yt_dlp": {"retries": "not-a-number"}}
+
+    assert adapter._resolve_retries(_CtxBad()) == 10
+

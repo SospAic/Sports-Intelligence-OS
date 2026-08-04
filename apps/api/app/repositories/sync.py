@@ -8,7 +8,7 @@ from sqlalchemy.orm import joinedload
 
 from app.models.monitoring import Account, ContentItem, Platform
 from app.models.settings import SyncSettings
-from app.models.sync import SyncRun
+from app.models.sync import SyncRun, SyncRunEvent
 from app.schemas.settings import DEFAULT_SYNC_SETTINGS_CONFIG
 
 
@@ -97,6 +97,24 @@ class SyncRepository:
                 )
             ).all()
         )
+
+    async def add_sync_run_event(self, event: SyncRunEvent) -> None:
+        """Persist a single append-only tracklog entry for a sync run."""
+
+        self.session.add(event)
+
+    async def list_sync_run_events(
+        self, run_id: UUID, *, limit: int = 1000
+    ) -> list[SyncRunEvent]:
+        """Return a run's tracklog events ordered by sequence (creation order)."""
+
+        statement = (
+            select(SyncRunEvent)
+            .where(SyncRunEvent.sync_run_id == run_id)
+            .order_by(SyncRunEvent.sequence.asc(), SyncRunEvent.created_at.asc())
+            .limit(limit)
+        )
+        return list((await self.session.scalars(statement)).all())
 
     async def get_sync_settings_config(self, workspace_id: UUID) -> dict[str, Any]:
         """Return the workspace's merged fetch policy (defaults applied).

@@ -55,7 +55,7 @@ async def runtime_settings(
     request: Request, workspace: CurrentWorkspace, db: DatabaseSession
 ) -> RuntimeSettingsRead:
     del workspace
-    return service(request, db).runtime_settings()
+    return await service(request, db).runtime_settings()
 
 
 @router.get("/llm/openai-compatible", response_model=LLMProviderSettingRead)

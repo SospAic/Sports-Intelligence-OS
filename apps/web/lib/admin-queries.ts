@@ -63,6 +63,8 @@ export function buildAccountDetailPaths(
     snapshots: `/accounts/${encoded}/snapshots?page=1&page_size=100`,
     contents: `/accounts/${encoded}/contents?${contentsParams.toString()}`,
     syncRuns: `/accounts/${encoded}/sync-runs?page=1&page_size=20`,
+    syncRunDetail: (runId: string) =>
+      `/accounts/${encoded}/sync-runs/${encodeURIComponent(runId)}`,
     automations: "/automations?page=1&page_size=100&entity_type=account",
   } as const;
 }

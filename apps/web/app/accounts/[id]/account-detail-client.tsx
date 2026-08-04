@@ -565,7 +565,7 @@ export function AccountDetailClient({ id }: { id: string }) {
   const [contentSort, setContentSort] = useUrlState("csort", "published_at");
   const publishedFrom = resolvePublishedFrom(range, from || null);
   const [contentPage, setContentPage] = useState(1);
-  const [contentPageSize, setContentPageSize] = useState(50);
+  const [contentPageSize, setContentPageSize] = useState(20);
   const [cancelling, setCancelling] = useState(false);
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
   const paths = buildAccountDetailPaths(id);
@@ -729,10 +729,10 @@ export function AccountDetailClient({ id }: { id: string }) {
     history,
     (point) => point.follower_count,
   );
-  const totalViews = latestObservedValue(
-    history,
-    (point) => point.total_view_count,
-  );
+  const totalViews =
+    latestObservedValue(history, (point) => point.total_view_count) ??
+    contentSummary.data?.account_total_views ??
+    snapshot?.total_view_count;
   const videoCount = latestObservedValue(history, (point) => point.video_count);
   const engagementRate = latestObservedValue(
     history,
@@ -873,7 +873,17 @@ export function AccountDetailClient({ id }: { id: string }) {
             />
             <MetricCard
               label="总播放量"
-              value={formatNumber(totalViews ?? snapshot?.total_view_count)}
+              value={formatNumber(totalViews ?? snapshot?.total_view_count ?? contentSummary.data?.account_total_views)}
+              hint={
+                snapshot?.metadata &&
+                (snapshot.metadata as Record<string, unknown>)[
+                  "total_view_count_derived_from_content"
+                ]
+                  ? `由已同步作品播放量合计（${(
+                      snapshot.metadata as Record<string, unknown>
+                    )["derived_from_content_count"] ?? "?"} 个作品）推算`
+                  : undefined
+              }
             />
             <MetricCard
               label="作品数"
@@ -917,10 +927,18 @@ export function AccountDetailClient({ id }: { id: string }) {
               label="总互动量"
               value={
                 <span className="text-2xl font-semibold text-white">
-                  {contentSummary.data?.total_interactions != null
-                    ? formatNumber(contentSummary.data.total_interactions)
-                    : "—"}
+                  {(() => {
+                    const v =
+                      contentSummary.data?.account_total_likes ??
+                      contentSummary.data?.total_interactions;
+                    return v != null ? formatNumber(v) : "—";
+                  })()}
                 </span>
+              }
+              hint={
+                contentSummary.data?.account_total_likes != null
+                  ? "账号级累计互动（平台公开资料）"
+                  : "已同步作品的互动合计"
               }
             />
           </div>
@@ -1159,7 +1177,13 @@ export function AccountDetailClient({ id }: { id: string }) {
                         title="终止正在进行的同步任务"
                       />
                     )}
-                    <span className="ml-auto text-xs text-slate-500">
+                    <span className="ml-auto flex items-center gap-3 text-xs text-slate-500">
+                      <Link
+                        href={`/accounts/${id}/sync-runs/${run.id}`}
+                        className="text-cyan-400 hover:text-cyan-300"
+                      >
+                        查看详情
+                      </Link>
                       {operationTaskLabel(run.adapter_key)}
                     </span>
                   </div>

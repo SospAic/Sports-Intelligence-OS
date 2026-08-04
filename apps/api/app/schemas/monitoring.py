@@ -429,6 +429,14 @@ class AccountContentSummary(BaseModel):
     avg_watch_time_seconds: float | None = None
     avg_engagement_rate: float | None = None
     total_interactions: int | None = None
+    # Account-level totals captured from the platform profile (e.g. TikTok's
+    # lifetime "likes"), when the adapter obtained them. These are the
+    # authoritative account-wide figures; ``total_interactions`` is the sum of
+    # synced-content interactions and is only a partial subset for accounts with
+    # more videos than were synced. The UI prefers these for the 总互动量 /
+    # 总播放量 cards.
+    account_total_likes: int | None = None
+    account_total_views: int | None = None
     traffic_source_split: dict[str, float | None] = Field(
         default_factory=_default_traffic_source_split
     )
@@ -534,3 +542,27 @@ class SyncRunPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class SyncRunEventRead(BaseModel):
+    """A single append-only tracklog entry emitted during a sync run."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    sync_run_id: UUID
+    sequence: int
+    created_at: datetime
+    event_type: str
+    level: Literal["info", "warn", "error"]
+    message: str
+    payload: dict[str, Any] = Field(validation_alias="payload", default_factory=dict)
+
+
+class SyncRunDetailRead(BaseModel):
+    """A sync run together with its full, ordered execution tracklog."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    run: SyncRunRead
+    events: list[SyncRunEventRead]

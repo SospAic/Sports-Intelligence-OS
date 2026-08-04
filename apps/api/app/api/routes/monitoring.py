@@ -42,6 +42,7 @@ from app.schemas.monitoring import (
     PlatformRead,
     SortOrder,
     SyncIntervalResponse,
+    SyncRunDetailRead,
     SyncRunPage,
     SyncRunRead,
 )
@@ -406,6 +407,26 @@ async def list_account_sync_runs(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get(
+    "/accounts/{account_id}/sync-runs/{run_id}",
+    response_model=SyncRunDetailRead,
+)
+async def get_account_sync_run_detail(
+    account_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> SyncRunDetailRead:
+    """Return a single sync run together with its full execution tracklog."""
+
+    return await SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    ).get_run_detail(workspace.workspace_id, account_id, run_id)
 
 
 @router.get("/accounts/{account_id}/snapshots", response_model=AccountSnapshotPage)

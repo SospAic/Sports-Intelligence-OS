@@ -4,10 +4,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from celery import Task
+from sqlalchemy import select
 
 from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.core.config import get_settings
 from app.db.session import create_engine_and_session
+from app.models.settings import RuntimeSettingOverride
 from app.services.sync import (
     PlatformSyncExecutor,
     RetryableSyncError,
@@ -53,18 +55,38 @@ async def _mark_exhausted(run_id: UUID, message: str) -> None:
 
 def _run_with_retry(task: Task, run_id: UUID) -> None:
     settings = get_settings()
+    # Effective retry cap: a runtime override (if set) wins over the frozen
+    # environment default, so changing it on the Sync panel takes effect
+    # immediately without restarting the worker.
+    effective = asyncio.run(_effective_sync_task_max_retries(settings))
     try:
         asyncio.run(_execute(run_id))
     except RetryableSyncError as exc:
         retries = int(task.request.retries)
-        if retries >= settings.sync_task_max_retries:
+        if retries >= effective:
             asyncio.run(_mark_exhausted(run_id, str(exc)))
             raise
         raise task.retry(
             exc=exc,
             countdown=min(2**retries, 60),
-            max_retries=settings.sync_task_max_retries,
+            max_retries=effective,
         ) from exc
+
+
+async def _effective_sync_task_max_retries(settings) -> int:
+    engine, session_factory = create_engine_and_session(settings)
+    try:
+        async with session_factory() as session:
+            row = await session.scalar(
+                select(RuntimeSettingOverride).where(
+                    RuntimeSettingOverride.key == "sync_task_max_retries"
+                )
+            )
+            if row is not None and isinstance(row.value_json, int):
+                return max(0, min(10, row.value_json))
+    finally:
+        await engine.dispose()
+    return int(settings.sync_task_max_retries)
 
 
 @celery_app.task(bind=True, name="app.tasks.monitoring.sync_account")  # type: ignore[untyped-decorator]

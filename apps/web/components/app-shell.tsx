@@ -11,7 +11,6 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   Activity,
   AlertTriangle,
-  BarChart3,
   Bell,
   BookMarked,
   Bot,
@@ -116,7 +115,6 @@ const navigationGroups: ReadonlyArray<{
     items: [
       ["仪表盘", "/dashboard", Gauge],
       ["热点情报中心", "/trends", TrendingUp],
-      ["情报分析", "/trends/analytics", BarChart3],
       ["账号监控", "/accounts", UsersRound],
       ["作品数据", "/contents", Video],
       ["新闻热点", "/news", Newspaper],

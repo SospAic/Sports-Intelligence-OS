@@ -10,7 +10,12 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.monitoring import Account, AccountSnapshot, ContentItem
+from app.models.monitoring import (
+    Account,
+    AccountSnapshot,
+    ContentItem,
+    ContentSnapshot,
+)
 from app.repositories.monitoring import (
     AccountFilters,
     AccountRow,
@@ -588,11 +593,69 @@ class MonitoringService:
         snapshots = await self._repository.list_account_snapshots_history(
             workspace_id, account_id, since=since
         )
+        # Platforms that omit lifetime views (TikTok/Douyin via yt-dlp) leave
+        # ``total_view_count`` null on historical snapshots. Rather than render
+        # an empty 总播放量 trend, derive each point at read time from the sum
+        # of synced content views captured on or before that snapshot's time.
+        # This never UPDATEs the append-only snapshot rows.
+        await self._derive_historical_total_views(account_id, snapshots)
         return AccountMetricsHistory(
             account_id=account_id,
             days=days,
             points=[AccountMetricsHistoryPoint.model_validate(s) for s in snapshots],
         )
+
+    async def _derive_historical_total_views(
+        self, account_id: UUID, snapshots: list[AccountSnapshot]
+    ) -> None:
+        """Best-effort backfill of ``total_view_count`` on in-memory snapshots.
+
+        Only snapshots whose ``total_view_count`` is ``None`` are touched; the
+        value is computed from content snapshots at-or-before each snapshot's
+        ``captured_at``. Mutating the ORM objects in memory is safe — they are
+        never committed, so the append-only invariant holds.
+        """
+        if not snapshots or all(s.total_view_count is not None for s in snapshots):
+            return
+        from collections import defaultdict
+
+        result = await self._session.execute(
+            select(
+                ContentSnapshot.content_item_id,
+                ContentSnapshot.captured_at,
+                ContentSnapshot.view_count,
+            ).where(
+                ContentSnapshot.content_item_id.in_(
+                    select(ContentItem.id).where(ContentItem.account_id == account_id)
+                )
+            )
+        )
+        by_content: dict[UUID, list[tuple[datetime, int]]] = defaultdict(list)
+        for content_item_id, captured_at, view_count in result.all():
+            if view_count is not None:
+                by_content[content_item_id].append((captured_at, int(view_count)))
+        if not by_content:
+            return
+        for lst in by_content.values():
+            lst.sort(key=lambda pair: pair[0])
+
+        for snap in snapshots:
+            if snap.total_view_count is not None:
+                continue
+            threshold = snap.captured_at
+            total = 0
+            for lst in by_content.values():
+                # latest view_count captured on or before ``threshold``
+                lo, hi = 0, len(lst)
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    if lst[mid][0] <= threshold:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+                if lo > 0:
+                    total += lst[lo - 1][1]
+            snap.total_view_count = total
 
     async def list_contents(
         self,

@@ -52,6 +52,16 @@ logger = logging.getLogger(__name__)
 # per-video metadata, and we never want a hung subprocess to block a worker.
 YTDLP_TIMEOUT_SECONDS = 180
 
+# yt-dlp's built-in network retry count. We set it explicitly (rather than
+# relying on yt-dlp's own default) so the value is visible and operator-tunable,
+# and so account-data and content-list invocations share one policy. This is the
+# *only* retry mechanism we use for yt-dlp — we deliberately do NOT wrap yt-dlp
+# calls in a bespoke retry loop; yt-dlp already retries internally on transient
+# network errors, and a second layer would just multiply latency and platform
+# request volume (raising anti-bot risk). Operators can override it per workspace
+# via ``sync_settings.yt_dlp.retries``; anything not set falls back to this.
+YTDLP_DEFAULT_RETRIES = 10
+
 # Structured ``sync_settings.yt_dlp`` fields that map to a yt-dlp CLI flag.
 # ``dateafter`` / ``datebefore`` / ``playlist_start`` are handled by the sync
 # executor's windowing (not as raw flags here), and ``extra_args`` is a
@@ -135,6 +145,12 @@ class YtDlpAdapter(PlatformAdapter):
         # cache lives only for the adapter instance (one sync run / worker
         # process), so it never serves stale data across accounts or runs.
         self._single_json_cache: dict[str, tuple[dict[str, Any], str]] = {}
+        # Per-run memo of browser-adapter results. ``resolve_account`` and
+        # ``fetch_account_analytics`` both fall back to the browser for the same
+        # handle; without this the (very slow) Playwright browser would be
+        # launched twice per account. Same lifecycle as ``_single_json_cache``.
+        self._browser_account_cache: dict[str, Any] = {}
+        self._browser_analytics_cache: dict[str, Any] = {}
 
     # -- URL builders -------------------------------------------------------
 
@@ -248,6 +264,24 @@ class YtDlpAdapter(PlatformAdapter):
             self._fb = DouyinBrowserAdapter()
         return self._fb
 
+    async def _browser_resolve(
+        self, ctx: AdapterCallContext, locator: str
+    ) -> PlatformAccountData:
+        cached = self._browser_account_cache.get(locator)
+        if cached is None:
+            cached = await self._fallback().resolve_account(ctx, locator)
+            self._browser_account_cache[locator] = cached
+        return cached
+
+    async def _browser_analytics(
+        self, ctx: AdapterCallContext, external_id: str
+    ) -> PlatformMetricsData:
+        cached = self._browser_analytics_cache.get(external_id)
+        if cached is None:
+            cached = await self._fallback().fetch_account_analytics(ctx, external_id)
+            self._browser_analytics_cache[external_id] = cached
+        return cached
+
     # -- yt-dlp process ----------------------------------------------------
 
     @staticmethod
@@ -330,7 +364,14 @@ class YtDlpAdapter(PlatformAdapter):
             cmd += ["--datebefore", datebefore]
         # Structured fields (sorting / filtering / network / behaviour). The
         # global policy defaults keep --ignore-errors / --no-warnings enabled.
-        cmd += self._render_structured(structured or {})
+        # We always pin yt-dlp's built-in ``--retries`` (defaulting to
+        # YTDLP_DEFAULT_RETRIES) so account-data and content-list calls share one
+        # retry policy and an operator override (sync_settings.yt_dlp.retries)
+        # wins when present. No bespoke retry loop wraps this call.
+        effective_structured = dict(structured or {})
+        if "retries" not in effective_structured:
+            effective_structured["retries"] = YTDLP_DEFAULT_RETRIES
+        cmd += self._render_structured(effective_structured)
         if download_enabled and media_dir:
             cmd += ["-o", os.path.join(media_dir, "%(id)s", "%(id)s.%(ext)s")]
             if download.get("write_thumbnail"):
@@ -388,7 +429,7 @@ class YtDlpAdapter(PlatformAdapter):
         return entries, err_text
 
     async def _run_yt_dlp_single(
-        self, url: str, *, playlist_end: int = 1
+        self, url: str, *, playlist_end: int = 1, retries: int = YTDLP_DEFAULT_RETRIES
     ) -> tuple[dict[str, Any], str]:
         """Run yt-dlp with ``--dump-single-json`` and return the parsed object.
 
@@ -397,6 +438,10 @@ class YtDlpAdapter(PlatformAdapter):
         ``playlist_count``) that the per-video line-delimited output omits, so
         account resolution and analytics can avoid the browser entirely. The
         ``entries`` array is ignored here (see :meth:`list_contents`).
+
+        ``retries`` forwards yt-dlp's built-in ``--retries`` network policy
+        (default :data:`YTDLP_DEFAULT_RETRIES`); we rely on yt-dlp's own internal
+        retry rather than wrapping this call in a custom loop.
         """
         cmd: list[str] = [
             sys.executable,
@@ -407,6 +452,8 @@ class YtDlpAdapter(PlatformAdapter):
             "--no-warnings",
             "--no-progress",
             "--ignore-errors",
+            "--retries",
+            str(int(retries)),
             "--playlist-end",
             str(playlist_end),
             url,
@@ -438,8 +485,27 @@ class YtDlpAdapter(PlatformAdapter):
             return {}, err_text
         return obj, err_text
 
+    def _resolve_retries(self, ctx: AdapterCallContext) -> int:
+        """Resolve the yt-dlp ``--retries`` value from the call context.
+
+        Honours an operator override at ``sync_settings.yt_dlp.retries`` and
+        otherwise returns :data:`YTDLP_DEFAULT_RETRIES`. This is the single knob
+        that tunes yt-dlp's built-in network retry across account-data calls.
+        """
+        yt_cfg = (ctx.config or {}) if isinstance(ctx.config, dict) else {}
+        raw = (yt_cfg.get("yt_dlp") if isinstance(yt_cfg.get("yt_dlp"), dict) else {}).get(
+            "retries"
+        )
+        if raw is None:
+            return YTDLP_DEFAULT_RETRIES
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return YTDLP_DEFAULT_RETRIES
+        return value if value >= 0 else YTDLP_DEFAULT_RETRIES
+
     async def _run_yt_dlp_single_cached(
-        self, url: str, *, playlist_end: int = 1
+        self, url: str, *, playlist_end: int = 1, retries: int = YTDLP_DEFAULT_RETRIES
     ) -> tuple[dict[str, Any], str]:
         """``_run_yt_dlp_single`` with a per-instance memo.
 
@@ -455,7 +521,9 @@ class YtDlpAdapter(PlatformAdapter):
         cached = self._single_json_cache.get(url)
         if cached is not None:
             return cached
-        result = await self._run_yt_dlp_single(url, playlist_end=playlist_end)
+        result = await self._run_yt_dlp_single(
+            url, playlist_end=playlist_end, retries=retries
+        )
         self._single_json_cache[url] = result
         return result
 
@@ -559,7 +627,11 @@ class YtDlpAdapter(PlatformAdapter):
     ) -> PlatformAccountData:
         handle = self._normalize_handle(locator)
         try:
-            data, _ = await self._run_yt_dlp_single_cached(self._account_url(handle), playlist_end=1)
+            data, _ = await self._run_yt_dlp_single_cached(
+                self._account_url(handle),
+                playlist_end=1,
+                retries=self._resolve_retries(ctx),
+            )
         except TransientAdapterError:
             data = {}
         display = data.get("uploader") or data.get("channel")
@@ -569,7 +641,7 @@ class YtDlpAdapter(PlatformAdapter):
                 self.platform,
                 handle,
             )
-            return await self._fallback().resolve_account(ctx, locator)
+            return await self._browser_resolve(ctx, locator)
 
         # yt-dlp returned a usable profile. It often omits the avatar / bio, so
         # when those are missing we re-query the browser adapter purely to fill
@@ -615,7 +687,11 @@ class YtDlpAdapter(PlatformAdapter):
     ) -> PlatformMetricsData:
         handle = self._normalize_handle(external_id)
         try:
-            data, _ = await self._run_yt_dlp_single_cached(self._account_url(handle), playlist_end=1)
+            data, _ = await self._run_yt_dlp_single_cached(
+                self._account_url(handle),
+                playlist_end=1,
+                retries=self._resolve_retries(ctx),
+            )
         except TransientAdapterError:
             data = {}
         # ``analytics_fetched`` tells the sync engine whether yt-dlp actually
@@ -629,10 +705,19 @@ class YtDlpAdapter(PlatformAdapter):
         analytics_fetched = bool(data)
         follower = data.get("channel_follower_count") or data.get("subscriber_count")
         playlist_count = data.get("playlist_count")
+        channel_view_count = data.get("view_count")
         metrics: dict[str, int | float | None] = {
             "follower_count": int(follower) if follower is not None else None,
             "video_count": int(playlist_count) if playlist_count is not None else None,
-            "total_view_count": None,
+            # YouTube channel JSON exposes lifetime views, so we can report a
+            # real account-level total plays. TikTok/Douyin profiles do not
+            # expose total views publicly, so it stays None here and is derived
+            # from synced content views in the sync executor instead.
+            "total_view_count": (
+                int(channel_view_count) if channel_view_count is not None else None
+            )
+            if self.platform == "youtube"
+            else None,
         }
         analytics_source = "yt_dlp"
         # TikTok / Douyin profiles do not expose account-level metrics through
@@ -653,7 +738,7 @@ class YtDlpAdapter(PlatformAdapter):
             v is None for v in metrics.values()
         ):
             try:
-                fb = await self._fallback().fetch_account_analytics(ctx, handle)
+                fb = await self._browser_analytics(ctx, handle)
                 merged: dict[str, int | float | None] = dict(metrics)
                 for key, val in fb.metrics.items():
                     if merged.get(key) is None and val is not None:

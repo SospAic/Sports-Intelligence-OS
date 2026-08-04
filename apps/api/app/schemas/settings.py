@@ -279,10 +279,18 @@ class SyncSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     config: SyncSettingsConfig
+    # Global sync-task retry cap. ``None`` means "leave the runtime override
+    # unchanged" (so a partial update of ``config`` doesn't wipe it); an int
+    # (0-10) sets the override, and explicitly ``null`` in a JSON body clears it
+    # back to the environment default. Exposed here (not on the runtime-only
+    # page) so both retry knobs live on the one Sync panel.
+    sync_task_max_retries: int | None = Field(default=None, ge=0, le=10)
 
 
 class SyncSettingsRead(BaseModel):
     config: SyncSettingsConfig
+    # Effective sync-task retry cap (runtime override if set, else env default).
+    sync_task_max_retries: int
 
 
 #: Merged with whatever the workspace has stored so the UI always sees every key.
@@ -310,7 +318,7 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "max_filesize": "",
         "proxy": "",
         "socket_timeout": None,
-        "retries": None,
+        "retries": 10,
         "fragment_retries": None,
         "sleep_interval": None,
         "max_sleep_interval": None,

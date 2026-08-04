@@ -30,10 +30,15 @@ from app.models.monitoring import (
     DerivedMetric,
 )
 from app.models.operations import SystemEvent
-from app.models.sync import SyncRun
+from app.models.sync import SyncRun, SyncRunEvent
 from app.providers.registry import ProviderRegistry
 from app.repositories.sync import SyncRepository
-from app.schemas.monitoring import SyncRunPage, SyncRunRead
+from app.schemas.monitoring import (
+    SyncRunDetailRead,
+    SyncRunEventRead,
+    SyncRunPage,
+    SyncRunRead,
+)
 from app.services.adaptive_sync import compute_adaptive_interval
 from app.services.audit import build_external_call_attempt
 from app.services.error_detail import business_hint_for, code_level_detail
@@ -265,6 +270,25 @@ class SyncService:
             total=total,
         )
 
+    async def get_run_detail(
+        self, workspace_id: UUID, account_id: UUID, run_id: UUID
+    ) -> SyncRunDetailRead:
+        """Return a single sync run with its full, ordered execution tracklog."""
+
+        account = await self.repository.get_account(workspace_id, account_id)
+        if account is None:
+            raise SyncNotFoundError("account was not found")
+        run = await self.repository.get_run(run_id)
+        if run is None or run.workspace_id != workspace_id:
+            raise SyncNotFoundError("sync run was not found")
+        if run.target_id != account.id:
+            raise SyncValidationError("sync run does not belong to this account")
+        events = await self.repository.list_sync_run_events(run_id)
+        return SyncRunDetailRead(
+            run=SyncRunRead.model_validate(run),
+            events=[SyncRunEventRead.model_validate(event) for event in events],
+        )
+
     async def cancel_sync_run(
         self, workspace_id: UUID, account_id: UUID, run_id: UUID
     ) -> SyncRunRead:
@@ -405,6 +429,59 @@ class PlatformSyncExecutor:
         # Set when a run hits its wall-clock budget mid-pagination so the success
         # path can label the result as truncated rather than a full sync.
         self._budget_exceeded = False
+        # Monotonic counter for append-only tracklog events emitted during this
+        # run's execution (reset per executor instance / per run).
+        self._event_seq = 0
+        # The freshly-built AccountSnapshot for this run. It is NOT added to the
+        # session inside ``_sync_account`` because the account-level lifetime
+        # view count (when the platform omits it, e.g. TikTok/Douyin) must be
+        # derived from synced content views, which are only known after
+        # ``_sync_contents``. We insert it once, after content sync, so the
+        # derived value rides along on the new (append-only) row — never via an
+        # UPDATE of an existing snapshot.
+        self._pending_account_snapshot: AccountSnapshot | None = None
+
+    def _emit(
+        self,
+        run: "SyncRun",
+        event_type: str,
+        level: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Append a single tracklog event for ``run`` (persisted on next flush).
+
+        Each event carries ``elapsed_ms`` (time since the run started) and
+        ``step_ms`` (time since the previous event) so the detail page can
+        surface exactly which step was slow during a sync.
+        """
+
+        self._event_seq += 1
+        now = datetime.now(UTC)
+        last = getattr(self, "_last_track_at", None)
+        step_ms = int((now - last).total_seconds() * 1000) if last is not None else None
+        anchor = run.started_at or run.queued_at
+        elapsed_ms = (
+            int((now - _utc(anchor)).total_seconds() * 1000) if anchor is not None else None
+        )
+        enriched: dict[str, Any] = {
+            **(payload or {}),
+            "step_ms": step_ms,
+            "elapsed_ms": elapsed_ms,
+        }
+        self._last_track_at = now
+        self.session.add(
+            SyncRunEvent(
+                id=uuid4(),
+                workspace_id=run.workspace_id,
+                sync_run_id=run.id,
+                sequence=self._event_seq,
+                event_type=event_type,
+                level=level,
+                message=message,
+                payload=enriched,
+            )
+        )
 
     async def _aborted(self, run: "SyncRun") -> bool:
         """Return True if the run was cancelled by a user while executing.
@@ -536,16 +613,40 @@ class PlatformSyncExecutor:
             )
             self._set_progress(run, 25, "content_list", "账号资料已完成，正在获取作品列表")
             await self.session.commit()
-            content_created, content_updated = await self._sync_contents(
-                account, adapter, ctx, run
-            )
+            (
+                content_created,
+                content_updated,
+                items_failed,
+                content_analytics_failed,
+            ) = await self._sync_contents(account, adapter, ctx, run)
             created += content_created
             updated += content_updated
+            # Insert the account snapshot now that content views are known, so a
+            # derived total_view_count (platforms that omit lifetime views) can
+            # ride on this new append-only row.
+            await self._finalize_account_snapshot(account)
             self._set_progress(run, 92, "derived_metrics", "正在计算增长与高潜指标")
             await self.session.commit()
             if await self._aborted(run):
                 return
-            await self._calculate_metrics(account, ctx.observed_at)
+            # Derived-metric calculation is best-effort: if it raises we must not
+            # discard the content already ingested. Degrade and finalise instead.
+            metrics_calc_failed = False
+            try:
+                await self._calculate_metrics(account, ctx.observed_at)
+            except Exception as exc:  # noqa: BLE001
+                metrics_calc_failed = True
+                logger.exception(
+                    "platform_sync_metrics_calculation_failed",
+                    extra={"event": "platform.sync.metrics_failed", "sync_run_id": str(run.id)},
+                )
+                self._emit(
+                    run,
+                    "error",
+                    "error",
+                    f"派生指标计算失败，已采集内容保留：{exc}",
+                    {"error": str(exc)},
+                )
         except PlatformAdapterError as exc:
             self._record_external_attempt(
                 run,
@@ -598,7 +699,11 @@ class PlatformSyncExecutor:
             raise
 
         finished = datetime.now(UTC)
-        final_status = "degraded" if metrics_degraded else "success"
+        final_status = (
+            "degraded"
+            if (metrics_degraded or content_analytics_failed or metrics_calc_failed)
+            else "success"
+        )
         # The external call itself succeeded (the profile was fetched); only the
         # downstream metric extraction failed. Record the audit row as success and
         # keep the higher-level "degraded" status on the run/account instead of
@@ -614,7 +719,10 @@ class PlatformSyncExecutor:
                 "records_created": created,
                 "records_updated": updated,
                 "items_processed": run.items_processed,
+                "items_failed": items_failed,
                 "metrics_degraded": metrics_degraded,
+                "content_analytics_failed": content_analytics_failed,
+                "metrics_calc_failed": metrics_calc_failed,
             },
         )
         run.status = final_status
@@ -623,7 +731,9 @@ class PlatformSyncExecutor:
         run.records_updated = updated
         run.error_code = None
         run.error_message = (
-            "指标提取失败，仅更新了账号资料" if metrics_degraded else None
+            "指标提取失败，仅更新了账号资料"
+            if (metrics_degraded or content_analytics_failed or metrics_calc_failed)
+            else None
         )
         # Always clear any stale error surface on a successful run. A prior
         # stale-recovery pass can stamp a "worker crashed / timeout" hint on a run
@@ -645,11 +755,39 @@ class PlatformSyncExecutor:
             }
         else:
             run.progress_message = (
-                "同步完成（指标提取失败，仅更新了账号资料）"
-                if metrics_degraded
+                "同步完成（部分指标提取失败，已保留已采集内容）"
+                if (metrics_degraded or content_analytics_failed or metrics_calc_failed)
                 else "同步完成"
             )
         run.items_total = run.items_processed
+        run.metadata_json = {
+            **run.metadata_json,
+            "items_failed": items_failed,
+            "content_analytics_failed": content_analytics_failed,
+            "metrics_calc_failed": metrics_calc_failed,
+        }
+        self._emit(
+            run,
+            "summary",
+            "error" if final_status == "error" else "info",
+            f"同步结束：状态 {final_status}，新增 {created}，更新 {updated}，"
+            f"失败 {items_failed}"
+            + ("，指标分析降级" if content_analytics_failed else "")
+            + ("，派生指标降级" if metrics_calc_failed else ""),
+            {
+                "status": final_status,
+                "records_created": created,
+                "records_updated": updated,
+                "items_processed": run.items_processed,
+                "items_failed": items_failed,
+                "content_analytics_failed": content_analytics_failed,
+                "metrics_degraded": metrics_degraded,
+                "metrics_calc_failed": metrics_calc_failed,
+                "duration_ms": int(
+                    (finished - (run.started_at or finished)).total_seconds() * 1000
+                ),
+            },
+        )
         account.sync_status = final_status
         account.last_synced_at = finished
         # Adaptive cadence: tune the next poll to the account's recent posting
@@ -698,6 +836,16 @@ class PlatformSyncExecutor:
         run.lock_key = None
         run.progress_stage = "failed"
         run.progress_message = (run.error_hint or message)[:500]
+        # Capture the fatal failure in the run's tracklog so the detail page can
+        # show exactly where/why the sync died alongside any earlier progress.
+        if getattr(self, "_event_seq", None) is not None and run.id is not None:
+            self._emit(
+                run,
+                "error",
+                "error",
+                f"同步失败：{message[:500]}",
+                {"code": code, "error_detail": (run.error_detail or "")[:1000]},
+            )
         if account is not None:
             account.sync_status = "error"
             account.last_sync_error_code = code
@@ -767,6 +915,23 @@ class PlatformSyncExecutor:
                 response_summary=response_summary,
             )
         )
+        # Mirror the external call into the run tracklog so the detail page shows
+        # the platform round-trip alongside the per-step events.
+        if getattr(self, "_event_seq", None) is not None and run.id is not None:
+            level = "error" if status == "failed" else "info"
+            self._emit(
+                run,
+                "external_call",
+                level,
+                f"外部调用 {run.adapter_key}：{status}"
+                + (f"（{error_code}）" if error_code else ""),
+                {
+                    "status": status,
+                    "error_code": error_code,
+                    "retryable": retryable,
+                    "response_summary": response_summary,
+                },
+            )
 
     async def _sync_account(
         self,
@@ -805,8 +970,28 @@ class PlatformSyncExecutor:
         account.source_provider = data.provider
         account.fetched_at = data.fetched_at
         account.source_url = data.profile_url
-        self.session.add(self._account_snapshot(account, metrics))
+        # Defer the insert: build the snapshot object but only persist it after
+        # content sync so a derived total_view_count (when the platform omits
+        # lifetime views) can be applied to this new append-only row.
+        self._pending_account_snapshot = self._account_snapshot(account, metrics)
         await self.session.flush()
+        m = metrics.metrics
+        analytics_fetched = metrics.metadata.get("analytics_fetched")
+        self._emit(
+            run,
+            "stage",
+            "info",
+            f"账号资料已获取：{account.display_name}",
+            {
+                "external_id": account.external_id,
+                "follower_count": m.get("follower_count"),
+                "video_count": m.get("video_count"),
+                "total_view_count": m.get("total_view_count"),
+                "analytics_fetched": bool(analytics_fetched)
+                if analytics_fetched is not None
+                else None,
+            },
+        )
         # Degradation means the account analytics *genuinely* could not be
         # obtained (e.g. yt-dlp returned nothing due to a transient error), not
         # that the source merely omits some fields. yt-dlp-style adapters report
@@ -815,8 +1000,6 @@ class PlatformSyncExecutor:
         # whose source simply doesn't expose follower/video counts (TikTok/Douyin
         # via yt-dlp) is a platform limitation surfaced via ``unavailable_metrics``
         # and must not be reported as a failed sync.
-        m = metrics.metrics
-        analytics_fetched = metrics.metadata.get("analytics_fetched")
         if analytics_fetched is not None:
             metrics_degraded = not bool(analytics_fetched)
         else:
@@ -850,23 +1033,82 @@ class PlatformSyncExecutor:
             created_at=datetime.now(UTC),
         )
 
+    async def _finalize_account_snapshot(self, account: Account) -> None:
+        """Persist the pending account snapshot for this run.
+
+        TikTok/Douyin profiles do not expose a lifetime view count through
+        yt-dlp, so ``total_view_count`` arrives ``None``. Rather than leave the
+        总播放量 card and history chart empty, derive it from the sum of synced
+        content views and stamp it on this *new* (append-only) snapshot row. We
+        must never UPDATE an existing snapshot — the model rejects it.
+        """
+        snap = self._pending_account_snapshot
+        if snap is None:
+            return
+        self._pending_account_snapshot = None
+        if snap.total_view_count is None:
+            contents = await self.repository.contents_for_account(account.id)
+            content_view_sum = 0
+            derived_count = 0
+            for content in contents:
+                latest = (
+                    await self.session.scalars(
+                        select(ContentSnapshot)
+                        .where(ContentSnapshot.content_item_id == content.id)
+                        .order_by(ContentSnapshot.captured_at.desc())
+                        .limit(1)
+                    )
+                ).first()
+                if latest is not None and latest.view_count is not None:
+                    content_view_sum += latest.view_count
+                    derived_count += 1
+            if content_view_sum > 0:
+                snap.total_view_count = content_view_sum
+                snap.metadata_json = {
+                    **(snap.metadata_json or {}),
+                    "total_view_count_derived_from_content": True,
+                    "derived_from_content_count": derived_count,
+                }
+        self.session.add(snap)
+
     async def _sync_contents(
         self,
         account: Account,
         adapter: PlatformAdapter,
         ctx: AdapterCallContext,
         run: SyncRun,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int, bool]:
         cursor: str | None = None
         created = 0
         updated = 0
         skipped = 0
+        failed = 0
+        content_analytics_failed = False
+        # ── Sync decomposition (anti-bot / 风控 posture) ──────────────────────
+        # Account data (profile + analytics) lives in ``_sync_account`` and uses
+        # the yt-dlp channel JSON with a *browser* fallback for TikTok/Douyin
+        # (platforms yt-dlp cannot read). Content (作品列表 + 详情) lives here and
+        # is fetched **single-threaded**: one yt-dlp subprocess per page
+        # (``list_contents``) and a strictly sequential per-item upsert loop —
+        # ``fetch_content_analytics`` reads the in-memory per-page cache and
+        # launches NO extra yt-dlp subprocesses. We deliberately avoid any
+        # asyncio.gather / fan-out of yt-dlp calls, because concurrent requests
+        # are precisely what trips platform rate-limit / 风控 heuristics. Retry
+        # resilience comes from yt-dlp's built-in ``--retries`` (default 10,
+        # configurable) plus the run-level Celery retry, never a custom loop.
         # Workspace-wide fetch policy (set on the Settings → Sync tab). The cap
         # bounds how many works a single sync ingests; ``skip_existing`` decides
         # whether already-known works are refreshed or left untouched.
         sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
         max_contents = sync_cfg.get("max_contents")
         skip_existing = bool(sync_cfg.get("skip_existing", True))
+        self._emit(
+            run,
+            "stage",
+            "info",
+            "开始获取作品列表与指标",
+            {"max_contents": max_contents, "skip_existing": skip_existing},
+        )
         # Default behaviour is a full-catalogue fetch: we never shortcut by the
         # newest-known publish date. The yt-dlp date window (``dateafter`` /
         # ``datebefore``) from the global policy is applied by the adapter, so
@@ -884,7 +1126,7 @@ class PlatformSyncExecutor:
                 f"准备获取第 {page_index + 1}/{self.settings.sync_page_limit} 页作品列表…",
             )
             await self.session.commit()
-            if max_contents is not None and (created + updated + skipped) >= max_contents:
+            if max_contents is not None and (created + updated + skipped + failed) >= max_contents:
                 break
             # Hard wall-clock budget: stop paging once exceeded so a single large
             # channel cannot monopolise a worker indefinitely. The run finishes
@@ -898,18 +1140,60 @@ class PlatformSyncExecutor:
                     break
             window = 50
             if max_contents is not None:
-                remaining = max_contents - (created + updated + skipped)
+                remaining = max_contents - (created + updated + skipped + failed)
                 window = max(1, min(window, remaining))
             published_after = None
-            page = await adapter.list_contents(
-                ctx,
-                account.external_id,
-                published_after=published_after,
-                cursor=cursor,
-                page_size=window,
-            )
+            # A failing page fetch must not abort the entire sync. If we have
+            # already collected works, stop paging gracefully and finalise what
+            # we have; only a first-page failure (nothing collected yet) is a
+            # genuine, re-raisable outage that the caller handles as retry/error.
+            try:
+                page = await adapter.list_contents(
+                    ctx,
+                    account.external_id,
+                    published_after=published_after,
+                    cursor=cursor,
+                    page_size=window,
+                )
+            except PlatformAdapterError as exc:
+                if run.items_processed == 0:
+                    raise
+                self._emit(
+                    run,
+                    "page",
+                    "error",
+                    f"第 {page_index + 1} 页作品列表获取失败：{exc}",
+                    {"page_index": page_index, "error_code": exc.code, "error": str(exc)},
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                if run.items_processed == 0:
+                    raise
+                logger.warning(
+                    "sync_page_list_failed",
+                    extra={"event": "platform.sync.page_failed", "sync_run_id": str(run.id)},
+                )
+                self._emit(
+                    run,
+                    "page",
+                    "error",
+                    f"第 {page_index + 1} 页作品列表获取失败：{exc}",
+                    {"page_index": page_index, "error": str(exc)},
+                )
+                break
             batch_total = len(page.items)
             page_items: list[ContentItem] = []
+            self._emit(
+                run,
+                "page",
+                "info",
+                f"第 {page_index + 1} 页列出 {batch_total} 条作品",
+                {
+                    "page_index": page_index,
+                    "batch_total": batch_total,
+                    "has_next": bool(page.next_cursor),
+                },
+            )
             # Per-page heartbeat: tell the UI exactly how many works were just
             # listed and the running total, instead of only updating once the
             # whole page (upsert + analytics) is done.
@@ -922,6 +1206,7 @@ class PlatformSyncExecutor:
             )
             await self.session.commit()
             page_processed = 0
+            page_skipped = 0
             for data in page.items:
                 rejection = self._content_rejection_reason(data)
                 if rejection is not None:
@@ -948,13 +1233,54 @@ class PlatformSyncExecutor:
                 # upsert/analytics phase.
                 run.items_processed += 1
                 page_processed += 1
-                content, was_created, was_skipped = await self._upsert_content(
-                    account, data, skip_existing=skip_existing
-                )
+                # A single work that fails to upsert must not abort the whole
+                # sync. Record it, continue, and surface it in the tracklog.
+                try:
+                    content, was_created, was_skipped = await self._upsert_content(
+                        account, data, skip_existing=skip_existing
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    logger.warning(
+                        "sync_content_upsert_failed",
+                        extra={
+                            "event": "platform.sync.item_failed",
+                            "sync_run_id": str(run.id),
+                            "external_id": data.external_id,
+                        },
+                    )
+                    self._emit(
+                        run,
+                        "item",
+                        "error",
+                        f"作品 {data.external_id} 入库失败：{exc}",
+                        {
+                            "external_id": data.external_id,
+                            "title": (data.title or "")[:200],
+                            "action": "failed",
+                            "error": str(exc),
+                        },
+                    )
+                    continue
                 page_items.append(content)
                 created += int(was_created)
-                skipped += int(was_skipped)
-                updated += int((not was_created) and (not was_skipped))
+                if was_skipped:
+                    skipped += 1
+                    page_skipped += 1
+                else:
+                    updated += int(not was_created)
+                    action = "created" if was_created else "updated"
+                    self._emit(
+                        run,
+                        "item",
+                        "info",
+                        f"作品 {data.external_id} {action}",
+                        {
+                            "external_id": data.external_id,
+                            "title": (data.title or "")[:200],
+                            "action": action,
+                        },
+                    )
                 if page_processed % 25 == 0 or page_processed == batch_total:
                     self._set_progress(
                         run,
@@ -968,22 +1294,74 @@ class PlatformSyncExecutor:
                         f"（本页 {page_processed}/{batch_total}，累计 {run.items_processed} 条）",
                     )
                     await self.session.commit()
+            if page_skipped > 0:
+                self._emit(
+                    run,
+                    "item",
+                    "info",
+                    f"第 {page_index + 1} 页跳过 {page_skipped} 条已存在作品",
+                    {"page_index": page_index, "skipped": page_skipped},
+                )
             await self.session.flush()
-            analytics = await adapter.fetch_content_analytics(
-                ctx, [item.external_id for item in page_items]
-            )
-            by_external_id = {item.external_id: item for item in page_items}
-            for analytics_data in analytics:
-                matched_content = by_external_id.get(analytics_data.external_id)
-                if matched_content is not None and analytics_data.metrics:
-                    self.session.add(self._content_snapshot(matched_content.id, analytics_data))
-            synthesized = self._synthesize_content_snapshots(adapter, ctx, page_items, analytics)
+            # Analytics fetch is best-effort: a failure here degrades metrics but
+            # must never discard the works already ingested this page.
+            synthesized = 0
+            try:
+                analytics = await adapter.fetch_content_analytics(
+                    ctx, [item.external_id for item in page_items]
+                )
+                by_external_id = {item.external_id: item for item in page_items}
+                for analytics_data in analytics:
+                    matched_content = by_external_id.get(analytics_data.external_id)
+                    if matched_content is not None and analytics_data.metrics:
+                        self.session.add(
+                            self._content_snapshot(matched_content.id, analytics_data)
+                        )
+                synthesized = self._synthesize_content_snapshots(
+                    adapter, ctx, page_items, analytics
+                )
+            except Exception as exc:  # noqa: BLE001
+                content_analytics_failed = True
+                logger.warning(
+                    "sync_content_analytics_failed",
+                    extra={
+                        "event": "platform.sync.analytics_failed",
+                        "sync_run_id": str(run.id),
+                        "page_index": page_index,
+                    },
+                )
+                self._emit(
+                    run,
+                    "analytics",
+                    "warn",
+                    f"第 {page_index + 1} 页指标分析失败：{exc}",
+                    {
+                        "page_index": page_index,
+                        "requested": len(page_items),
+                        "error": str(exc),
+                    },
+                )
+            else:
+                self._emit(
+                    run,
+                    "analytics",
+                    "info",
+                    f"第 {page_index + 1} 页分析完成：{len(analytics)} 条指标",
+                    {
+                        "page_index": page_index,
+                        "requested": len(page_items),
+                        "returned": len(analytics),
+                        "synthesized": synthesized,
+                    },
+                )
             run.records_created = created
             # Field updates + browser-derived snapshots both count as updates.
             run.records_updated = updated + synthesized
             run.metadata_json = {
                 **run.metadata_json,
                 "skipped_existing": skipped,
+                "items_failed": failed,
+                "content_analytics_failed": content_analytics_failed,
             }
             progress = 30 + round(55 * (page_index + 1) / self.settings.sync_page_limit)
             self._set_progress(
@@ -998,7 +1376,20 @@ class PlatformSyncExecutor:
             if not page.next_cursor:
                 break
             cursor = page.next_cursor
-        return created, updated
+        self._emit(
+            run,
+            "stage",
+            "info",
+            "作品列表与指标抓取阶段结束",
+            {
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+                "failed": failed,
+                "content_analytics_failed": content_analytics_failed,
+            },
+        )
+        return created, updated, failed, content_analytics_failed
 
     @staticmethod
     def _view_count_from_metadata(meta: Mapping[str, Any] | None) -> int | None:

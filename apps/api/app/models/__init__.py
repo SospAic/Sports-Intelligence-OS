@@ -46,8 +46,13 @@ from app.models.operations import (
     TaskRun,
 )
 from app.models.session import AuthSession, LoginAttempt
-from app.models.settings import LLMProviderSetting, PlatformCredentialSetting, SyncSettings
-from app.models.sync import SyncRun
+from app.models.settings import (
+    LLMProviderSetting,
+    PlatformCredentialSetting,
+    RuntimeSettingOverride,
+    SyncSettings,
+)
+from app.models.sync import SyncRun, SyncRunEvent
 from app.models.topics import SavedTopic
 from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.models.user import User
@@ -88,6 +93,7 @@ __all__ = [
     "OutboxEventAttempt",
     "Platform",
     "PlatformCredentialSetting",
+    "RuntimeSettingOverride",
     "SyncSettings",
     "PromptCollection",
     "PromptVersion",
@@ -98,6 +104,7 @@ __all__ = [
     "SavedTopic",
     "Source",
     "SyncRun",
+    "SyncRunEvent",
     "SystemEvent",
     "TaskRun",
     "TopicEvent",

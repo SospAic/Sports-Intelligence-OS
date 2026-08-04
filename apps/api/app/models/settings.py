@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -66,6 +66,29 @@ class SyncSettings(TimestampMixin, Base):
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
     config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class RuntimeSettingOverride(Base):
+    """Global, runtime-adjustable overrides for server-level Settings that are
+    otherwise frozen from environment variables at process start.
+
+    Only a handful of keys are overridable here (today: ``sync_task_max_retries``).
+    Writing a key makes it take effect **without an application restart** — the
+    Celery worker reads this table at sync-task time instead of the frozen
+    ``Settings`` singleton. Each key is a single-row *global* value (not
+    workspace-scoped) because the underlying Setting is server-global.
+    """
+
+    __tablename__ = "runtime_setting_overrides"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.now(UTC)
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
 
 class PlatformCredentialSetting(TimestampMixin, Base):

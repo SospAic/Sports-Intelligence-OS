@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import DEVELOPMENT_SECRET, Settings
 from app.models.operations import AuditEntry
-from app.models.settings import LLMProviderSetting, SyncSettings
+from app.models.settings import (
+    LLMProviderSetting,
+    RuntimeSettingOverride,
+    SyncSettings,
+)
 from app.providers.llm.base import LLMHealth, LLMProvider
 from app.providers.llm.openai_compatible import OpenAICompatibleProvider
 from app.providers.notifications.crypto import SecretConfigCipher, mask_secret_config
@@ -177,7 +181,7 @@ class SettingsService:
         )
         self.cipher = SecretConfigCipher(explicit_key or settings.secret_key.get_secret_value())
 
-    def runtime_settings(self) -> RuntimeSettingsRead:
+    async def runtime_settings(self) -> RuntimeSettingsRead:
         database = make_url(self.settings.database_url)
         redis = urlsplit(self.settings.redis_url)
         redis_database = redis.path.lstrip("/") or "0"
@@ -506,12 +510,13 @@ class SettingsService:
                         self._field(
                             "sync_task_max_retries",
                             "同步任务最大重试",
-                            self.settings.sync_task_max_retries,
+                            await self.effective_sync_task_max_retries(),
                             "number",
                             "SIO_SYNC_TASK_MAX_RETRIES",
-                            "Celery 同步任务重试上限。",
+                            "Celery 同步任务重试上限；可在「设置中心 → 同步」页调整，立即生效无需重启。",
                             0,
                             10,
+                            restart_required=False,
                         ),
                         self._field(
                             "task_stale_after_seconds",
@@ -665,7 +670,9 @@ class SettingsService:
         """Return the workspace's global fetch policy, with defaults filled in."""
 
         row = await self._sync_settings_row(workspace_id)
-        return self._sync_settings_read(row)
+        read = self._sync_settings_read(row)
+        read.sync_task_max_retries = await self.effective_sync_task_max_retries()
+        return read
 
     async def update_sync_settings(
         self, workspace_id: UUID, actor_id: UUID, payload: SyncSettingsUpdate
@@ -685,6 +692,15 @@ class SettingsService:
         else:
             row.config = config
             action = "sync_settings.updated"
+        # ``sync_task_max_retries`` is a *global* server setting, but it is
+        # persisted through this per-workspace endpoint so both retry knobs sit
+        # on the one Sync panel. ``None`` leaves the existing override untouched
+        # (partial config edits must not wipe it); an int sets it; an explicit
+        # JSON null clears it back to the environment default.
+        if payload.sync_task_max_retries is not None:
+            await self.set_runtime_override(
+                "sync_task_max_retries", int(payload.sync_task_max_retries), actor_id
+            )
         self._audit(
             workspace_id,
             actor_id,
@@ -694,7 +710,41 @@ class SettingsService:
         )
         await self.session.commit()
         await self.session.refresh(row)
-        return self._sync_settings_read(row)
+        read = self._sync_settings_read(row)
+        read.sync_task_max_retries = await self.effective_sync_task_max_retries()
+        return read
+
+    async def get_runtime_override(self, key: str) -> Any | None:
+        """Return the stored override value for ``key``, or ``None`` if unset."""
+
+        row = await self.session.scalar(
+            select(RuntimeSettingOverride).where(RuntimeSettingOverride.key == key)
+        )
+        return row.value_json if row is not None else None
+
+    async def set_runtime_override(
+        self, key: str, value: Any, actor_id: UUID | None
+    ) -> None:
+        """Upsert a global runtime override (effective without restart)."""
+
+        row = await self.session.scalar(
+            select(RuntimeSettingOverride).where(RuntimeSettingOverride.key == key)
+        )
+        if row is None:
+            row = RuntimeSettingOverride(key=key, value_json=value, updated_by=actor_id)
+            self.session.add(row)
+        else:
+            row.value_json = value
+            row.updated_at = datetime.now(UTC)
+            row.updated_by = actor_id
+
+    async def effective_sync_task_max_retries(self) -> int:
+        """Effective sync-task retry cap: runtime override if set, else env."""
+
+        override = await self.get_runtime_override("sync_task_max_retries")
+        if isinstance(override, int) and 0 <= override <= 10:
+            return override
+        return int(self.settings.sync_task_max_retries)
 
     async def _sync_settings_row(self, workspace_id: UUID) -> SyncSettings | None:
         return cast(
@@ -987,6 +1037,7 @@ class SettingsService:
         maximum: float | None = None,
         *,
         secret: bool = False,
+        restart_required: bool = True,
     ) -> RuntimeSettingField:
         return RuntimeSettingField(
             key=key,
@@ -996,7 +1047,7 @@ class SettingsService:
             env_var=env_var,
             description=description,
             secret=secret,
-            restart_required=True,
+            restart_required=restart_required,
             minimum=minimum,
             maximum=maximum,
         )

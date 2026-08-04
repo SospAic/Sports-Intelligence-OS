@@ -450,6 +450,22 @@ class MonitoringRepository:
             .limit(1)
         )
         top_row = (await self._session.execute(top_statement)).one_or_none()
+        latest_account_snap = await self._session.scalar(
+            select(AccountSnapshot)
+            .where(AccountSnapshot.account_id == account_id)
+            .order_by(AccountSnapshot.captured_at.desc())
+            .limit(1)
+        )
+        account_total_likes = (
+            latest_account_snap.total_like_count
+            if latest_account_snap is not None
+            else None
+        )
+        account_total_views = (
+            latest_account_snap.total_view_count
+            if latest_account_snap is not None
+            else None
+        )
         return {
             "content_count": content_count,
             "avg_completion_rate": mapping["avg_completion_rate"],
@@ -460,6 +476,8 @@ class MonitoringRepository:
                 if mapping["total_interactions"] is not None
                 else None
             ),
+            "account_total_likes": account_total_likes,
+            "account_total_views": account_total_views,
             "traffic_source_split": traffic_split,
             "recent_24h_view_growth": (
                 int(mapping["recent_view_growth"])

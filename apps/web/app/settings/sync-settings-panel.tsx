@@ -253,6 +253,7 @@ export function SyncSettingsPanel() {
 
   const [maxContents, setMaxContents] = useState<string>("");
   const [skipExisting, setSkipExisting] = useState(true);
+  const [syncTaskMaxRetries, setSyncTaskMaxRetries] = useState<string>("");
   const [dateAfter, setDateAfter] = useState("");
   const [dateBefore, setDateBefore] = useState("");
   const [playlistStart, setPlaylistStart] = useState("1");
@@ -267,6 +268,11 @@ export function SyncSettingsPanel() {
     const cfg = data.data.config;
     setMaxContents(cfg.max_contents != null ? String(cfg.max_contents) : "");
     setSkipExisting(cfg.skip_existing);
+    setSyncTaskMaxRetries(
+      data.data.sync_task_max_retries != null
+        ? String(data.data.sync_task_max_retries)
+        : "",
+    );
     setDateAfter(ymdToDateInput(cfg.yt_dlp.dateafter));
     setDateBefore(ymdToDateInput(cfg.yt_dlp.datebefore));
     setPlaylistStart(String(cfg.yt_dlp.playlist_start ?? 1));
@@ -350,6 +356,10 @@ export function SyncSettingsPanel() {
           yt_dlp: ytBody,
           download: downloadBody,
         },
+        sync_task_max_retries:
+          syncTaskMaxRetries.trim() === ""
+            ? null
+            : Math.min(10, Math.max(0, Number(syncTaskMaxRetries))),
       };
       await apiRequest("/settings/sync", {
         method: "PUT",
@@ -406,6 +416,24 @@ export function SyncSettingsPanel() {
                 placeholder="留空 = 全量抓取（受分页上限约束）"
                 disabled={!canEdit}
               />
+            </label>
+
+            <label className="grid gap-2 text-sm">
+              同步任务最大重试次数（sync_task_max_retries）
+              <input
+                name="sync_task_max_retries"
+                className={inputClass}
+                type="number"
+                min="0"
+                max="10"
+                value={syncTaskMaxRetries}
+                onChange={(e) => setSyncTaskMaxRetries(e.target.value)}
+                placeholder="0–10，留空 = 沿用环境变量默认"
+                disabled={!canEdit}
+              />
+              <span className="text-xs text-slate-500">
+                Celery 同步任务失败后的重试上限；保存后立即生效，无需重启服务。可在「运行时设置」页查看当前生效值。
+              </span>
             </label>
 
             <div className="grid grid-cols-2 gap-4">

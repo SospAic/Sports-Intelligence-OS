@@ -356,6 +356,8 @@ export interface SyncSettingsConfig {
 
 export interface SyncSettingsRecord {
   config: SyncSettingsConfig;
+  /** Effective sync-task retry cap (runtime override if set, else env default). */
+  sync_task_max_retries: number;
 }
 
 export interface LLMProviderSettingRecord {
@@ -562,6 +564,8 @@ export interface AccountContentSummary {
   avg_watch_time_seconds: number | null;
   avg_engagement_rate: number | null;
   total_interactions: number | null;
+  account_total_likes: number | null;
+  account_total_views: number | null;
   traffic_source_split: Record<string, number | null>;
   recent_24h_view_growth: number | null;
   top_content_id: string | null;
@@ -951,6 +955,34 @@ export interface SyncRunPage {
   page: number;
   page_size: number;
   total: number;
+}
+
+export type SyncRunEventLevel = "info" | "warn" | "error";
+export type SyncRunEventType =
+  | "stage"
+  | "page"
+  | "item"
+  | "analytics"
+  | "external_call"
+  | "warning"
+  | "error"
+  | "info"
+  | "summary";
+
+export interface SyncRunEvent {
+  id: string;
+  sync_run_id: string;
+  sequence: number;
+  created_at: string;
+  event_type: SyncRunEventType;
+  level: SyncRunEventLevel;
+  message: string;
+  payload: Record<string, unknown>;
+}
+
+export interface SyncRunDetail {
+  run: SyncRunRecord;
+  events: SyncRunEvent[];
 }
 
 export interface SavedTopicRecord {
