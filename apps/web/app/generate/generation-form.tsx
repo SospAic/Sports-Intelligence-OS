@@ -18,6 +18,7 @@ import {
   GenerationSourcePicker,
   type CreationSourceType,
 } from "./generation-source-picker";
+import { VideoInfoModule, type VideoContext } from "./video-info-module";
 
 const lengthPresets = {
   concise: { label: "精简版", hint: "约 45 秒", minimum: 800, maximum: 950 },
@@ -77,6 +78,7 @@ export function GenerationForm({
   );
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [videoContext, setVideoContext] = useState<VideoContext | null>(null);
   const length = lengthPresets[lengthPreset];
   const sourceReady =
     inputType === "user_text" ? Boolean(text.trim()) : Boolean(inputId);
@@ -100,6 +102,7 @@ export function GenerationForm({
         inputPayload.answer_reveal_min_ratio = 0.55;
       }
       if (creatorBrief.trim()) inputPayload.creator_brief = creatorBrief.trim();
+      if (videoContext) inputPayload.video_context = videoContext;
       const run = await apiRequest<GenerationRun>("/generations", {
         method: "POST",
         workspaceId,
@@ -131,11 +134,12 @@ export function GenerationForm({
 
   return (
     <div className="mt-7 space-y-6">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-4">
         {[
           ["01", "选择素材", "热门视频、新闻或事件"],
-          ["02", "选择规则", "决定叙事与成片标准"],
-          ["03", "获得成品", "文案、标题、翻译与素材词"],
+          ["02", "视频信息", "名称、标签、字幕与热门评论"],
+          ["03", "选择规则", "决定叙事与成片标准"],
+          ["04", "获得成品", "文案、标题、翻译与素材词"],
         ].map(([index, label, hint]) => (
           <div
             className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"
@@ -160,10 +164,16 @@ export function GenerationForm({
         workspaceId={workspaceId}
       />
 
+      <VideoInfoModule
+        inputId={inputId}
+        inputType={inputType}
+        onChange={setVideoContext}
+      />
+
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
         <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 lg:p-6">
           <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
-            02 · 成片规则
+            03 · 成片规则
           </p>
           <h2 className="mt-2 text-xl font-semibold text-white">
             选择你希望遵循的规则预设
@@ -249,7 +259,7 @@ export function GenerationForm({
         <aside className="rounded-2xl border border-cyan-900/60 bg-cyan-950/15 p-5 lg:p-6">
           <div className="flex items-center justify-between gap-3">
             <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
-              03 · 一键生成
+              04 · 一键生成
             </p>
             <Sparkles className="text-cyan-300" size={20} />
           </div>

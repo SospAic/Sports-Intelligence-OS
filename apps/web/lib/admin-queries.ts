@@ -77,6 +77,7 @@ export function buildContentListPath(input: {
   publishedFrom?: string;
   sort?: string;
   order?: SortOrder;
+  tags?: string[];
 }): string {
   const params = new URLSearchParams({
     page: String(input.page),
@@ -92,6 +93,9 @@ export function buildContentListPath(input: {
       "published_from",
       new Date(`${input.publishedFrom}T00:00:00Z`).toISOString(),
     );
+  }
+  if (input.tags && input.tags.length > 0) {
+    for (const tag of input.tags) params.append("tags", tag);
   }
   return withQuery("/contents", params);
 }

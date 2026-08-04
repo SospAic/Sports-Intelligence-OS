@@ -6,10 +6,11 @@ import type {
   DerivedMetricPage,
 } from "@sio/shared-types";
 import { useQuery } from "@tanstack/react-query";
-import { Captions, ExternalLink, FileJson, Film, Image as ImageIcon, Sparkles } from "lucide-react";
+import { Captions, ExternalLink, FileJson, Film, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useWorkspace } from "@/components/app-shell";
 import { ExternalImage } from "@/components/external-image";
+import { SubtitleVideoPlayer } from "@/components/subtitle-video-player";
 import { contentCoverUrl } from "@/lib/media";
 import { TrendChart } from "@/components/trend-chart";
 import {
@@ -143,6 +144,7 @@ export function ContentDetailClient({ id }: { id: string }) {
   const media = data.media;
   const mediaUrl = (file: string) => `/api/v1/media/${id}/${encodeURIComponent(file)}`;
   const subs = media?.subtitles?.filter((s) => s?.file) ?? [];
+  const hasSubtitles = subs.length > 0;
   const assetLinkClass =
     "inline-flex items-center gap-1 text-sm text-sky-400 hover:text-sky-300";
   return (
@@ -182,60 +184,45 @@ export function ContentDetailClient({ id }: { id: string }) {
       <Panel className="p-5">
         <h2 className="font-medium text-white">媒体资源</h2>
         <p className="mt-1 text-xs text-slate-500">
-          同步时按「设置 → 同步设置 → 媒体下载」中的开关归档的本地文件；未开启的项显示「未下载」。
+          同步时按「设置 → 同步设置 → 媒体下载」中的开关归档的本地文件；未开启的项显示「未下载」。封面已在上方预览。
         </p>
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <MediaCard
-            title="封面"
-            icon={<ImageIcon size={15} />}
-            present={Boolean(media?.thumbnail)}
-            notDownloadedHint="未下载 · 在设置中开启「下载封面缩略图」"
-          >
-            {media?.thumbnail && (
-              <img
-                src={mediaUrl(media.thumbnail)}
-                alt={`${data.title} 封面`}
-                className="w-full rounded-lg border border-slate-800 object-cover"
-              />
-            )}
-          </MediaCard>
+        <div className="mt-4 flex flex-col gap-4">
           <MediaCard
             title="视频"
             icon={<Film size={15} />}
             present={Boolean(media?.video)}
             notDownloadedHint="未下载 · 在设置中开启「下载视频」（体积较大）"
           >
-            {media?.video && (
-              <video
-                src={mediaUrl(media.video)}
-                controls
-                preload="metadata"
-                className="w-full rounded-lg border border-slate-800"
-              />
-            )}
+            <SubtitleVideoPlayer
+              contentId={id}
+              videoFile={media?.video}
+              subtitles={subs}
+            />
           </MediaCard>
-          <MediaCard
-            title="字幕"
-            icon={<Captions size={15} />}
-            present={subs.length > 0}
-            notDownloadedHint="未下载 · 在设置中开启「下载字幕」"
-          >
-            <ul className="space-y-2">
-              {subs.map((s) => (
-                <li key={s.file}>
-                  <a
-                    href={mediaUrl(s.file)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className={assetLinkClass}
-                  >
-                    {s.lang || "未知语言"}
-                    <ExternalLink size={12} />
-                  </a>
-                </li>
-              ))}
-            </ul>
-          </MediaCard>
+          {hasSubtitles && (
+            <MediaCard
+              title="字幕文件"
+              icon={<Captions size={15} />}
+              present={subs.length > 0}
+              notDownloadedHint="未下载 · 在设置中开启「下载字幕」"
+            >
+              <ul className="flex flex-wrap gap-2">
+                {subs.map((s) => (
+                  <li key={s.file}>
+                    <a
+                      href={mediaUrl(s.file)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className={assetLinkClass}
+                    >
+                      {s.lang || "未知语言"}
+                      <ExternalLink size={12} />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </MediaCard>
+          )}
           <MediaCard
             title="原始信息 (info.json)"
             icon={<FileJson size={15} />}

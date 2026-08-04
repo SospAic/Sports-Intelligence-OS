@@ -23,6 +23,7 @@ import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
+import { MultiSelect } from "@/components/multi-select";
 import { contentCoverUrl } from "@/lib/media";
 import {
   AvailabilityValue,
@@ -78,6 +79,7 @@ export function ContentsClient() {
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState(() => readSavedView().platform);
   const [minViews, setMinViews] = useState(() => readSavedView().minViews);
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [range, setRange] = useUrlState("range", "all");
   const [from, setFrom] = useUrlState("from", "");
   const [view, setView] = useUrlState("view", "list");
@@ -92,6 +94,7 @@ export function ContentsClient() {
     platform,
     minViews,
     publishedFrom,
+    tags: tagFilter,
   });
   const contents = useQuery({
     queryKey: ["contents", workspaceId, contentPath],
@@ -99,6 +102,12 @@ export function ContentsClient() {
       apiRequest<ContentRecordPage>(contentPath, {
         workspaceId: workspaceId!,
       }),
+    enabled: Boolean(workspaceId),
+  });
+  const tagOptions = useQuery({
+    queryKey: ["content-tags", workspaceId],
+    queryFn: () =>
+      apiRequest<string[]>("/contents/tags", { workspaceId: workspaceId! }),
     enabled: Boolean(workspaceId),
   });
   const platforms = useQuery({
@@ -336,6 +345,34 @@ export function ContentsClient() {
         );
       },
     },
+    {
+      accessorFn: (item) => item.tags ?? [],
+      id: "tags",
+      header: "标签",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const tags = row.original.tags ?? [];
+        if (tags.length === 0)
+          return <span className="text-slate-600">—</span>;
+        return (
+          <div className="flex max-w-[220px] flex-wrap gap-1">
+            {tags.slice(0, 4).map((tag: string) => (
+              <span
+                key={tag}
+                className="rounded-md bg-slate-800 px-1.5 py-0.5 text-xs text-slate-300"
+              >
+                {tag}
+              </span>
+            ))}
+            {tags.length > 4 && (
+              <span className="text-xs text-slate-500">
+                +{tags.length - 4}
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
     ...(canEdit
       ? [
           {
@@ -538,6 +575,16 @@ export function ContentsClient() {
           type="number"
           onChange={(e) => setMinViews(e.target.value)}
           placeholder="最低播放量"
+        />
+        <MultiSelect
+          label="标签"
+          options={tagOptions.data ?? []}
+          value={tagFilter}
+          onChange={(next) => {
+            setTagFilter(next);
+            setPage(1);
+          }}
+          placeholder="全部标签"
         />
       </div>
       {creating && (

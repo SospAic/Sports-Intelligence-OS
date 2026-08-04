@@ -621,6 +621,7 @@ export interface ContentRecord {
   source_url: string | null;
   created_at: string;
   updated_at: string;
+  tags: string[];
   latest_snapshot: ContentSnapshot | null;
   view_growth_24h: number | null;
   media: ContentMedia | null;
@@ -640,6 +641,19 @@ export interface ContentRecordPage {
   page: number;
   page_size: number;
   total: number;
+}
+
+/** A platform comment on a content item (hot-comment collection). */
+export interface CommentRecord {
+  id: string;
+  content_item_id: string;
+  platform_comment_id: string;
+  author_name: string;
+  text: string;
+  like_count: number | null;
+  reply_count: number | null;
+  published_at: string | null;
+  fetched_at: string;
 }
 
 export interface ContentCalendarBucket {
