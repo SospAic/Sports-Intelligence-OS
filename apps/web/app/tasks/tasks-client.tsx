@@ -117,7 +117,7 @@ export function TasksClient() {
           <div className="max-w-lg space-y-1">
             {error_code && <Badge tone="danger">{error_code}</Badge>}
             {error_detail && (
-              <pre className="whitespace-pre-wrap rounded border border-rose-900/40 bg-rose-950/20 p-2 text-xs text-rose-300">
+              <pre className="whitespace-pre-wrap break-words rounded border border-rose-900/40 bg-rose-950/20 p-2 text-xs text-rose-300">
                 {error_detail}
               </pre>
             )}

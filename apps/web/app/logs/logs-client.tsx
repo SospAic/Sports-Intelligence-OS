@@ -34,7 +34,7 @@ function ErrorDetailBlock({
     <div className="max-w-md space-y-2">
       {errorCode && <Badge tone="danger">{errorCode}</Badge>}
       {errorDetail && (
-        <pre className="whitespace-pre-wrap rounded-lg border border-rose-900/50 bg-rose-950/30 p-2 text-xs text-rose-300">
+        <pre className="whitespace-pre-wrap break-words rounded-lg border border-rose-900/50 bg-rose-950/30 p-2 text-xs text-rose-300">
           {errorDetail}
         </pre>
       )}

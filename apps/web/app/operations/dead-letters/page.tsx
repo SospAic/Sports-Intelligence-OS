@@ -142,7 +142,7 @@ export default function DeadLettersPage() {
           <div className="max-w-xs space-y-1">
             {last_error_code && <Badge tone="danger">{last_error_code}</Badge>}
             {last_error_detail && (
-              <pre className="whitespace-pre-wrap text-xs text-rose-300">
+              <pre className="whitespace-pre-wrap break-words text-xs text-rose-300">
                 {last_error_detail}
               </pre>
             )}

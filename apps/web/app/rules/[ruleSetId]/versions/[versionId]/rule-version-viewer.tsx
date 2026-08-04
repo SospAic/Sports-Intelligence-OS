@@ -81,7 +81,7 @@ export function RuleVersionViewer({
         {view === "structured" ? (
           sectionCards(tree.sections)
         ) : (
-          <pre className="whitespace-pre-wrap text-xs leading-5 text-slate-300">
+          <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-300">
             {view === "source" ? version.source_text : jsonView}
           </pre>
         )}

@@ -189,7 +189,7 @@ function DetailPanel({
       {attempt.error_detail_safe && (
         <div className="mt-4">
           <p className="text-xs text-slate-500">错误详情（代码级）</p>
-          <pre className="mt-1 whitespace-pre-wrap rounded-lg border border-rose-900/50 bg-rose-950/30 p-3 text-xs text-rose-300">
+          <pre className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-rose-900/50 bg-rose-950/30 p-3 text-xs text-rose-300">
             {attempt.error_detail_safe}
           </pre>
         </div>
