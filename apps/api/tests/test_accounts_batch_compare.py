@@ -17,7 +17,7 @@ from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.core.config import Settings
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter
+from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter, TEST_REDIS_URL, PG_ASYNC_URL
 
 
 def authenticate(client: TestClient) -> str:
@@ -51,8 +51,8 @@ def create_account(
 async def run_sync(client: TestClient, database_path, run_id: UUID) -> None:
     settings = Settings(
         environment="test",
-        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         sync_page_limit=2,
     )

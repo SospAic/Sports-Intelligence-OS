@@ -109,7 +109,7 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
     # at the top level of that object (not in the per-video entries).
     single = dict(channel_entries[0]) if channel_entries else {}
     single.setdefault("playlist_count", 500)
-    async def _fake_single(url, *, playlist_end=1):
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
         return single, ""
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
@@ -263,7 +263,7 @@ async def test_tiktok_analytics_partial_fetch_is_not_degraded():
         "webpage_url": "https://www.tiktok.com/@guitar_daily",
     }
 
-    async def _fake_single(url, *, playlist_end=1):
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
         return profile, ""
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
@@ -310,7 +310,7 @@ async def test_tiktok_analytics_browser_fallback_captures_metrics():
         "webpage_url": "https://www.tiktok.com/@guitar_daily",
     }
 
-    async def _fake_single(url, *, playlist_end=1):
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
         return profile, ""
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
@@ -354,7 +354,7 @@ async def test_tiktok_analytics_transient_failure_reports_not_fetched():
     # hermetic and the degraded signal is preserved.
     adapter = TikTokYtDlpAdapter()
 
-    async def _fake_single(url, *, playlist_end=1):
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
         raise TransientAdapterError("yt-dlp timed out")
 
     adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
@@ -443,7 +443,7 @@ async def test_resolve_account_null_profile_falls_back_gracefully():
     ``'NoneType' object has no attribute 'get'`` on Douyin accounts."""
     adapter = DouyinYtDlpAdapter()
 
-    async def _empty_single(url, *, playlist_end=1):  # type: ignore[assignment]
+    async def _empty_single(url, *, playlist_end=1, **kwargs):  # type: ignore[assignment]
         return {}, ""
 
     adapter._run_yt_dlp_single = _empty_single  # type: ignore[assignment]

@@ -27,14 +27,14 @@ from app.services.sync import (
     cancel_sync_run,
 )
 
-from .conftest import PG_ASYNC_URL
+from .conftest import PG_ASYNC_URL, TEST_REDIS_URL
 
 
 def _build_settings() -> Settings:
     return Settings(
         environment="test",
         database_url=PG_ASYNC_URL,
-        redis_url="redis://127.0.0.1:6399/15",
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
     )

@@ -21,7 +21,7 @@ from app.models.monitoring import (
 )
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter
+from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter, TEST_REDIS_URL, PG_SYNC_URL, PG_ASYNC_URL
 
 
 def authenticate(client: TestClient) -> str:
@@ -147,8 +147,8 @@ async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
 
     settings = Settings(
         environment="test",
-        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         sync_page_limit=2,
     )
@@ -207,7 +207,7 @@ def test_content_filters_history_metrics_and_csv_export(
     now = datetime.now(UTC)
     content_id = uuid4()
 
-    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         account = session.get(Account, UUID(account_id))
         assert account is not None
@@ -367,7 +367,7 @@ def test_account_metrics_history_returns_ascending_series_within_window(
     account_id = UUID(account["id"])
     now = datetime.now(UTC)
 
-    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         assert session.get(Account, account_id) is not None
         session.add_all(
@@ -451,7 +451,7 @@ def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
     csrf_token = authenticate(client)
     account_data = create_account(client, csrf_token)
     now = datetime.now(UTC)
-    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         account = session.get(Account, UUID(account_data["id"]))
         assert account is not None
@@ -636,8 +636,8 @@ async def test_sync_run_detail_endpoint_returns_ordered_tracklog(
 
     settings = Settings(
         environment="test",
-        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         sync_page_limit=2,
     )

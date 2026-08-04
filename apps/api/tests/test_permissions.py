@@ -10,7 +10,7 @@ from app.core.security import hash_password
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership
 
-from .conftest import TEST_PLATFORM_ID
+from .conftest import TEST_PLATFORM_ID, PG_SYNC_URL
 
 VIEWER_PASSWORD = "viewer-correct-horse-battery-staple"  # noqa: S105 - test fixture
 
@@ -18,7 +18,7 @@ VIEWER_PASSWORD = "viewer-correct-horse-battery-staple"  # noqa: S105 - test fix
 def test_viewer_cannot_mutate_and_cross_workspace_access_is_denied(
     client: TestClient, database_path: Path
 ) -> None:
-    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         workspace = session.scalar(select(Workspace))
         assert workspace is not None

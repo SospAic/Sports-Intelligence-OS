@@ -23,7 +23,7 @@ from app.workflows.generation import (
     validate_final_bundle,
 )
 
-from .conftest import TEST_PASSWORD, StubLLMProvider
+from .conftest import TEST_PASSWORD, StubLLMProvider, TEST_REDIS_URL, PG_ASYNC_URL
 
 RULE_SOURCE = (
     Path(__file__).parents[3]
@@ -146,8 +146,8 @@ def test_generation_freezes_only_bounded_creator_controls() -> None:
 async def _seed_defaults(database_path: Path) -> None:
     settings = Settings(
         environment="test",
-        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-generation-secret",
         session_cookie_secure=False,
         cors_origins=["http://testserver"],
@@ -165,8 +165,8 @@ async def _seed_defaults(database_path: Path) -> None:
 async def _execute(database_path: Path, run_id: UUID) -> None:
     settings = Settings(
         environment="test",
-        database_url=f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-generation-secret",
         session_cookie_secure=False,
         cors_origins=["http://testserver"],

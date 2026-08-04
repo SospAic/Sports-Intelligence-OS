@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.settings import LLMProviderSetting, PlatformCredentialSetting
 
-from .conftest import TEST_PASSWORD
+from .conftest import TEST_PASSWORD, PG_SYNC_URL
 
 
 def authenticate(client: TestClient) -> str:
@@ -90,7 +90,7 @@ def test_workspace_llm_configuration_is_encrypted_masked_and_used_by_descriptors
     assert descriptor["default_model"] == "sports-model-v2"
     assert descriptor["default_parameters"]["temperature"] == 0.0
 
-    sync_engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    sync_engine = create_engine(PG_SYNC_URL)
     try:
         with Session(sync_engine) as session:
             row = session.scalar(select(LLMProviderSetting))
@@ -231,7 +231,7 @@ def test_platform_acquisition_modes_are_encrypted_retained_and_revocable(
         "storage_state_json",
     } & set(revoked_body["configured_fields"])
 
-    sync_engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    sync_engine = create_engine(PG_SYNC_URL)
     try:
         with Session(sync_engine) as session:
             row = session.scalar(select(PlatformCredentialSetting))

@@ -19,10 +19,7 @@ from app.schemas.monitoring import AccountSyncSettingsOverride
 from app.services.monitoring import MonitoringService
 from app.services.sync import PlatformSyncExecutor
 
-PG_ASYNC_URL = (
-    "postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/"
-    "sports_intelligence_test"
-)
+from .conftest import PG_ASYNC_URL
 
 
 @pytest.fixture

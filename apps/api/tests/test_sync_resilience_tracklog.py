@@ -37,7 +37,7 @@ from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
 from app.services.sync import PlatformSyncExecutor, SyncService
 
-from .conftest import PG_ASYNC_URL, RealShapedTestAdapter
+from .conftest import PG_ASYNC_URL, RealShapedTestAdapter, TEST_REDIS_URL
 
 ADAPTER_KEY = "test_sync_adapter"
 # External id that the failing-item executor forces to raise on upsert.
@@ -48,7 +48,7 @@ def _build_settings() -> Settings:
     return Settings(
         environment="test",
         database_url=PG_ASYNC_URL,
-        redis_url="redis://127.0.0.1:6399/15",
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
     )

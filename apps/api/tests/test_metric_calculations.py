@@ -27,7 +27,7 @@ from app.services.search import SearchService
 from app.services.sync import PlatformSyncExecutor
 from app.services.trend_collector import _confidence_adjusted, _optional_int
 
-from .conftest import PG_ASYNC_URL
+from .conftest import PG_ASYNC_URL, TEST_REDIS_URL
 
 
 def test_missing_values_are_not_converted_to_zero() -> None:
@@ -204,7 +204,7 @@ async def test_play_follower_ratio_is_computed() -> None:
         settings = Settings(
             environment="test",
             database_url=PG_ASYNC_URL,
-            redis_url="redis://127.0.0.1:6399/15",
+            redis_url=TEST_REDIS_URL,
             secret_key="test-secret",
             session_cookie_secure=False,
             auth_login_max_attempts_per_identity=3,

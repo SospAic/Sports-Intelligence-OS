@@ -16,7 +16,7 @@ from app.models.monitoring import (
     DerivedMetric,
 )
 
-from .conftest import TEST_PLATFORM_ID
+from .conftest import TEST_PLATFORM_ID, PG_SYNC_URL
 from .test_monitoring_api import authenticate, create_account
 
 
@@ -32,7 +32,7 @@ def _seed_account_with_two_contents(
     content_a = uuid4()
     content_b = uuid4()
 
-    engine = create_engine(f"postgresql+psycopg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         assert session.get(Account, account_id) is not None
 

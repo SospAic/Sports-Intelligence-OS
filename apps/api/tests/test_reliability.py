@@ -14,7 +14,7 @@ from app.services.outbox import OutboxService
 from app.services.trend_collector import _infer_sports_category, _trend_terms
 from app.services.trends import TrendService
 
-from .conftest import TEST_PASSWORD
+from .conftest import TEST_PASSWORD, PG_ASYNC_URL
 
 
 def authenticate(client: TestClient) -> str:
@@ -33,7 +33,7 @@ async def test_outbox_failure_is_recorded_and_dead_lettered_without_false_succes
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     authenticate(client)
-    engine = create_async_engine(f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_async_engine(PG_ASYNC_URL)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def fail_dispatch(_service: OutboxService, _event: OutboxEvent) -> None:
@@ -88,7 +88,7 @@ async def test_trend_dashboard_uses_latest_unique_observations(
     database_path: Path,
 ) -> None:
     authenticate(client)
-    engine = create_async_engine(f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_async_engine(PG_ASYNC_URL)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     now = datetime.now(UTC)
     try:

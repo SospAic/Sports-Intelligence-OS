@@ -1,4 +1,5 @@
 import json
+import os
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -47,11 +48,25 @@ TEST_PLATFORM_ID = uuid4()
 # database is never touched. Each test is isolated by truncating every table
 # before it runs (see the ``isolate_db`` autouse fixture).
 # ---------------------------------------------------------------------------
-POSTGRES_TEST_DB = "sports_intelligence_test"
-_PG_USER = "sio"
-_PG_PASSWORD = "sio-local-development-only"  # noqa: S105 local-dev-only test DB password
-_PG_HOST = "127.0.0.1"
-_PG_PORT = 5432
+# Test DB connection is environment-driven so the same harness runs both
+# inside the Compose network (defaults below: ``postgres`` / ``redis`` service
+# hostnames) and against published host ports. Previously ``_PG_HOST`` was hard
+# coded to ``127.0.0.1``, which only resolves to Postgres when the test process
+# runs *on* the Docker host. Inside the api container the database lives at the
+# ``postgres`` service hostname, so the full DB suite could never run in-container
+# (and CI / ``make test`` inherit the same images). Override the ``SIO_TEST_*``
+# variables to point at host-published ports when running pytest outside Compose.
+POSTGRES_TEST_DB = os.environ.get("SIO_TEST_PG_DATABASE", "sports_intelligence_test")
+_PG_USER = os.environ.get("SIO_TEST_PG_USER", "sio")
+_PG_PASSWORD = os.environ.get("SIO_TEST_PG_PASSWORD", "sio-local-development-only")  # noqa: S105
+_PG_HOST = os.environ.get("SIO_TEST_PG_HOST", "postgres")
+_PG_PORT = int(os.environ.get("SIO_TEST_PG_PORT", "5432"))
+_TEST_REDIS_URL = os.environ.get("SIO_TEST_REDIS_URL", "redis://redis:6379/15")
+
+# Public alias used by individual test modules (imported via
+# ``from .conftest import ...``) so the suite stays DRY and environment-
+# switchable. ``PG_ASYNC_URL`` / ``PG_SYNC_URL`` are already defined above.
+TEST_REDIS_URL = _TEST_REDIS_URL
 
 PG_ASYNC_URL = (
     f"postgresql+asyncpg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{POSTGRES_TEST_DB}"
@@ -199,7 +214,7 @@ def _build_test_app(database_path: str) -> FastAPI:
         database_url=(
             f"postgresql+asyncpg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{database_path}"
         ),
-        redis_url="redis://127.0.0.1:6399/15",
+        redis_url=_TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         session_cookie_secure=False,
         auth_login_max_attempts_per_identity=3,

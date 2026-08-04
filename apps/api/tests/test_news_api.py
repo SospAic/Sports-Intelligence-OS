@@ -13,9 +13,13 @@ from app.providers.news.base import NewsProvider
 from app.providers.news.feed import RSSProvider
 from app.providers.registry import ProviderRegistry
 from app.services.news import NewsService
-from app.services.news_seed import seed_news_source_examples
+from app.services.news_seed import (
+    DEFAULT_SOURCE_EXAMPLES,
+    EXPANDED_SOURCE_EXAMPLES,
+    seed_news_source_examples,
+)
 
-from .conftest import TEST_PASSWORD
+from .conftest import TEST_PASSWORD, PG_ASYNC_URL
 
 
 def test_article_body_scraping_requires_explicit_public_page_approvals() -> None:
@@ -270,7 +274,7 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     )
     registry: ProviderRegistry[NewsProvider] = ProviderRegistry()
     registry.register(RSSProvider(client=http_client, max_attempts=1))
-    engine = create_async_engine(f"postgresql+asyncpg://sio:sio-local-development-only@127.0.0.1:5432/{database_path}")
+    engine = create_async_engine(PG_ASYNC_URL)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as session:
@@ -284,7 +288,7 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
             first_seed = await seed_news_source_examples(session, workspace_id)
             second_seed = await seed_news_source_examples(session, workspace_id)
             after = int((await session.scalar(select(func.count()).select_from(Article))) or 0)
-            assert first_seed == 21  # 20 RSS examples + 1 manual source
+            assert first_seed == len(DEFAULT_SOURCE_EXAMPLES) + 1 + len(EXPANDED_SOURCE_EXAMPLES)
             assert second_seed == 0
             assert before == after == 1
     finally:
@@ -299,5 +303,5 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     assert article_listing.json()["items"][0]["published_at"].startswith("2026-07-25T10:00:00")
     assert runs.json()["items"][0]["status"] == "success"
     assert runs.json()["items"][0]["records_created"] == 1
-    assert sources.json()["total"] == 20
+    assert sources.json()["total"] == len(DEFAULT_SOURCE_EXAMPLES)
     assert all(item["config"]["example_config"] for item in sources.json()["items"])
