@@ -445,6 +445,107 @@ def test_account_metrics_history_returns_ascending_series_within_window(
     assert bad.status_code == 422
 
 
+def test_account_metrics_history_derives_missing_total_views_without_mutating_rows(
+    client: TestClient, database_path: Path
+) -> None:
+    """Regression: TikTok/Douyin snapshots arrive with total_view_count=None.
+
+    The history endpoint must derive it at read time from synced content views
+    WITHOUT mutating the append-only AccountSnapshot row. Mutating the ORM
+    object previously raised ``RuntimeError: AccountSnapshot rows are
+    append-only`` when the request session committed, returning HTTP 500.
+    """
+    csrf_token = authenticate(client)
+    account_data = create_account(client, csrf_token)
+    account_id = UUID(account_data["id"])
+    now = datetime.now(UTC)
+
+    engine = create_engine(PG_SYNC_URL)
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        content_id = uuid4()
+        session.add(
+            ContentItem(
+                id=content_id,
+                workspace_id=account.workspace_id,
+                platform_id=TEST_PLATFORM_ID,
+                account_id=account_id,
+                external_id="derive-views",
+                content_type="video",
+                title="derive views",
+                description=None,
+                published_at=now - timedelta(days=10),
+                duration_seconds=Decimal("1"),
+                canonical_url="https://example.com/derive",
+                cover_url=None,
+                language="en",
+                status="published",
+                metadata_json={},
+                first_seen_at=now - timedelta(days=10),
+                last_seen_at=now,
+                source_kind="imported",
+                source_provider="test_fixture",
+                fetched_at=now,
+                source_url=None,
+                raw_payload_ref=None,
+            )
+        )
+        session.add_all(
+            [
+                ContentSnapshot(
+                    id=uuid4(),
+                    content_item_id=content_id,
+                    captured_at=now - timedelta(days=5),
+                    view_count=300_000,
+                    like_count=0,
+                    comment_count=0,
+                    share_count=0,
+                    favorite_count=0,
+                    follower_gain=0,
+                    average_watch_time=None,
+                    completion_rate=None,
+                    search_traffic_rate=None,
+                    recommendation_traffic_rate=None,
+                    profile_traffic_rate=None,
+                    revenue=None,
+                    rpm=None,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="test_fixture",
+                    fetched_at=now - timedelta(days=5),
+                    raw_payload_ref=None,
+                    created_at=now - timedelta(days=5),
+                ),
+                AccountSnapshot(
+                    id=uuid4(),
+                    account_id=account_id,
+                    captured_at=now - timedelta(days=3),
+                    follower_count=1000,
+                    video_count=5,
+                    total_view_count=None,  # the TikTok/Douyin case
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=now - timedelta(days=3),
+                    created_at=now - timedelta(days=3),
+                ),
+            ]
+        )
+        session.commit()
+    engine.dispose()
+
+    history = client.get(
+        f"/api/v1/accounts/{account_id}/metrics/history",
+        params={"days": 10},
+    )
+    assert history.status_code == 200, history.text
+    points = history.json()["points"]
+    assert len(points) == 1
+    # Derived total_view_count must be backfilled from content views (300_000)
+    # without ever touching the append-only snapshot row.
+    assert points[0]["total_view_count"] == 300_000
+
+
 def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
     client: TestClient, database_path: Path
 ) -> None:

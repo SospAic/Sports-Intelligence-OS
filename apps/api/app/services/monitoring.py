@@ -597,26 +597,41 @@ class MonitoringService:
         # ``total_view_count`` null on historical snapshots. Rather than render
         # an empty 总播放量 trend, derive each point at read time from the sum
         # of synced content views captured on or before that snapshot's time.
-        # This never UPDATEs the append-only snapshot rows.
-        await self._derive_historical_total_views(account_id, snapshots)
+        # The derived totals are applied only to the read models, never to the
+        # underlying append-only ORM rows, so the append-only invariant holds
+        # even though the request session is committed afterwards.
+        derived_totals = await self._derive_historical_total_views(account_id, snapshots)
+        points = []
+        for s in snapshots:
+            point = AccountMetricsHistoryPoint.model_validate(s)
+            derived = derived_totals.get(s.id)
+            if derived is not None:
+                point.total_view_count = derived
+            points.append(point)
         return AccountMetricsHistory(
             account_id=account_id,
             days=days,
-            points=[AccountMetricsHistoryPoint.model_validate(s) for s in snapshots],
+            points=points,
         )
 
     async def _derive_historical_total_views(
         self, account_id: UUID, snapshots: list[AccountSnapshot]
-    ) -> None:
-        """Best-effort backfill of ``total_view_count`` on in-memory snapshots.
+    ) -> dict[UUID, int]:
+        """Best-effort backfill of ``total_view_count`` for snapshots that lack it.
 
-        Only snapshots whose ``total_view_count`` is ``None`` are touched; the
-        value is computed from content snapshots at-or-before each snapshot's
-        ``captured_at``. Mutating the ORM objects in memory is safe — they are
-        never committed, so the append-only invariant holds.
+        Platforms that omit lifetime views (TikTok/Douyin via yt-dlp) leave
+        ``total_view_count`` null on historical snapshots. Rather than render an
+        empty 总播放量 trend, derive each point at read time from the sum of
+        synced content views captured on or before that snapshot's time.
+
+        Returns a mapping from snapshot id to the derived total. The underlying
+        append-only ORM rows are NEVER mutated — the value is applied only to the
+        read models — so the append-only invariant holds even after the request
+        session is committed.
         """
-        if not snapshots or all(s.total_view_count is not None for s in snapshots):
-            return
+        missing = [s for s in snapshots if s.total_view_count is None]
+        if not missing:
+            return {}
         from collections import defaultdict
 
         result = await self._session.execute(
@@ -635,13 +650,12 @@ class MonitoringService:
             if view_count is not None:
                 by_content[content_item_id].append((captured_at, int(view_count)))
         if not by_content:
-            return
+            return {}
         for lst in by_content.values():
             lst.sort(key=lambda pair: pair[0])
 
-        for snap in snapshots:
-            if snap.total_view_count is not None:
-                continue
+        derived: dict[UUID, int] = {}
+        for snap in missing:
             threshold = snap.captured_at
             total = 0
             for lst in by_content.values():
@@ -655,7 +669,8 @@ class MonitoringService:
                         hi = mid
                 if lo > 0:
                     total += lst[lo - 1][1]
-            snap.total_view_count = total
+            derived[snap.id] = total
+        return derived
 
     async def list_contents(
         self,
