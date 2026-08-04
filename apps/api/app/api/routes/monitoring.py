@@ -35,6 +35,7 @@ from app.schemas.monitoring import (
     ContentCreate,
     ContentPage,
     ContentRead,
+    CommentRead,
     ContentSnapshotPage,
     ContentSort,
     ContentUpdate,
@@ -578,6 +579,7 @@ async def list_contents(
     min_views: Annotated[int | None, Query(ge=0)] = None,
     max_views: Annotated[int | None, Query(ge=0)] = None,
     query: str | None = None,
+    tags: Annotated[list[str] | None, Query()] = None,
 ) -> ContentPage:
     return await MonitoringService(db).list_contents(
         workspace.workspace_id,
@@ -589,12 +591,21 @@ async def list_contents(
             min_views=min_views,
             max_views=max_views,
             query=query,
+            tags=tags,
         ),
         sort=sort,
         order=order,
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/contents/tags", response_model=list[str])
+async def list_content_tags(
+    workspace: CurrentWorkspace, db: DatabaseSession
+) -> list[str]:
+    """Distinct tags across the workspace's works, for the multi-select filter."""
+    return await MonitoringService(db).list_content_tags(workspace.workspace_id)
 
 
 @router.get("/contents/{content_id}", response_model=ContentRead)
@@ -628,6 +639,40 @@ async def list_content_metrics(
     return await MonitoringService(db).content_metrics(
         workspace.workspace_id, content_id, page=page, page_size=page_size
     )
+
+
+@router.get("/contents/{content_id}/comments", response_model=list[CommentRead])
+async def list_content_comments(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[CommentRead]:
+    """Ranked hot comments for a content item (top ``limit``, default 20).
+
+    Ranking blends likes + replies (replies weighted 3×). When a platform
+    yields no comment data the list is empty and the UI shows the required
+    acquisition condition rather than a fabricated count.
+    """
+    return await MonitoringService(db).list_content_comments(
+        workspace.workspace_id, content_id, limit=limit
+    )
+
+
+@router.post("/contents/{content_id}/comments/collect", status_code=202)
+async def collect_content_comments(
+    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> dict[str, str]:
+    """Trigger a best-effort comment collection for a content item.
+
+    Dispatched to the worker so the HTTP request returns immediately; the
+    result is visible via ``GET /contents/{content_id}/comments`` once fetched.
+    """
+    from app.tasks.monitoring import collect_content_comments as collect_task
+
+    await MonitoringService(db).get_content(workspace.workspace_id, content_id)
+    collect_task.delay(str(content_id))
+    return {"status": "accepted", "detail": "评论采集中，稍后刷新查看"}
 
 
 # -- Content CRUD (manual) -------------------------------------------------

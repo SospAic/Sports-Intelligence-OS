@@ -1525,6 +1525,7 @@ class PlatformSyncExecutor:
                 source_url=data.canonical_url,
                 raw_payload_ref=None,
                 media=dict(data.media) if data.media else None,
+                tags=list(data.tags or []),
             )
             self.session.add(content)
         elif skip_existing:
@@ -1551,6 +1552,10 @@ class PlatformSyncExecutor:
             content.fetched_at = data.fetched_at
             content.source_url = data.canonical_url
             content.media = dict(data.media) if data.media else None
+            if data.tags:
+                # union with existing to avoid clobbering manually added tags
+                merged = list(dict.fromkeys([*content.tags, *data.tags]))
+                content.tags = merged[:30]
         return content, created, skipped
 
     def _content_snapshot(self, content_id: UUID, data: PlatformMetricsData) -> ContentSnapshot:

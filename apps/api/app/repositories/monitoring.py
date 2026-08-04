@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
+    Comment,
     ContentItem,
     ContentSnapshot,
     DerivedMetric,
@@ -35,6 +36,7 @@ class ContentFilters:
     min_views: int | None = None
     max_views: int | None = None
     query: str | None = None
+    tags: list[str] | None = None
 
 
 AccountRow = tuple[Account, AccountSnapshot | None, Any]
@@ -264,6 +266,9 @@ class MonitoringRepository:
                     ContentItem.external_id.ilike(pattern),
                 )
             )
+        if filters.tags:
+            # multi-select: match contents carrying ANY of the chosen tags
+            conditions.append(ContentItem.tags.overlap(filters.tags))
         return conditions
 
     async def list_contents(
@@ -325,6 +330,38 @@ class MonitoringRepository:
         )
         total = int((await self._session.scalar(count_statement)) or 0)
         return [(row[0], row[1], row[2]) for row in result.all()], total
+
+    async def list_content_tags(self, workspace_id: UUID) -> list[str]:
+        """Distinct, sorted tags across a workspace's contents (for the filter)."""
+        statement = (
+            select(func.distinct(func.unnest(ContentItem.tags)))
+            .where(ContentItem.workspace_id == workspace_id)
+            .where(ContentItem.tags.isnot(None))
+        )
+        result = await self._session.execute(statement)
+        return sorted(tag for (tag,) in result.all() if tag)
+
+    async def list_content_comments(
+        self, content_item_id: UUID, limit: int = 20
+    ) -> list[Comment]:
+        """Top comments for a content item, ranked by engagement.
+
+        Score = likes + 3×replies (replies weighted higher as they signal
+        discussion depth). NULL counts count as 0 so unranked comments sink.
+        Capped at ``limit`` (default 20) for the hot-comments widget.
+        """
+        score = (
+            func.coalesce(Comment.like_count, 0)
+            + 3 * func.coalesce(Comment.reply_count, 0)
+        ).label("score")
+        statement = (
+            select(Comment)
+            .where(Comment.content_item_id == content_item_id)
+            .order_by(score.desc(), Comment.like_count.desc().nullslast())
+            .limit(limit)
+        )
+        result = await self._session.scalars(statement)
+        return list(result.all())
 
     async def contents_calendar(
         self,

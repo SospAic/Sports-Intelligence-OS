@@ -377,8 +377,23 @@ class ContentRead(BaseModel):
     media: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
+    tags: list[str] = Field(default_factory=list)
     latest_snapshot: ContentSnapshotRead | None = None
     view_growth_24h: float | None = None
+
+
+class CommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    content_item_id: UUID
+    platform_comment_id: str
+    author_name: str
+    text: str
+    like_count: int | None = None
+    reply_count: int | None = None
+    published_at: datetime | None = None
+    fetched_at: datetime
 
 
 class ContentPage(BaseModel):

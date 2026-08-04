@@ -32,6 +32,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from app.adapters.platforms.base import (
     AdapterCallContext,
@@ -116,7 +117,10 @@ def _build_descriptor(key: str, name: str) -> AdapterDescriptor:
             AdapterCapability.TRAFFIC_SOURCES: False,
             AdapterCapability.RETENTION: False,
             AdapterCapability.REVENUE: False,
-            AdapterCapability.COMMENTS: False,
+            # Best-effort: yt-dlp can extract comments for YouTube / TikTok /
+            # Douyin to varying degrees; on failure we return [] (UI shows the
+            # required acquisition condition rather than a fabricated count).
+            AdapterCapability.COMMENTS: True,
             AdapterCapability.SEARCH_TERMS: False,
         },
         config_fields=(),
@@ -485,6 +489,78 @@ class YtDlpAdapter(PlatformAdapter):
             return {}, err_text
         return obj, err_text
 
+    @staticmethod
+    async def extract_comments(url: str) -> list[dict[str, Any]]:
+        """Best-effort comment extraction via yt-dlp.
+
+        Uses yt-dlp's ``comments`` field (YouTube / TikTok / Douyin support it
+        to varying degrees). Returns a normalized list of comment dicts; on any
+        failure (unsupported site, network error, no comments) returns ``[]`` so
+        callers never crash and the UI can show the required condition instead
+        of a fabricated count.
+        """
+        cmd = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--skip-download",
+            "--no-warnings",
+            "--no-progress",
+            "--ignore-errors",
+            "--retries",
+            str(YTDLP_DEFAULT_RETRIES),
+            "--print",
+            "%(comments)j",
+            url,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            out, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
+            )
+        except (TimeoutError, OSError):
+            return []
+        if not out:
+            return []
+        raw = out.decode("utf-8", "replace").strip()
+        if not raw or raw == "null":
+            return []
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(payload, list):
+            return []
+        comments: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            text = (item.get("text") or "").strip()
+            if not text:
+                continue
+            replies = item.get("replies") or []
+            comments.append(
+                {
+                    "platform_comment_id": str(item.get("id") or uuid4()),
+                    "author_name": item.get("author")
+                    or item.get("author_name")
+                    or "未知用户",
+                    "text": text,
+                    "like_count": item.get("like_count"),
+                    "reply_count": item.get("reply_count")
+                    if item.get("reply_count") is not None
+                    else (len(replies) if isinstance(replies, list) else None),
+                    "published_at": (
+                        datetime.fromtimestamp(item["timestamp"], tz=UTC)
+                        if isinstance(item.get("timestamp"), (int, float))
+                        else None
+                    ),
+                }
+            )
+        return comments
+
     def _resolve_retries(self, ctx: AdapterCallContext) -> int:
         """Resolve the yt-dlp ``--retries`` value from the call context.
 
@@ -573,6 +649,24 @@ class YtDlpAdapter(PlatformAdapter):
         }
         return {k: int(v) for k, v in raw.items() if isinstance(v, (int, float))}
 
+    @staticmethod
+    def _clean_tags(raw: Any) -> list[str]:
+        """Normalize yt-dlp ``tags`` into a clean list of short strings."""
+        if not raw:
+            return []
+        out: list[str] = []
+        for tag in raw:
+            if not isinstance(tag, str):
+                continue
+            tag = tag.strip()
+            if not tag or len(tag) > 64:
+                continue
+            if tag not in out:
+                out.append(tag)
+            if len(out) >= 30:
+                break
+        return out
+
     def _entry_to_content(
         self,
         entry: Mapping[str, Any],
@@ -614,6 +708,7 @@ class YtDlpAdapter(PlatformAdapter):
                 **{f"yt_{k}": v for k, v in metrics.items()},
             },
             media=media,
+            tags=_clean_tags(entry.get("tags")),
         )
 
     # -- PlatformAdapter contract -----------------------------------------

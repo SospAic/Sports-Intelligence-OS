@@ -104,6 +104,9 @@ class PlatformContentData:
     #    "thumbnail": "id.webp", "video": "id.mp4", "info_json": "id.info.json",
     #    "subtitles": [{"lang": "zh-Hans", "file": "id.zh-Hans.vtt"}]}
     media: Mapping[str, Any] | None = None
+    # Creator-assigned / platform-extracted topic tags (yt-dlp "tags", YouTube
+    # snippet tags, ...). Surfaced in the works-data multi-select filter.
+    tags: Sequence[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -13,9 +13,11 @@ from sqlalchemy.orm import selectinload
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
+    Comment,
     ContentItem,
     ContentSnapshot,
 )
+from app.adapters.platforms.yt_dlp import YtDlpAdapter
 from app.repositories.monitoring import (
     AccountFilters,
     AccountRow,
@@ -45,6 +47,7 @@ from app.schemas.monitoring import (
     ContentCreate,
     ContentPage,
     ContentRead,
+    CommentRead,
     ContentSnapshotPage,
     ContentSnapshotRead,
     ContentUpdate,
@@ -697,6 +700,69 @@ class MonitoringService:
             page_size=page_size,
             total=total,
         )
+
+    async def list_content_tags(self, workspace_id: UUID) -> list[str]:
+        """Distinct tags across the workspace's works, for the filter control."""
+        return await self._repository.list_content_tags(workspace_id)
+
+    async def list_content_comments(
+        self, workspace_id: UUID, content_item_id: UUID, limit: int = 20
+    ) -> list[CommentRead]:
+        """Ranked hot comments for a content item (top ``limit``)."""
+        await self.get_content(workspace_id, content_item_id)
+        rows = await self._repository.list_content_comments(
+            content_item_id, limit=limit
+        )
+        return [CommentRead.model_validate(row) for row in rows]
+
+    async def collect_content_comments(self, content_item_id: UUID) -> int:
+        """Fetch & store hot comments for a content item (yt-dlp backed).
+
+        Best-effort: returns the number of comments stored. When the platform
+        does not expose comments, 0 is stored and the UI shows the condition.
+        """
+        content = await self._session.get(ContentItem, content_item_id)
+        if content is None:
+            return 0
+        workspace_id = content.workspace_id
+        url = content.source_url or content.canonical_url
+        if not url:
+            return 0
+        if "yt_dlp" not in (content.source_provider or ""):
+            return 0
+        raw = await YtDlpAdapter.extract_comments(url)
+        if not raw:
+            return 0
+        stored = 0
+        for item in raw:
+            existing = await self._session.scalar(
+                select(Comment).where(
+                    Comment.content_item_id == content_item_id,
+                    Comment.platform_comment_id == item["platform_comment_id"],
+                )
+            )
+            if existing:
+                existing.like_count = item["like_count"]
+                existing.reply_count = item["reply_count"]
+                existing.text = item["text"]
+                continue
+            self._session.add(
+                Comment(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    content_item_id=content_item_id,
+                    platform_comment_id=item["platform_comment_id"],
+                    author_name=item["author_name"],
+                    text=item["text"],
+                    like_count=item["like_count"],
+                    reply_count=item["reply_count"],
+                    published_at=item["published_at"],
+                    fetched_at=datetime.now(UTC),
+                )
+            )
+            stored += 1
+        await self._session.commit()
+        return stored
 
     async def contents_calendar(
         self,

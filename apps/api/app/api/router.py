@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     auth,
     automation,
+    download,
     editorial_rules,
     generation,
     media,
@@ -32,3 +33,4 @@ api_router.include_router(operations.router)
 api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
 api_router.include_router(media.router)
+api_router.include_router(download.router)

@@ -19,6 +19,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -252,12 +253,57 @@ class ContentItem(TimestampMixin, Base):
     media: Mapped[dict[str, Any] | None] = mapped_column(
         "media", JSON, nullable=True
     )
+    # Creator-assigned / platform-extracted topic tags (e.g. yt-dlp "tags",
+    # YouTube snippet tags). Used by the works-data multi-select filter.
+    # Stored as a native Postgres text array so overlap (&&) filtering is fast.
+    tags: Mapped[list[str]] = mapped_column(
+        "tags", ARRAY(String(64)), nullable=False, default=list
+    )
 
     platform: Mapped[Platform] = relationship(back_populates="contents")
     account: Mapped[Account] = relationship(back_populates="contents")
     snapshots: Mapped[list[ContentSnapshot]] = relationship(
         back_populates="content_item", cascade="all, delete-orphan"
     )
+    comments: Mapped[list[Comment]] = relationship(
+        back_populates="content_item", cascade="all, delete-orphan"
+    )
+
+
+class Comment(Base):
+    """A single platform comment on a content item.
+
+    Collected best-effort per platform (yt-dlp comment extraction on YouTube /
+    TikTok / Douyin, browser adapters where available). Like/reply counts may
+    be ``None`` when the source does not expose them; the UI shows the required
+    acquisition condition rather than faking a number.
+    """
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        UniqueConstraint("content_item_id", "platform_comment_id"),
+        Index("ix_comments_content_item_like", "content_item_id", "like_count"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    content_item: Mapped[ContentItem] = relationship(back_populates="comments")
 
 
 class ContentSnapshot(Base):

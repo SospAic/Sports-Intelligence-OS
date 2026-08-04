@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -16,6 +17,7 @@ from app.services.sync import (
     SyncService,
     SyncValidationError,
 )
+from app.services.monitoring import MonitoringService
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -92,6 +94,87 @@ async def _effective_sync_task_max_retries(settings) -> int:
 @celery_app.task(bind=True, name="app.tasks.monitoring.sync_account")  # type: ignore[untyped-decorator]
 def sync_account(self: Task, run_id: str) -> None:
     _run_with_retry(self, UUID(run_id))
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True, name="app.tasks.monitoring.collect_content_comments"
+)
+def collect_content_comments(self: Task, content_id: str) -> int:
+    """Best-effort fetch & store of a content item's comments (yt-dlp backed)."""
+    return _run_collect_comments(UUID(content_id))
+
+
+async def _run_collect_comments(content_id: UUID) -> int:
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    try:
+        async with session_factory() as session:
+            service = MonitoringService(session, get_settings())
+            return await service.collect_content_comments(content_id)
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True, name="app.tasks.monitoring.download_url"
+)
+def download_url_task(self: Task, download_id: str) -> None:
+    """Fetch a submitted URL with yt-dlp and store the resulting media."""
+    _run_download(UUID(download_id))
+
+
+async def _run_download(download_id: UUID) -> None:
+    from app.adapters.platforms.yt_dlp import YtDlpAdapter
+    from app.services.download import DownloadService
+
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    media_root = os.environ.get("SIO_MEDIA_ROOT", "/workspace/media")
+    try:
+        async with session_factory() as session:
+            service = DownloadService(session)
+            download = await service.get(download_id)
+            if download is None:
+                return
+            await service.mark_running(download_id)
+            options = download.options or {}
+            media_dir = os.path.join(
+                media_root, str(download.workspace_id), "downloads", str(download_id)
+            )
+            os.makedirs(media_dir, exist_ok=True)
+            adapter = YtDlpAdapter()
+            entries, _ = await adapter._run_yt_dlp(
+                download.url,
+                download={
+                    "download_video": options.get("download_video", True),
+                    "video_format": options.get("video_format", "best"),
+                    "write_subtitles": options.get("write_subtitles", True),
+                    "write_auto_subtitles": options.get("write_auto_subtitles", False),
+                    "subtitle_langs": options.get("subtitle_langs", "zh.*,en.*"),
+                    "write_thumbnail": options.get("write_thumbnail", True),
+                    "write_info_json": options.get("write_info_json", False),
+                },
+                media_dir=media_dir,
+                playlist_end=1,
+            )
+            media = None
+            platform = None
+            for entry in entries:
+                vid = entry.get("id")
+                if not vid:
+                    continue
+                collected = YtDlpAdapter._collect_media(media_root, media_dir, vid)
+                if collected:
+                    media = collected
+                    platform = entry.get("extractor") or entry.get("ie_key")
+                    break
+            await service.mark_done(download_id, media, platform)
+    except Exception as exc:  # noqa: BLE001 - record failure, don't crash worker
+        logger.warning("download %s failed: %s", download_id, exc)
+        async with session_factory() as session:
+            await DownloadService(session).mark_failed(download_id, str(exc))
+    finally:
+        await engine.dispose()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

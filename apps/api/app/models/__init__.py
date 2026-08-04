@@ -53,6 +53,7 @@ from app.models.settings import (
     SyncSettings,
 )
 from app.models.sync import SyncRun, SyncRunEvent
+from app.models.download import Download
 from app.models.topics import SavedTopic
 from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.models.user import User
