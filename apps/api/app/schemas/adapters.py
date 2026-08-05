@@ -43,8 +43,7 @@ def build_adapter_descriptor_read(descriptor: Any) -> AdapterDescriptorRead:
         name=descriptor.name,
         implementation_status=descriptor.implementation_status,
         capabilities={
-            capability.value: supported
-            for capability, supported in descriptor.capabilities.items()
+            capability.value: supported for capability, supported in descriptor.capabilities.items()
         },
         config_fields=[
             AdapterConfigFieldRead(

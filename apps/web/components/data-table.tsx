@@ -121,29 +121,36 @@ export function DataTable<T>({
                           : "none"
                     }
                   >
-                    {header.isPlaceholder ? null : (
-                      <button
-                        className="inline-flex items-center gap-1"
-                        onClick={header.column.getToggleSortingHandler()}
-                        disabled={!header.column.getCanSort()}
-                      >
-                        {flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
+                    {header.isPlaceholder
+                      ? null
+                      : header.column.getCanSort() ? (
+                          <button
+                            className="inline-flex items-center gap-1"
+                            onClick={header.column.getToggleSortingHandler()}
+                          >
+                            {flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
+                            {header.column.getIsSorted() === "asc" ? (
+                              <ChevronUp size={13} />
+                            ) : header.column.getIsSorted() === "desc" ? (
+                              <ChevronDown size={13} />
+                            ) : (
+                              <ChevronsUpDown
+                                size={13}
+                                className="text-slate-600"
+                              />
+                            )}
+                          </button>
+                        ) : (
+                          <span>
+                            {flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
+                          </span>
                         )}
-                        {header.column.getCanSort() &&
-                          (header.column.getIsSorted() === "asc" ? (
-                            <ChevronUp size={13} />
-                          ) : header.column.getIsSorted() === "desc" ? (
-                            <ChevronDown size={13} />
-                          ) : (
-                            <ChevronsUpDown
-                              size={13}
-                              className="text-slate-600"
-                            />
-                          ))}
-                      </button>
-                    )}
                   </th>
                 ))}
               </tr>

@@ -63,9 +63,9 @@ export function EventsClient() {
       accessorKey: "title",
       header: "热点事件",
       cell: ({ row }) => (
-        <div className="min-w-80">
+        <div className="min-w-80 max-w-[32rem] whitespace-normal">
           <Link
-            className="font-medium text-cyan-300 hover:underline"
+            className="block break-words whitespace-normal font-medium text-cyan-300 hover:underline"
             href={`/events/${row.original.id}`}
           >
             {row.original.title}

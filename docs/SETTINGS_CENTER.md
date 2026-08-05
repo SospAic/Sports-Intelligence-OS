@@ -9,19 +9,18 @@
 - **部署级配置**：应用、PostgreSQL、Redis/Celery、同步任务、平台凭证、会话与安全参数。API 只返回脱敏当前值和环境变量名，页面可调整并复制 `.env` 草稿；实际值由运维写入 `.env`、Docker Secret 或平台 Secret Manager，重启 API、Worker、Beat 后生效。
 - **工作区级配置**：OpenAI 兼容 LLM 和通知渠道。Owner/Admin 可在页面保存；敏感值在后端加密，读取接口只返回配置状态与脱敏摘要，新生成/通知任务直接使用数据库配置。
 
-数据库和 Redis 的含凭证 URL 不会返回，也不会进入页面生成的草稿。页面只展示驱动、主机、端口、数据库编号和“凭证是否存在”。Compose 内部主机固定为 `postgres` / `redis`；不要把宿主机 `127.0.0.1` URL直接复制到容器。
+数据库和 Redis 的含凭证 URL 不会返回，也不会进入页面生成的草稿。它们属于部署诊断，不再作为设置页 Tab；平台凭证统一在“平台管理”维护，避免出现重复入口。Compose 内部主机固定为 `postgres` / `redis`；不要把宿主机 `127.0.0.1` URL直接复制到容器。
 
 ## 2. 部署级细项
 
-`GET /api/v1/settings/runtime` 返回以下分组：
+`GET /api/v1/settings/runtime` 仍为运维/健康诊断接口，但不再由设置页渲染为独立 Tab：
 
 | 分组 | 主要参数 |
 | --- | --- |
 | 应用与网络 | 应用名/版本、日志级别、API Host/Port、CORS Origin JSON、Cookie 名称 |
 | PostgreSQL | 脱敏连接拓扑、pool size、max overflow、获取连接超时、连接回收、SQL 命令超时 |
 | Redis/Celery | 脱敏连接拓扑、连接/读写超时、最大连接数、健康检查周期、超时重试 |
-| 平台与外部集成 | YouTube Data API Key 是否配置；不返回 Key |
-| 同步与任务 | 平台请求超时/尝试次数、任务重试、失联租约、分页上限、通知全局超时/尝试次数 |
+| 同步与任务 | 平台请求超时/尝试次数、同步整体墙钟预算、任务重试、失联租约、分页上限、通知全局超时/尝试次数 |
 | 会话与安全 | Secure Cookie、会话 TTL、登录限流窗口/账号/IP 上限、记录保留期、密码长度、独立密钥状态 |
 
 Compose 会把上述可变参数显式传入 API、Worker 和 Beat。`SIO_DATABASE_URL` 与 `SIO_REDIS_URL` 在默认 Compose 中使用容器内部连接地址；生产可通过覆盖文件或编排平台替换。
@@ -33,7 +32,7 @@ Compose 会把上述可变参数显式传入 API、Worker 和 Beat。`SIO_DATABA
 - 保存到 `llm_provider_settings`；连接配置为 Fernet 密文，API Key 和自定义头不明文回传。
 - 空白 API Key 保留已有值；显式勾选“清除”才删除。
 - 保存后，手动生成、Celery Worker 生成和自动化 `create_generation` 均解析工作区配置。
-- “测试连接”会真实请求公网 Base URL 的 `/models`；会再次执行 DNS/IP SSRF 防护，不跟随重定向，不伪造成功。
+- 模型提供商下拉先提供供应商目录；保存配置后，`GET /api/v1/settings/llm/models` 会真实请求当前 Base URL 的 `/models` 并将可用模型填入下拉框。该请求会再次执行 DNS/IP SSRF 防护，不跟随重定向，不伪造成功。
 - 首期数据库配置仅提供一个 OpenAI 兼容连接；Mock LLM 仍仅用于显式测试输出。Ollama 私网地址、厂商专有协议和流式输出仍不属于本次增量范围。
 
 ## 4. 通知 Provider

@@ -165,7 +165,7 @@ export function NotificationChannelsClient({
         workspaceId,
         csrf: true,
         body: JSON.stringify({
-          title: "Sports Intelligence OS 测试通知",
+          title: "Content Intelligence OS 测试通知",
           body: "通知渠道配置测试。",
         }),
       });

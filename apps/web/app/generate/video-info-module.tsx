@@ -72,6 +72,9 @@ export function VideoInfoModule({
   const selectedComments = commentList.filter((c) =>
     selectedCommentIds.includes(c.id),
   );
+  const selectedCommentKey = selectedCommentIds.join("|");
+  const tagsKey = data?.tags?.join("|");
+  const subtitleLangsKey = subtitleLangs.join("|");
 
   useEffect(() => {
     if (inputType !== "content" || !inputId) {
@@ -94,10 +97,10 @@ export function VideoInfoModule({
     includeTags,
     includeSubtitles,
     includeComments,
-    selectedCommentIds.join("|"),
+    selectedCommentKey,
     data?.title,
-    data?.tags?.join("|"),
-    subtitleLangs.join("|"),
+    tagsKey,
+    subtitleLangsKey,
     inputType,
     inputId,
   ]);

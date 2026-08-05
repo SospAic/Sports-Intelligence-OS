@@ -5,8 +5,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "Sports Intelligence OS",
-  description: "体育内容情报与自动化工作台",
+  title: "Content Intelligence OS",
+  description: "内容智能生产与运营工作台",
 };
 
 export default function RootLayout({

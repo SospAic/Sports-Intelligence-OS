@@ -150,9 +150,7 @@ async def test_cancel_running_run_marks_cancelled() -> None:
         uuid4(),
     )
     async with maker() as session:
-        await _seed(
-            session, workspace_id, platform_id, account_id, run_id, run_status="running"
-        )
+        await _seed(session, workspace_id, platform_id, account_id, run_id, run_status="running")
 
     async with maker() as session:
         await cancel_sync_run(session, workspace_id, run_id)
@@ -176,9 +174,7 @@ async def test_cancel_terminal_run_is_idempotent() -> None:
         uuid4(),
     )
     async with maker() as session:
-        await _seed(
-            session, workspace_id, platform_id, account_id, run_id, run_status="success"
-        )
+        await _seed(session, workspace_id, platform_id, account_id, run_id, run_status="success")
 
     async with maker() as session:
         result = await cancel_sync_run(session, workspace_id, run_id)

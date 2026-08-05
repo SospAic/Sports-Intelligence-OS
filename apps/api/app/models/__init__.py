@@ -7,6 +7,7 @@ from app.models.automation import (
     NotificationDelivery,
     NotificationDeliveryAttempt,
 )
+from app.models.download import Download
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
 from app.models.generation import (
     GenerationRun,
@@ -53,7 +54,6 @@ from app.models.settings import (
     SyncSettings,
 )
 from app.models.sync import SyncRun, SyncRunEvent
-from app.models.download import Download
 from app.models.topics import SavedTopic
 from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.models.user import User
@@ -76,6 +76,7 @@ __all__ = [
     "DashboardStat",
     "DeadLetterEvent",
     "DerivedMetric",
+    "Download",
     "EventArticle",
     "ExternalCallAttempt",
     "GenerationRun",

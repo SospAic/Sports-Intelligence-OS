@@ -81,6 +81,7 @@ class SourceRead(BaseModel):
     enabled: bool
     provider_key: str
     config: dict[str, Any] = Field(validation_alias="config_json")
+    last_attempt_at: datetime | None
     last_synced_at: datetime | None
     next_sync_at: datetime | None
     last_error_code: str | None

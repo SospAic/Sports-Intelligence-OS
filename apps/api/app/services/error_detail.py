@@ -76,12 +76,9 @@ _BUSINESS_HINTS: dict[str, str] = {
     ),
     "permission_denied": "当前凭证缺少所需权限。请确认平台应用已获得相应授权范围（scope）。",
     "not_found": (
-        "账号不存在、已被平台隐藏或已删除。请检查网址是否正确，"
-        "或该内容是否仅对登录用户可见。"
+        "账号不存在、已被平台隐藏或已删除。请检查网址是否正确，或该内容是否仅对登录用户可见。"
     ),
-    "rate_limited": (
-        "触发了平台限流。系统会自动有限重试；若持续失败，请降低抓取频率或稍后再试。"
-    ),
+    "rate_limited": ("触发了平台限流。系统会自动有限重试；若持续失败，请降低抓取频率或稍后再试。"),
     "transient_provider_error": (
         "平台或网络暂时不可用（可能是限流、反爬或临时故障）。系统会自动有限重试；"
         "如反复失败可稍后手动重试。"
@@ -120,9 +117,7 @@ _BUSINESS_HINTS: dict[str, str] = {
     ),
     "delivery_failed": "通知投递失败。请检查渠道配置与接收地址是否正确。",
     "webhook_delivery_failed": "Webhook 投递失败。请确认回调地址可达且返回 2xx。",
-    "generation_provider_error": (
-        "生成模型供应商返回错误。请检查 API Key / 额度 / 模型名称配置。"
-    ),
+    "generation_provider_error": ("生成模型供应商返回错误。请检查 API Key / 额度 / 模型名称配置。"),
     "generation_timeout": "生成任务超时。可重试，或降低输入规模 / 切换模型。",
     "news_sync_error": "资讯同步失败。请检查资讯源配置、凭证与网络连通性。",
     "external_call_failed": "外部调用失败。请检查目标服务可用性、凭证与网络。",

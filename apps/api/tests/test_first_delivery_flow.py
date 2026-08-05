@@ -19,12 +19,12 @@ from app.services.generation_seed import seed_generation_defaults
 from app.services.sync import PlatformSyncExecutor
 
 from .conftest import (
+    PG_ASYNC_URL,
     TEST_PASSWORD,
     TEST_PLATFORM_ID,
+    TEST_REDIS_URL,
     RealShapedTestAdapter,
     StubLLMProvider,
-    TEST_REDIS_URL,
-    PG_ASYNC_URL,
 )
 
 RULE_SOURCE = (

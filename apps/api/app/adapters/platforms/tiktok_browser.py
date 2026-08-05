@@ -67,36 +67,26 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
     min_action_delay = 1.5
     max_action_delay = 4.0
 
-    async def _login_if_configured(
-        self, page: Page, ctx: AdapterCallContext
-    ) -> bool:
+    async def _login_if_configured(self, page: Page, ctx: AdapterCallContext) -> bool:
         await page.goto(
             "https://www.tiktok.com/login/phone-or-email/email",
             wait_until="domcontentloaded",
             timeout=self.page_load_timeout_ms,
         )
-        await page.locator(
-            "input[name='username'], input[autocomplete='username']"
-        ).first.fill(str(ctx.config.get("username", "")))
-        await page.locator("input[type='password']").first.fill(
-            str(ctx.config.get("password", ""))
+        await page.locator("input[name='username'], input[autocomplete='username']").first.fill(
+            str(ctx.config.get("username", ""))
         )
-        await page.locator(
-            "button[type='submit'], button[data-e2e='login-button']"
-        ).first.click()
+        await page.locator("input[type='password']").first.fill(str(ctx.config.get("password", "")))
+        await page.locator("button[type='submit'], button[data-e2e='login-button']").first.click()
         await page.wait_for_timeout(3000)
         challenge = page.locator(
             "iframe[src*='captcha'], [class*='captcha'], [id*='captcha']"
         ).first
         if "login" in page.url.lower() or await challenge.is_visible(timeout=500):
-            raise LoginRequiredError(
-                "TikTok", "登录需要验证码、2FA 或其他人工验证"
-            )
+            raise LoginRequiredError("TikTok", "登录需要验证码、2FA 或其他人工验证")
         return True
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         """Navigate to the profile page and extract account info."""
         username = locator.lstrip("@")
         if not username:
@@ -143,7 +133,9 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             # Fallback: DOM extraction.
             if not display_name:
                 try:
-                    name_el = page.locator("[data-e2e='user-title'], .tiktok-j2a19r-Span, h1[data-e2e='browse-user-nickname']").first
+                    name_el = page.locator(
+                        "[data-e2e='user-title'], .tiktok-j2a19r-Span, h1[data-e2e='browse-user-nickname']"
+                    ).first
                     display_name = (await name_el.inner_text()).strip()
                 except Exception:
                     pass
@@ -158,7 +150,9 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                         return null;
                     }""")
                     if script_data:
-                        user_module = script_data.get("__DEFAULT_SCOPE__", {}).get("webapp.user-detail", {})
+                        user_module = script_data.get("__DEFAULT_SCOPE__", {}).get(
+                            "webapp.user-detail", {}
+                        )
                         user_info = user_module.get("userInfo", {})
                         user = user_info.get("user", {})
                         display_name = user.get("nickname", "")
@@ -188,8 +182,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             if not description:
                 try:
                     bio_el = page.locator(
-                        "[data-e2e='user-bio'], [class*='bio'], .user-bio, "
-                        "span.bio-text"
+                        "[data-e2e='user-bio'], [class*='bio'], .user-bio, span.bio-text"
                     ).first
                     bio_text = (await bio_el.inner_text()).strip()
                     if bio_text:
@@ -225,9 +218,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def fetch_account_analytics(
@@ -255,7 +246,9 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                     return null;
                 }""")
                 if script_data:
-                    user_module = script_data.get("__DEFAULT_SCOPE__", {}).get("webapp.user-detail", {})
+                    user_module = script_data.get("__DEFAULT_SCOPE__", {}).get(
+                        "webapp.user-detail", {}
+                    )
                     stats = user_module.get("userInfo", {}).get("stats", {})
                     follower_count = stats.get("followerCount")
                     like_count = stats.get("heartCount")
@@ -414,9 +407,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         """Fetch a single video page."""
         context, page = await self._new_page(ctx)
         try:
@@ -467,7 +458,10 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 provider=self.key,
                 fetched_at=ctx.observed_at,
                 unavailable_metrics=("view_count", "like_count", "comment_count", "share_count"),
-                metadata={"method": "browser_scrape", "note": "analytics not available via browser"},
+                metadata={
+                    "method": "browser_scrape",
+                    "note": "analytics not available via browser",
+                },
             )
             for eid in external_ids
         )

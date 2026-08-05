@@ -61,9 +61,7 @@ def stable_uuid(value: str) -> UUID:
 def _capabilities_from_descriptor(descriptor: AdapterDescriptor) -> dict[str, Any]:
     """Build the JSON-serialisable capabilities dict from an adapter descriptor."""
     reported = [
-        capability.value
-        for capability, supported in descriptor.capabilities.items()
-        if supported
+        capability.value for capability, supported in descriptor.capabilities.items() if supported
     ]
     return {
         "implementation_status": descriptor.implementation_status,

@@ -243,9 +243,7 @@ async def async_client(database_path: str) -> AsyncIterator[httpx.AsyncClient]:
     _seed_database(database_path)
     app = _build_test_app(database_path)
     transport = httpx.ASGITransport(app=app)  # type: ignore[arg-type]
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
-    ) as ac:
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac
 
 
@@ -289,9 +287,7 @@ class RealShapedTestAdapter(PlatformAdapter):
     async def validate_config(self, config: Mapping[str, Any]) -> None:
         return None
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         return PlatformAccountData(
             external_id=locator,
             username="test_handle",
@@ -308,9 +304,7 @@ class RealShapedTestAdapter(PlatformAdapter):
             metadata={},
         )
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def list_contents(
@@ -344,9 +338,7 @@ class RealShapedTestAdapter(PlatformAdapter):
         )
         return AdapterPage(items=items, next_cursor=None)
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         raise NotImplementedError("test adapter does not fetch a single content")
 
     async def fetch_account_analytics(

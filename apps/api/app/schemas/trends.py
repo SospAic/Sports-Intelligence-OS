@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # 话题
 # ---------------------------------------------------------------------------
 
+
 class TrendTopicRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -38,6 +39,7 @@ class TrendTopicPage(BaseModel):
 # ---------------------------------------------------------------------------
 # 视频
 # ---------------------------------------------------------------------------
+
 
 class TrendVideoRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -106,6 +108,7 @@ class TrendAggregate(BaseModel):
 # 关键词快照
 # ---------------------------------------------------------------------------
 
+
 class TrendKeywordSnapshotRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -127,8 +130,10 @@ class TrendKeywordSnapshotRead(BaseModel):
 # Dashboard 聚合
 # ---------------------------------------------------------------------------
 
+
 class PlatformSummary(BaseModel):
     """单平台趋势概要"""
+
     platform: str
     topic_count: int = 0
     video_count: int = 0
@@ -139,6 +144,7 @@ class PlatformSummary(BaseModel):
 
 class TrendDashboard(BaseModel):
     """趋势分析看板聚合数据"""
+
     top_topics: list[TrendTopicRead] = Field(default_factory=list)
     breakout_videos: list[TrendVideoRead] = Field(default_factory=list)
     platform_summary: list[PlatformSummary] = Field(default_factory=list)
@@ -148,8 +154,10 @@ class TrendDashboard(BaseModel):
 # 评分解释 (Explainability)
 # ---------------------------------------------------------------------------
 
+
 class ScoreComponent(BaseModel):
     """单个评分分量的详细解释"""
+
     name: str
     raw_value: float | None = None
     percentile: float | None = None
@@ -161,6 +169,7 @@ class ScoreComponent(BaseModel):
 
 class ScoreExplanation(BaseModel):
     """评分可解释性详情"""
+
     entity_id: UUID
     entity_type: str
     score_field: str
@@ -177,6 +186,7 @@ class ScoreExplanation(BaseModel):
 # ---------------------------------------------------------------------------
 # 跨平台关联 (Cross-Platform Links)
 # ---------------------------------------------------------------------------
+
 
 class CrossPlatformLinkRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -220,9 +230,7 @@ class DerivativeTopicRead(BaseModel):
     title: str
     description: str | None = None
     predicted_heat_score: float | None = None
-    evidence: dict[str, Any] = Field(
-        validation_alias="evidence_json", default_factory=dict
-    )
+    evidence: dict[str, Any] = Field(validation_alias="evidence_json", default_factory=dict)
     ai_rationale: str | None = None
     status: str
     confidence: float

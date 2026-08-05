@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.trends import SearchAnalysis, SearchQuery
+from app.providers.llm.base import LLMProvider
 from app.providers.registry import ProviderRegistry
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import PLATFORM_LABELS, SEARCHABLE_PLATFORMS, yt_search
@@ -59,7 +60,7 @@ class SearchAnalysisService:
     def __init__(
         self,
         session: AsyncSession,
-        llm_providers: ProviderRegistry,
+        llm_providers: ProviderRegistry[LLMProvider],
         settings: Settings | None = None,
     ) -> None:
         self.session = session
@@ -70,9 +71,7 @@ class SearchAnalysisService:
         self, workspace_id: UUID, page: int = 1, page_size: int = 20
     ) -> tuple[list[SearchQuery], int]:
         stmt = select(SearchQuery).where(SearchQuery.workspace_id == workspace_id)
-        total = await self.session.scalar(
-            select(func.count()).select_from(stmt.subquery())
-        )
+        total = await self.session.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = await self.session.scalars(
             stmt.order_by(SearchQuery.created_at.desc())
             .offset((page - 1) * page_size)
@@ -113,19 +112,15 @@ class SearchAnalysisService:
 
         # ---- aggregate basic signals -------------------------------------
         total_views = sum(_views(r.get("view_count")) for r in all_results)
-        per_platform = Counter(r.get("platform") for r in all_results)
-        platform_distribution = {
-            PLATFORM_LABELS.get(p, p): c for p, c in per_platform.items()
-        }
+        raw_platforms = [r.get("platform") for r in all_results]
+        per_platform = Counter(value for value in raw_platforms if isinstance(value, str) and value)
+        platform_distribution = {PLATFORM_LABELS.get(p, p): c for p, c in per_platform.items()}
         date_buckets: Counter[str] = Counter()
         for r in all_results:
             bucket = _bucket_date(r.get("published"))
             if bucket:
                 date_buckets[bucket] += 1
-        timeline = [
-            {"month": m, "count": c}
-            for m, c in sorted(date_buckets.items())
-        ]
+        timeline = [{"month": m, "count": c} for m, c in sorted(date_buckets.items())]
         computed_heat = _heat_from_views(total_views) if all_results else 0.0
         volume_estimate = {
             "total_hits": len(all_results),
@@ -216,10 +211,10 @@ class SearchAnalysisService:
         volume: dict[str, Any],
         timeline: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        scope_label = "全网" if platform in ("all", "", None) else PLATFORM_LABELS.get(
-            platform, platform
+        scope_label = (
+            "全网" if platform in ("all", "", None) else PLATFORM_LABELS.get(platform, platform)
         )
-        sample_titles = [r.get("title") for r in results[:15] if r.get("title")]
+        sample_titles = [str(r["title"]) for r in results[:15] if r.get("title") is not None]
         system_prompt = (
             "你是热点情报分析师。给定一段用户检索描述、检索范围与真实检索结果样本，"
             "请输出该检索条件相关的热度、声量、情绪、时间线、平台分布、相关衍生话题与"
@@ -232,11 +227,11 @@ class SearchAnalysisService:
             f"合计播放约 {volume.get('total_views'):,}\n"
             f"时间线（按月计数）：{timeline}\n"
             f"样本标题：\n- " + "\n- ".join(sample_titles) + "\n\n"
-            "请输出 JSON：{\"related_hotness\": int(0-100), \"sentiment\": str("
+            '请输出 JSON：{"related_hotness": int(0-100), "sentiment": str('
             "'positive'|'neutral'|'negative'|'mixed'), \"timeline_phases\": "
-            "[{\"phase\": str, \"note\": str}], \"related_derivative_topics\": "
-            "[{\"title\": str, \"angle\": str, \"predicted_heat_score\": int}], "
-            "\"summary\": str(中文一句摘要), \"model_used\": str}。"
+            '[{"phase": str, "note": str}], "related_derivative_topics": '
+            '[{"title": str, "angle": str, "predicted_heat_score": int}], '
+            '"summary": str(中文一句摘要), "model_used": str}。'
         )
         return await call_json_llm(
             self.session,

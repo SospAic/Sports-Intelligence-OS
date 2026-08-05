@@ -65,9 +65,7 @@ async def yt_search(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await asyncio.wait_for(
-            proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
-        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS)
     except TimeoutError:
         return [], "yt-dlp 搜索超时"
     except FileNotFoundError:

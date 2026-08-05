@@ -12,11 +12,10 @@ import functools
 import os
 from typing import Any
 from urllib.parse import urlparse
-from urllib.request import Request as _UrlRequest
-from urllib.request import urlopen
 from uuid import UUID
 
 import anyio
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -92,13 +91,8 @@ async def serve_content_media(
         if membership.status == "active"
         and getattr(membership.workspace, "status", "active") == "active"
     }
-    content = await db.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
-    if (
-        content is None
-        or content.workspace_id not in member_workspace_ids
-    ):
+    content = await db.scalar(select(ContentItem).where(ContentItem.id == content_id))
+    if content is None or content.workspace_id not in member_workspace_ids:
         raise HTTPException(status_code=404, detail="media not found")
     media = content.media
     if not isinstance(media, dict):
@@ -134,9 +128,7 @@ async def serve_content_media(
 # permanent local copy thereafter. A miss (no avatar, or a failed fetch) returns
 # 404 so the frontend can fall back to the remote URL and finally to initials.
 
-_AVATAR_ALLOWED_EXT: frozenset[str] = frozenset(
-    {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-)
+_AVATAR_ALLOWED_EXT: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 _AVATAR_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -152,9 +144,16 @@ def _avatar_cache_path(account_id: UUID, avatar_url: str) -> str:
 
 
 def _fetch_remote_bytes(url: str, timeout: int = 10) -> bytes:
-    req = _UrlRequest(url, headers={"User-Agent": _AVATAR_USER_AGENT})
-    with urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https only, operator-trusted
-        return resp.read()
+    if urlparse(url).scheme.lower() not in {"http", "https"}:
+        raise ValueError("avatar URL must use http or https")
+    with httpx.Client(
+        timeout=timeout,
+        headers={"User-Agent": _AVATAR_USER_AGENT},
+        follow_redirects=False,
+    ) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        return response.content
 
 
 def _write_file(path: str, data: bytes) -> None:
@@ -191,14 +190,12 @@ async def serve_account_avatar(
         )
     try:
         data = await anyio.to_thread.run_sync(_fetch_remote_bytes, avatar_url)
-    except Exception:  # noqa: BLE001 - any fetch failure degrades to remote URL
-        raise HTTPException(status_code=404, detail="avatar not found")
+    except Exception as exc:  # noqa: BLE001 - any fetch failure degrades to remote URL
+        raise HTTPException(status_code=404, detail="avatar not found") from exc
     if not data:
         raise HTTPException(status_code=404, detail="avatar not found")
     avatars_dir = os.path.dirname(cache_path)
-    await anyio.to_thread.run_sync(
-        functools.partial(os.makedirs, avatars_dir, 0o755, True)
-    )
+    await anyio.to_thread.run_sync(functools.partial(os.makedirs, avatars_dir, 0o755, True))
     await anyio.to_thread.run_sync(functools.partial(_write_file, cache_path, data))
     ext = os.path.splitext(cache_path)[1].lower()
     return FileResponse(

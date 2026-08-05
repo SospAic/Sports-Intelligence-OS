@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 YT_CHANNEL_URL = "https://www.youtube.com/@{handle}"
 YT_VIDEO_URL = "https://www.youtube.com/watch?v={video_id}"
 
+
 def _parse_relative_date(text: str | None, observed_at: datetime) -> datetime | None:
     """Parse YouTube's relative/absolute publish timestamps into a datetime.
 
@@ -135,9 +136,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
     min_action_delay = 1.0
     max_action_delay = 3.0
 
-    async def _login_if_configured(
-        self, page: Page, ctx: AdapterCallContext
-    ) -> bool:
+    async def _login_if_configured(self, page: Page, ctx: AdapterCallContext) -> bool:
         username = str(ctx.config.get("username", ""))
         password = str(ctx.config.get("password", ""))
         await page.goto(
@@ -152,14 +151,10 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
         await page.locator("#passwordNext button, #passwordNext").click()
         await page.wait_for_timeout(3000)
         if "challenge" in page.url or "accounts.google.com" in page.url:
-            raise LoginRequiredError(
-                "YouTube", "登录需要验证码、2FA 或其他人工验证"
-            )
+            raise LoginRequiredError("YouTube", "登录需要验证码、2FA 或其他人工验证")
         return True
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         """Navigate to the channel page and extract profile info."""
         handle = locator.lstrip("@")
         if not handle:
@@ -207,7 +202,9 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             # Fallback: DOM extraction.
             if not display_name:
                 try:
-                    name_el = page.locator("#channel-name yt-formatted-string, #text-container .yt-core-attributed-string").first
+                    name_el = page.locator(
+                        "#channel-name yt-formatted-string, #text-container .yt-core-attributed-string"
+                    ).first
                     display_name = (await name_el.inner_text()).strip()
                 except Exception:
                     pass
@@ -226,7 +223,9 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
 
             if not description:
                 try:
-                    desc_el = page.locator("#description yt-formatted-string, .about-description").first
+                    desc_el = page.locator(
+                        "#description yt-formatted-string, .about-description"
+                    ).first
                     description = (await desc_el.inner_text()).strip() or None
                 except Exception:
                     pass
@@ -259,9 +258,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def fetch_account_analytics(
@@ -286,7 +283,9 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             video_count = None
             try:
                 # Check the Videos tab count
-                tab_el = page.locator("yt-tab[title*='Videos'] #tab-text, tp-yt-paper-tab:has-text('Videos')").first
+                tab_el = page.locator(
+                    "yt-tab[title*='Videos'] #tab-text, tp-yt-paper-tab:has-text('Videos')"
+                ).first
                 tab_text = await tab_el.inner_text()
                 m = re.search(r"([\d,]+)", tab_text)
                 if m:
@@ -443,9 +442,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             )
         return items
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         """Fetch a single video page for details."""
         context, page = await self._new_page(ctx)
         try:
@@ -496,7 +493,10 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
                 provider=self.key,
                 fetched_at=ctx.observed_at,
                 unavailable_metrics=("view_count", "like_count", "comment_count"),
-                metadata={"method": "browser_scrape", "note": "analytics not available via browser"},
+                metadata={
+                    "method": "browser_scrape",
+                    "note": "analytics not available via browser",
+                },
             )
             for eid in external_ids
         )

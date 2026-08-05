@@ -16,13 +16,11 @@ from app.models.monitoring import (
     DerivedMetric,
 )
 
-from .conftest import TEST_PLATFORM_ID, PG_SYNC_URL
+from .conftest import PG_SYNC_URL, TEST_PLATFORM_ID
 from .test_monitoring_api import authenticate, create_account
 
 
-def _seed_account_with_two_contents(
-    client: TestClient, database_path: Path
-) -> UUID:
+def _seed_account_with_two_contents(client: TestClient, database_path: Path) -> UUID:
     csrf_token = authenticate(client)
     account = create_account(client, csrf_token)
     account_id = UUID(account["id"])
@@ -179,9 +177,7 @@ def test_account_content_summary_aggregates_real_snapshots(
     assert data["content_count"] == 2
     assert data["avg_completion_rate"] == pytest.approx(0.54, rel=1e-3)
     # view-weighted recommendation split: (900000*0.70 + 100000*0.50) / 1_000_000
-    assert data["traffic_source_split"]["recommendation"] == pytest.approx(
-        0.68, rel=1e-3
-    )
+    assert data["traffic_source_split"]["recommendation"] == pytest.approx(0.68, rel=1e-3)
     assert data["traffic_source_split"]["search"] == pytest.approx(0.21, rel=1e-3)
     # total interactions: 91000 + 6000
     assert data["total_interactions"] == 97_000

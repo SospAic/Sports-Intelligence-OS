@@ -29,7 +29,7 @@ from app.providers.notifications.http import (
 )
 from app.providers.notifications.registry import build_notification_provider_registry
 
-from .conftest import TEST_PASSWORD, PG_SYNC_URL
+from .conftest import PG_SYNC_URL, TEST_PASSWORD
 
 
 def authenticate(client: TestClient) -> str:

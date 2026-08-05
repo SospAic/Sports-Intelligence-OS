@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.providers.news.base import NewsCallContext
+from app.providers.news.browser_news import BrowserNewsProvider
 from app.providers.news.feed import AtomProvider, RSSProvider
 from app.providers.news.json_feed import GenericJSONFeedProvider
 from app.providers.news.utils import ensure_public_endpoint, validate_source_url
@@ -171,9 +172,7 @@ async def test_feed_dns_check_can_be_skipped_only_by_explicit_provider_config(
     )
     provider = RSSProvider(client=client, max_attempts=1, skip_dns_check=True)
     try:
-        await provider.fetch_latest(
-            context("https://feed.example/rss"), cursor=None, limit=10
-        )
+        await provider.fetch_latest(context("https://feed.example/rss"), cursor=None, limit=10)
     finally:
         await client.aclose()
 
@@ -190,3 +189,20 @@ async def test_feed_dns_check_can_be_skipped_only_by_explicit_provider_config(
 def test_news_source_url_rejects_plaintext_credentials(url: str) -> None:
     with pytest.raises(ValueError, match="credentials|secrets"):
         validate_source_url(url)
+
+
+@pytest.mark.asyncio
+async def test_browser_news_normalization_caps_ui_sized_fields() -> None:
+    provider = BrowserNewsProvider()
+    article = await provider.normalize_article(
+        {
+            "title": "T" * 2_000,
+            "link": "https://sports.example/story",
+            "summary": "S" * 25_000,
+        },
+        context("https://sports.example", language="en"),
+    )
+
+    assert len(article.title) == 1_000
+    assert article.summary is not None
+    assert len(article.summary) == 20_000

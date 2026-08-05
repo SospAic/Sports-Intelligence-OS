@@ -44,10 +44,11 @@ export function TrendChart({
           <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 11 }} />
           <YAxis stroke="#64748b" tick={{ fontSize: 11 }} width={58} />
           <Tooltip
-            labelFormatter={(_, payload) => {
-              const timestamp = payload?.[0]?.payload?.timestamp as
-                | string
-                | undefined;
+            labelFormatter={(_: unknown, payload: unknown) => {
+              const first = Array.isArray(payload) ? payload[0] : undefined;
+              const timestamp = (
+                first as { payload?: { timestamp?: string } } | undefined
+              )?.payload?.timestamp;
               return timestamp
                 ? new Date(timestamp).toLocaleString("zh-CN")
                 : "";

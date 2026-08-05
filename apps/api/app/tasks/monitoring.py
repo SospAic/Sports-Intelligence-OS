@@ -6,18 +6,21 @@ from uuid import UUID, uuid4
 
 from celery import Task
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.platforms.registry import build_platform_adapter_registry
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.db.session import create_engine_and_session
+from app.models.download import Download
+from app.models.monitoring import Account, ContentItem, Platform
 from app.models.settings import RuntimeSettingOverride
+from app.services.monitoring import MonitoringService
 from app.services.sync import (
     PlatformSyncExecutor,
     RetryableSyncError,
     SyncService,
     SyncValidationError,
 )
-from app.services.monitoring import MonitoringService
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -75,7 +78,7 @@ def _run_with_retry(task: Task, run_id: UUID) -> None:
         ) from exc
 
 
-async def _effective_sync_task_max_retries(settings) -> int:
+async def _effective_sync_task_max_retries(settings: Settings) -> int:
     engine, session_factory = create_engine_and_session(settings)
     try:
         async with session_factory() as session:
@@ -101,7 +104,7 @@ def sync_account(self: Task, run_id: str) -> None:
 )
 def collect_content_comments(self: Task, content_id: str) -> int:
     """Best-effort fetch & store of a content item's comments (yt-dlp backed)."""
-    return _run_collect_comments(UUID(content_id))
+    return asyncio.run(_run_collect_comments(UUID(content_id)))
 
 
 async def _run_collect_comments(content_id: UUID) -> int:
@@ -109,7 +112,7 @@ async def _run_collect_comments(content_id: UUID) -> int:
     engine, session_factory = create_engine_and_session(settings)
     try:
         async with session_factory() as session:
-            service = MonitoringService(session, get_settings())
+            service = MonitoringService(session)
             return await service.collect_content_comments(content_id)
     finally:
         await engine.dispose()
@@ -120,7 +123,7 @@ async def _run_collect_comments(content_id: UUID) -> int:
 )
 def download_url_task(self: Task, download_id: str) -> None:
     """Fetch a submitted URL with yt-dlp and store the resulting media."""
-    _run_download(UUID(download_id))
+    asyncio.run(_run_download(UUID(download_id)))
 
 
 async def _run_download(download_id: UUID) -> None:
@@ -172,6 +175,8 @@ async def _run_download(download_id: UUID) -> None:
                     media = collected
                     platform = entry.get("extractor") or entry.get("ie_key")
                     break
+            if media and options.get("save_to_works") and entries:
+                await _save_download_as_work(session, download, entries[0], media)
             await service.mark_done(download_id, media, platform)
     except Exception as exc:  # noqa: BLE001 - record failure, don't crash worker
         logger.warning("download %s failed: %s", download_id, exc)
@@ -179,6 +184,101 @@ async def _run_download(download_id: UUID) -> None:
             await DownloadService(session).mark_failed(download_id, str(exc))
     finally:
         await engine.dispose()
+
+
+async def _save_download_as_work(
+    session: AsyncSession,
+    download: Download,
+    entry: dict[str, object],
+    media: dict[str, object],
+) -> None:
+    # A download can be attached to the works list only when it belongs to an
+    # already monitored account. This avoids creating orphan records with no
+    # ownership or platform context.
+    extractor = str(entry.get("extractor") or entry.get("ie_key") or "").casefold()
+    platform_key = next(
+        (
+            key
+            for key, names in {
+                "youtube": ("youtube",),
+                "tiktok": ("tiktok",),
+                "douyin": ("douyin",),
+                "bilibili": ("bilibili",),
+            }.items()
+            if any(name in extractor for name in names)
+        ),
+        None,
+    )
+    external_id = str(entry.get("id") or "").strip()
+    if not platform_key or not external_id:
+        return
+    platform = await session.scalar(select(Platform).where(Platform.key == platform_key))
+    if platform is None:
+        return
+    identity_candidates = {
+        str(value).lstrip("@")
+        for value in (
+            entry.get("channel_id"),
+            entry.get("uploader_id"),
+            entry.get("uploader"),
+        )
+        if value
+    }
+    if not identity_candidates:
+        return
+    account = await session.scalar(
+        select(Account).where(
+            Account.workspace_id == download.workspace_id,
+            Account.platform_id == platform.id,
+            Account.external_id.in_(identity_candidates),
+        )
+    )
+    if account is None:
+        return
+    existing = await session.scalar(
+        select(ContentItem).where(
+            ContentItem.workspace_id == download.workspace_id,
+            ContentItem.account_id == account.id,
+            ContentItem.external_id == external_id,
+        )
+    )
+    if existing is not None:
+        existing.media = media
+        return
+    now = datetime.now(UTC)
+    published_at = None
+    if entry.get("timestamp") is not None:
+        try:
+            published_at = datetime.fromtimestamp(float(entry["timestamp"]), tz=UTC)
+        except (TypeError, ValueError, OSError):
+            published_at = None
+    session.add(
+        ContentItem(
+            workspace_id=download.workspace_id,
+            platform_id=platform.id,
+            account_id=account.id,
+            external_id=external_id,
+            content_type="video",
+            title=str(entry.get("title") or external_id)[:500],
+            description=str(entry.get("description")) if entry.get("description") else None,
+            published_at=published_at,
+            duration_seconds=entry.get("duration"),
+            canonical_url=download.url,
+            cover_url=str(entry.get("thumbnail")) if entry.get("thumbnail") else None,
+            language=None,
+            status="published",
+            metadata_json={"saved_from_download": True},
+            first_seen_at=now,
+            last_seen_at=now,
+            source_kind="live",
+            source_provider="yt_dlp",
+            fetched_at=now,
+            source_url=download.url,
+            media=media,
+            tags=[],
+        )
+    )
+    await session.commit()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -256,9 +356,7 @@ async def _recover_stale() -> int:
     engine, session_factory = create_engine_and_session(settings)
     try:
         async with session_factory() as session:
-            service = SyncService(
-                session, build_platform_adapter_registry(settings), settings
-            )
+            service = SyncService(session, build_platform_adapter_registry(settings), settings)
             return await service.recover_stale_runs(
                 datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds),
                 datetime.now(UTC) - timedelta(seconds=settings.task_dispatch_timeout_seconds),

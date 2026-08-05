@@ -41,9 +41,7 @@ PageSize = Annotated[int, Query(ge=1, le=100)]
 
 
 @router.get("/dashboard", response_model=TrendDashboard)
-async def get_dashboard(
-    workspace: CurrentWorkspace, db: DatabaseSession
-) -> TrendDashboard:
+async def get_dashboard(workspace: CurrentWorkspace, db: DatabaseSession) -> TrendDashboard:
     return await TrendService(db).get_dashboard(workspace.workspace_id)
 
 
@@ -161,11 +159,7 @@ async def aggregate_trends(
     ``platforms`` is a comma-separated allow-list (e.g. ``youtube,tiktok``);
     omit for all platforms. ``category`` optionally filters by sport/category.
     """
-    plat_list = (
-        [p.strip() for p in platforms.split(",") if p.strip()]
-        if platforms
-        else None
-    )
+    plat_list = [p.strip() for p in platforms.split(",") if p.strip()] if platforms else None
     result = await TrendService(db).aggregate(
         workspace.workspace_id,
         platforms=plat_list,

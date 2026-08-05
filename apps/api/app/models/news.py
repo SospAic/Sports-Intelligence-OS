@@ -35,9 +35,7 @@ class Source(TimestampMixin, Base):
             name="news_source_reliability_range",
         ),
         CheckConstraint("priority >= 0 AND priority <= 100", name="news_source_priority_range"),
-        CheckConstraint(
-            "consecutive_failures >= 0", name="news_source_failures_nonnegative"
-        ),
+        CheckConstraint("consecutive_failures >= 0", name="news_source_failures_nonnegative"),
         UniqueConstraint("workspace_id", "name"),
         Index("ix_news_sources_workspace_enabled", "workspace_id", "enabled"),
     )
@@ -59,6 +57,7 @@ class Source(TimestampMixin, Base):
     config_json: Mapped[dict[str, Any]] = mapped_column(
         "config", JSON, nullable=False, default=dict
     )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

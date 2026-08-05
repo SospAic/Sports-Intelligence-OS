@@ -1015,9 +1015,15 @@ export function TrendsClient() {
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+    <main
+      className={
+        tab === "analytics"
+          ? "mx-auto w-full space-y-4 px-4 py-4 lg:px-6"
+          : "mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8"
+      }
+    >
       {/* Header */}
-      <PageHeader
+      {tab !== "analytics" && <PageHeader
         eyebrow="Hotspot Intelligence"
         title="热点情报中心"
         description="跨平台真实视频样本、热点衍生话题与智能搜索分析"
@@ -1038,11 +1044,11 @@ export function TrendsClient() {
                 size={15}
                 className={collecting ? "animate-spin" : ""}
               />
-              {collecting ? "采集中…" : "采集真实数据"}
+              {collecting ? "采集中…" : "开始采集"}
             </button>
           </div>
         }
-      />
+      />}
 
       {/* Module Tabs: 趋势榜单 / 衍生话题 / 智能搜索 */}
       <div className="flex gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-1.5">
@@ -1592,7 +1598,7 @@ export function TrendsClient() {
           <StatePanel
             type="empty"
             title="暂无趋势数据"
-            detail="请先配置官方 API，或完成公开页面采集条件确认并添加监控账号，然后点击「采集真实数据」。"
+            detail="请先配置官方 API，或完成公开页面采集条件确认并添加监控账号，然后点击「开始采集」。"
           />
         )}
         </>

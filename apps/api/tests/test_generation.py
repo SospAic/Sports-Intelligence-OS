@@ -23,7 +23,7 @@ from app.workflows.generation import (
     validate_final_bundle,
 )
 
-from .conftest import TEST_PASSWORD, StubLLMProvider, TEST_REDIS_URL, PG_ASYNC_URL
+from .conftest import PG_ASYNC_URL, TEST_PASSWORD, TEST_REDIS_URL, StubLLMProvider
 
 RULE_SOURCE = (
     Path(__file__).parents[3]
@@ -352,9 +352,7 @@ def test_validate_final_bundle_requires_all_b_group_fields() -> None:
     ):
         incomplete = {k: v for k, v in valid_bundle.items() if k != b_field}
         errors = validate_final_bundle(incomplete)
-        assert any(b_field in e for e in errors), (
-            f"缺少 {b_field} 时应报错，实际返回：{errors}"
-        )
+        assert any(b_field in e for e in errors), f"缺少 {b_field} 时应报错，实际返回：{errors}"
 
 
 def test_validate_final_bundle_spoken_char_count_must_match_tts() -> None:
@@ -375,7 +373,7 @@ def test_validate_final_bundle_spoken_char_count_must_match_tts() -> None:
         "qa_report": {},
         "used_rules": [],
         "rewrite_reasons": [],
-        "spoken_char_count": 999,   # 故意错误
+        "spoken_char_count": 999,  # 故意错误
         "event_identity": {},
         "story_format": "chain-reaction",
         "central_question": "?",
@@ -449,7 +447,7 @@ def test_validate_final_bundle_lcr_enabled_must_be_bool() -> None:
         "cmssml": tts,
         "ev3": tts,
         "story_architecture": {},
-        "lcr_enabled": "true",   # 应该是布尔值
+        "lcr_enabled": "true",  # 应该是布尔值
     }
     errors = validate_final_bundle(bundle)
     assert any("lcr_enabled" in e for e in errors)

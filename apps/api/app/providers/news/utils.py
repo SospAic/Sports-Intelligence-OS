@@ -130,9 +130,7 @@ def title_similarity(left: str, right: str) -> float:
     cjk_score = 0.0
     if len(left_cjk) >= 2 and len(right_cjk) >= 2:
         left_bigrams = {left_cjk[index : index + 2] for index in range(len(left_cjk) - 1)}
-        right_bigrams = {
-            right_cjk[index : index + 2] for index in range(len(right_cjk) - 1)
-        }
+        right_bigrams = {right_cjk[index : index + 2] for index in range(len(right_cjk) - 1)}
         cjk_union = left_bigrams | right_bigrams
         cjk_score = len(left_bigrams & right_bigrams) / len(cjk_union)
     return max(jaccard, sequence, cjk_score)

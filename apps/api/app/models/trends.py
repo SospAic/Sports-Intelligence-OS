@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -87,7 +88,10 @@ class TrendKeywordSnapshot(TimestampMixin, Base):
     __tablename__ = "trend_keyword_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "workspace_id", "keyword", "platform", "observed_at",
+            "workspace_id",
+            "keyword",
+            "platform",
+            "observed_at",
             name="uq_trend_kw_ws_kw_plat_time",
         ),
         Index("ix_trend_kw_workspace_platform", "workspace_id", "platform"),
@@ -121,6 +125,14 @@ class CrossPlatformLink(TimestampMixin, Base):
         Index("ix_cpl_workspace_status", "workspace_id", "status"),
         Index("ix_cpl_source", "source_entity_type", "source_entity_id"),
         Index("ix_cpl_target", "target_entity_type", "target_entity_id"),
+        CheckConstraint(
+            "confidence >= 0 AND confidence <= 1",
+            name="cross_platform_link_confidence_range",
+        ),
+        CheckConstraint(
+            "status IN ('suggested', 'confirmed', 'rejected')",
+            name="cross_platform_link_status",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -132,9 +144,7 @@ class CrossPlatformLink(TimestampMixin, Base):
     target_entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
     target_entity_id: Mapped[UUID] = mapped_column(nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="suggested", index=True
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="suggested", index=True)
     match_details_json: Mapped[dict[str, Any]] = mapped_column(
         "match_details", JSON, nullable=False, default=dict
     )
@@ -158,15 +168,13 @@ class DerivativeTopic(TimestampMixin, Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(
-        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
     )
     source_topic_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("trend_topics.id", ondelete="CASCADE"), nullable=True, index=True
+        ForeignKey("trend_topics.id", ondelete="CASCADE"), nullable=True
     )
     platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    kind: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="existing_on_platform"
-    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="existing_on_platform")
     angle: Mapped[str | None] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
@@ -175,9 +183,7 @@ class DerivativeTopic(TimestampMixin, Base):
         "evidence", JSON, nullable=False, default=dict
     )
     ai_rationale: Mapped[str | None] = mapped_column(String(2000), nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="suggested", index=True
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="suggested", index=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     adopted_generation_id: Mapped[UUID | None] = mapped_column(nullable=True)
     observed_at: Mapped[datetime] = mapped_column(
@@ -196,9 +202,7 @@ class SearchQuery(TimestampMixin, Base):
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
     query_text: Mapped[str] = mapped_column(String(2000), nullable=False)
-    platform_scope: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="all"
-    )
+    platform_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="all")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
     requested_by: Mapped[UUID | None] = mapped_column(nullable=True)
     result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

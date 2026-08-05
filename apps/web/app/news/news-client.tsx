@@ -423,7 +423,7 @@ export function NewsClient() {
         title="新闻热点"
         description="聚合已授权 RSS、Atom、JSON Feed 与手动录入内容；发布时间缺失时不会用抓取时间冒充。"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               className={secondaryButtonClass}
               onClick={syncAllSources}
@@ -439,7 +439,7 @@ export function NewsClient() {
             </Link>
             {canEdit && (
               <button
-                className={buttonClass}
+                className={`${buttonClass} whitespace-nowrap`}
                 onClick={() => setCreating((v) => !v)}
               >
                 <Plus size={16} />
@@ -851,7 +851,7 @@ export function NewsClient() {
             }
           >
             {news.data?.items.map((article) => (
-              <Panel key={article.id} className="relative p-5">
+              <Panel key={article.id} className="relative min-w-0 p-5">
                 {view === "timeline" && (
                   <span className="absolute top-6 -left-[31px] size-2 rounded-full bg-cyan-400" />
                 )}
@@ -1009,7 +1009,7 @@ function ArticlePreviewDrawer({
         onClick={onClose}
         tabIndex={-1}
       />
-      <aside className="relative flex h-full w-full max-w-xl flex-col border-l border-slate-800 bg-slate-950 shadow-2xl">
+      <aside className="relative flex h-full w-[calc(100%-1rem)] max-w-xl flex-col border-l border-slate-800 bg-slate-950 shadow-2xl sm:w-full">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-5 py-4">
           <span className="text-xs uppercase tracking-wider text-slate-500">
             新闻预览

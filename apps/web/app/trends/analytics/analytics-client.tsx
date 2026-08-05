@@ -1,9 +1,17 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/browser-api";
 import { useWorkspace } from "@/components/app-shell";
+import {
+  ANALYTICS_DAY_OPTIONS,
+  ANALYTICS_PLATFORMS,
+  DEFAULT_ANALYTICS_FILTERS,
+  parseAnalyticsSearch,
+  writeAnalyticsSearch,
+  type AnalyticsFilters,
+} from "./analytics-query";
 import {
   Bar,
   BarChart,
@@ -31,7 +39,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   bilibili: "#60a5fa",
 };
 
-const ALL_PLATFORMS = ["youtube", "tiktok", "douyin", "bilibili"];
+const ALL_PLATFORMS = [...ANALYTICS_PLATFORMS];
 
 type AggItem = {
   platform: string;
@@ -61,14 +69,31 @@ const MODES: { key: string; label: string; hint: string }[] = [
   { key: "matrix", label: "热度矩阵", hint: "参考 Sports-OS：平台 × 分类 热度矩阵" },
 ];
 
-const DAY_OPTIONS = [7, 30, 90];
-
 export function AnalyticsClient() {
   const { workspaceId } = useWorkspace();
-  const [selected, setSelected] = useState<string[]>([]); // 空 = 全部平台
-  const [category, setCategory] = useState<string>(""); // 空 = 全部分类
-  const [days, setDays] = useState<number>(30);
-  const [mode, setMode] = useState<string>("timeline");
+  const [filters, setFilters] = useState<AnalyticsFilters>(DEFAULT_ANALYTICS_FILTERS);
+
+  useEffect(() => {
+    const syncFromUrl = () => setFilters(parseAnalyticsSearch(window.location.search));
+    syncFromUrl();
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+  }, []);
+
+  const updateFilters = (patch: Partial<AnalyticsFilters>) => {
+    setFilters((current) => {
+      const next = { ...current, ...patch };
+      const query = writeAnalyticsSearch(next);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${query}${window.location.hash}`,
+      );
+      return next;
+    });
+  };
+
+  const { platforms: selected, category, days, mode } = filters;
 
   const params = new URLSearchParams();
   if (selected.length) params.set("platforms", selected.join(","));
@@ -121,18 +146,14 @@ export function AnalyticsClient() {
   // 类型标注与返回值对齐
 
   const togglePlatform = (p: string) =>
-    setSelected((prev) =>
-      prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p],
-    );
+    updateFilters({
+      platforms: selected.includes(p)
+        ? selected.filter((x) => x !== p)
+        : [...selected, p],
+    });
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6 text-slate-200">
-      <header className="mb-5">
-        <h1 className="text-xl font-semibold text-white">热点情报 · 聚合分析</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          单/多平台 + 分类数据聚合展示。支持趋势时间线、排行榜单、指数对比、热度矩阵四种视角。
-        </p>
-      </header>
+    <div className="w-full px-0 pb-2 text-slate-200">
 
       {/* 过滤器 */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3">
@@ -161,7 +182,7 @@ export function AnalyticsClient() {
           <span className="text-xs text-slate-500">分类</span>
           <select
             value={category}
-            onChange={(e) => setCategory(e.target.value)}
+            onChange={(e) => updateFilters({ category: e.target.value })}
             className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200"
           >
             <option value="">全部分类</option>
@@ -175,11 +196,11 @@ export function AnalyticsClient() {
 
         <div className="flex items-center gap-2">
           <span className="text-xs text-slate-500">窗口</span>
-          {DAY_OPTIONS.map((d) => (
+          {ANALYTICS_DAY_OPTIONS.map((d) => (
             <button
               key={d}
               type="button"
-              onClick={() => setDays(d)}
+              onClick={() => updateFilters({ days: d })}
               className={`rounded-md px-2 py-1 text-xs ${
                 days === d
                   ? "bg-cyan-500/20 text-cyan-300"
@@ -198,7 +219,7 @@ export function AnalyticsClient() {
           <button
             key={m.key}
             type="button"
-            onClick={() => setMode(m.key)}
+            onClick={() => updateFilters({ mode: m.key })}
             title={m.hint}
             className={`rounded-lg px-3 py-1.5 text-sm transition ${
               mode === m.key
@@ -299,8 +320,8 @@ export function AnalyticsClient() {
                 <Tooltip
                   contentStyle={{ background: "#0f172a", border: "1px solid #1e293b" }}
                   labelStyle={{ color: "#e2e8f0" }}
-                  formatter={(value) => [`${value}`, "归一化热度"] as [string, string]}
-                  labelFormatter={(v) => PLATFORM_LABELS[String(v)] ?? String(v)}
+                  formatter={(value: unknown) => [`${value}`, "归一化热度"] as [string, string]}
+                  labelFormatter={(v: unknown) => PLATFORM_LABELS[String(v)] ?? String(v)}
                 />
                 <Bar dataKey="value" name="归一化热度" fill="#22d3ee" radius={[4, 4, 0, 0]} />
               </BarChart>

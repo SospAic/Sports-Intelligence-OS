@@ -69,9 +69,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
     default_viewport_width = 1920
     default_viewport_height = 1080
 
-    async def _login_if_configured(
-        self, page: Page, ctx: AdapterCallContext
-    ) -> bool:
+    async def _login_if_configured(self, page: Page, ctx: AdapterCallContext) -> bool:
         await page.goto(
             "https://www.douyin.com/",
             wait_until="domcontentloaded",
@@ -80,9 +78,9 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
         login_button = page.get_by_text("登录", exact=True).first
         if await login_button.is_visible(timeout=1000):
             await login_button.click()
-        await page.locator(
-            "input[placeholder*='手机号'], input[name='username']"
-        ).first.fill(str(ctx.config.get("username", "")))
+        await page.locator("input[placeholder*='手机号'], input[name='username']").first.fill(
+            str(ctx.config.get("username", ""))
+        )
         password_input = page.locator("input[type='password']").first
         if not await password_input.is_visible(timeout=1000):
             raise LoginRequiredError("抖音", "当前登录页不提供密码登录")
@@ -96,9 +94,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             raise LoginRequiredError("抖音", "登录需要验证码、2FA 或其他人工验证")
         return True
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         """Navigate to the user's profile page and extract info."""
         sec_uid = locator.strip()
         if not sec_uid:
@@ -164,8 +160,8 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                                 if user_info.get("nickname"):
                                     display_name = user_info["nickname"]
                                     avatar_larger = user_info.get("avatar_larger") or {}
-                                    avatar_url = avatar_url or (
-                                        (avatar_larger.get("url_list") or [None])[0]
+                                    avatar_url = (
+                                        avatar_url or ((avatar_larger.get("url_list") or [None])[0])
                                     )
                                     description = description or user_info.get("signature") or None
                                     unique_id = unique_id or user_info.get("unique_id")
@@ -176,7 +172,9 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             # Fallback: DOM.
             if not display_name:
                 try:
-                    name_el = page.locator("[class*='user-name'], .kOLiJM, span[data-e2e='user-info'] .name").first
+                    name_el = page.locator(
+                        "[class*='user-name'], .kOLiJM, span[data-e2e='user-info'] .name"
+                    ).first
                     display_name = (await name_el.inner_text()).strip()
                 except Exception:
                     pass
@@ -234,9 +232,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def fetch_account_analytics(
@@ -451,7 +447,9 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                             description=None,
                             published_at=None,
                             duration_seconds=None,
-                            canonical_url=DOUYIN_VIDEO_URL.format(aweme_id=aweme_id) if aweme_id else url,
+                            canonical_url=DOUYIN_VIDEO_URL.format(aweme_id=aweme_id)
+                            if aweme_id
+                            else url,
                             cover_url=cover_url,
                             language="zh",
                             status="public",
@@ -475,9 +473,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         """Fetch a single video page."""
         context, page = await self._new_page(ctx)
         try:
@@ -527,7 +523,10 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                 provider=self.key,
                 fetched_at=ctx.observed_at,
                 unavailable_metrics=("view_count", "like_count", "comment_count", "share_count"),
-                metadata={"method": "browser_scrape", "note": "analytics not available via browser"},
+                metadata={
+                    "method": "browser_scrape",
+                    "note": "analytics not available via browser",
+                },
             )
             for eid in external_ids
         )

@@ -145,7 +145,12 @@ export function AddAccountModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="add-account-modal-title"
+    >
       <button
         aria-label="关闭"
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
@@ -154,7 +159,9 @@ export function AddAccountModal({
       <div className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-white">添加监控账号</h2>
+            <h2 id="add-account-modal-title" className="text-sm font-semibold text-white">
+              添加监控账号
+            </h2>
             <p className="mt-0.5 truncate text-xs text-slate-500">
               粘贴账号主页网址，系统将自动识别平台
             </p>

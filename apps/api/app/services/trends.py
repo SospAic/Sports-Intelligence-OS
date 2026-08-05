@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -48,9 +49,7 @@ class TrendService:
         if platform:
             stmt = stmt.where(TrendTopic.platform == platform)
         rows = (
-            await self.session.scalars(
-                stmt.order_by(TrendTopic.observed_at.desc()).limit(5_000)
-            )
+            await self.session.scalars(stmt.order_by(TrendTopic.observed_at.desc()).limit(5_000))
         ).all()
         latest: list[TrendTopic] = []
         seen: set[tuple[str, str]] = set()
@@ -73,9 +72,7 @@ class TrendService:
         if platform:
             stmt = stmt.where(TrendVideo.platform == platform)
         rows = (
-            await self.session.scalars(
-                stmt.order_by(TrendVideo.observed_at.desc()).limit(5_000)
-            )
+            await self.session.scalars(stmt.order_by(TrendVideo.observed_at.desc()).limit(5_000))
         ).all()
         latest: list[TrendVideo] = []
         seen: set[tuple[str, str]] = set()
@@ -107,9 +104,7 @@ class TrendService:
                 continue
             heat_values = [item.heat_score for item in platform_topics]
             breakout_values = [
-                item.breakout_score
-                for item in platform_videos
-                if item.breakout_score is not None
+                item.breakout_score for item in platform_videos if item.breakout_score is not None
             ]
             view_values = [
                 item.view_count for item in platform_videos if item.view_count is not None
@@ -120,9 +115,7 @@ class TrendService:
                     topic_count=len(platform_topics),
                     video_count=len(platform_videos),
                     avg_heat_score=(
-                        round(sum(heat_values) / len(heat_values), 2)
-                        if heat_values
-                        else 0.0
+                        round(sum(heat_values) / len(heat_values), 2) if heat_values else 0.0
                     ),
                     max_breakout_score=(
                         round(max(breakout_values), 2) if breakout_values else None
@@ -133,9 +126,7 @@ class TrendService:
 
         return TrendDashboard(
             top_topics=[TrendTopicRead.model_validate(item) for item in top_topics],
-            breakout_videos=[
-                TrendVideoRead.model_validate(item) for item in breakout_videos
-            ],
+            breakout_videos=[TrendVideoRead.model_validate(item) for item in breakout_videos],
             platform_summary=platform_summary,
         )
 
@@ -252,9 +243,7 @@ class TrendService:
         if category:
             tstmt = tstmt.where(TrendTopic.category == category)
         topics = (
-            await self.session.scalars(
-                tstmt.order_by(TrendTopic.observed_at.desc()).limit(20_000)
-            )
+            await self.session.scalars(tstmt.order_by(TrendTopic.observed_at.desc()).limit(20_000))
         ).all()
 
         vstmt = select(TrendVideo).where(
@@ -266,9 +255,7 @@ class TrendService:
         if category:
             vstmt = vstmt.where(TrendVideo.category == category)
         videos = (
-            await self.session.scalars(
-                vstmt.order_by(TrendVideo.observed_at.desc()).limit(20_000)
-            )
+            await self.session.scalars(vstmt.order_by(TrendVideo.observed_at.desc()).limit(20_000))
         ).all()
 
         plat_set: set[str] = set()
@@ -291,8 +278,7 @@ class TrendService:
                 key = (v.observed_at.date().isoformat(), v.platform)
                 day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(v.breakout_score)
         timeline = [
-            {"date": d, "platform": p, "heat": h}
-            for (d, p), h in sorted(day_plat_heat.items())
+            {"date": d, "platform": p, "heat": h} for (d, p), h in sorted(day_plat_heat.items())
         ]
 
         # 排行榜单: 热点按热度 + 视频按爆发分
@@ -334,9 +320,7 @@ class TrendService:
             plat_heat[t.platform] = plat_heat.get(t.platform, 0.0) + float(t.heat_score)
         for v in videos:
             if v.breakout_score is not None:
-                plat_heat[v.platform] = plat_heat.get(v.platform, 0.0) + float(
-                    v.breakout_score
-                )
+                plat_heat[v.platform] = plat_heat.get(v.platform, 0.0) + float(v.breakout_score)
         max_heat = max(plat_heat.values()) if plat_heat else 0.0
         index = [
             {
@@ -375,13 +359,12 @@ class TrendService:
     # Explainability
     # ------------------------------------------------------------------
 
-    async def explain_video(
-        self, workspace_id: UUID, video_id: UUID
-    ) -> ScoreExplanation:
+    async def explain_video(self, workspace_id: UUID, video_id: UUID) -> ScoreExplanation:
         """Return a breakdown of how the breakout_score was calculated."""
         video = await self.session.get(TrendVideo, video_id)
         if video is None or video.workspace_id != workspace_id:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="趋势视频未找到")
 
         meta = video.metadata_json or {}
@@ -426,15 +409,17 @@ class TrendService:
             note = None
             if is_missing:
                 note = "字段缺失，未参与计算；权重已重归一化至其他分量"
-            components.append(ScoreComponent(
-                name=label,
-                raw_value=float(raw) if raw is not None else None,
-                percentile=float(raw) if raw is not None else None,
-                weight=float(weight),
-                weighted_contribution=contribution,
-                missing=is_missing,
-                note=note,
-            ))
+            components.append(
+                ScoreComponent(
+                    name=label,
+                    raw_value=float(raw) if raw is not None else None,
+                    percentile=float(raw) if raw is not None else None,
+                    weight=float(weight),
+                    weighted_contribution=contribution,
+                    missing=is_missing,
+                    note=note,
+                )
+            )
 
         # Confidence reason
         confidence_reason = None
@@ -471,13 +456,12 @@ class TrendService:
             },
         )
 
-    async def explain_topic(
-        self, workspace_id: UUID, topic_id: UUID
-    ) -> ScoreExplanation:
+    async def explain_topic(self, workspace_id: UUID, topic_id: UUID) -> ScoreExplanation:
         """Return a breakdown of how the heat_score was calculated for a topic."""
         topic = await self.session.get(TrendTopic, topic_id)
         if topic is None or topic.workspace_id != workspace_id:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="趋势话题未找到")
 
         meta = topic.metadata_json or {}
@@ -510,15 +494,17 @@ class TrendService:
             if is_missing:
                 note = "分量不可用（播放字段缺失或样本不足），未按零分处理"
                 missing_fields.append(key)
-            components.append(ScoreComponent(
-                name=label,
-                raw_value=float(raw) if raw is not None else None,
-                percentile=float(raw) if raw is not None else None,
-                weight=float(weight),
-                weighted_contribution=contribution,
-                missing=is_missing,
-                note=note,
-            ))
+            components.append(
+                ScoreComponent(
+                    name=label,
+                    raw_value=float(raw) if raw is not None else None,
+                    percentile=float(raw) if raw is not None else None,
+                    weight=float(weight),
+                    weighted_contribution=contribution,
+                    missing=is_missing,
+                    note=note,
+                )
+            )
 
         confidence_reason = None
         if confidence is not None:

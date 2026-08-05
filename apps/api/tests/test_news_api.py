@@ -19,7 +19,7 @@ from app.services.news_seed import (
     seed_news_source_examples,
 )
 
-from .conftest import TEST_PASSWORD, PG_ASYNC_URL
+from .conftest import PG_ASYNC_URL, TEST_PASSWORD
 
 
 def test_article_body_scraping_requires_explicit_public_page_approvals() -> None:
@@ -226,6 +226,8 @@ def test_manual_news_dedup_clustering_merge_split_bookmark_and_scoring(
     )
     assert disabled.status_code == 204
     assert client.get(f"/api/v1/news/sources/{source['id']}").json()["enabled"] is False
+    assert client.get("/api/v1/news/articles").json()["total"] == 0
+    assert client.get("/api/v1/news/events").json()["total"] == 0
 
 
 @pytest.mark.asyncio
@@ -303,5 +305,12 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     assert article_listing.json()["items"][0]["published_at"].startswith("2026-07-25T10:00:00")
     assert runs.json()["items"][0]["status"] == "success"
     assert runs.json()["items"][0]["records_created"] == 1
-    assert sources.json()["total"] == len(DEFAULT_SOURCE_EXAMPLES)
-    assert all(item["config"]["example_config"] for item in sources.json()["items"])
+    disabled_expanded = sum(
+        not bool(spec.get("enabled", True)) for spec in EXPANDED_SOURCE_EXAMPLES
+    )
+    assert sources.json()["total"] == len(DEFAULT_SOURCE_EXAMPLES) + disabled_expanded
+    assert all(
+        item["config"].get("example_config") is True
+        for item in sources.json()["items"]
+        if "example_config" in item["config"]
+    )

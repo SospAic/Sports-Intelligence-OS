@@ -10,7 +10,7 @@ from app.core.security import hash_password
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership
 
-from .conftest import TEST_PLATFORM_ID, PG_SYNC_URL
+from .conftest import PG_SYNC_URL, TEST_PLATFORM_ID
 
 VIEWER_PASSWORD = "viewer-correct-horse-battery-staple"  # noqa: S105 - test fixture
 

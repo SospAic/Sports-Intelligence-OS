@@ -245,9 +245,7 @@ class PlatformCredentialService:
         await self.session.refresh(row)
         return self._read(key, row)
 
-    async def resolve(
-        self, workspace_id: UUID, platform_key: str
-    ) -> tuple[str, dict[str, Any]]:
+    async def resolve(self, workspace_id: UUID, platform_key: str) -> tuple[str, dict[str, Any]]:
         key = platform_key.removesuffix("_browser")
         row = await self._row(workspace_id, key)
         if row is not None and self._read(key, row).configured:
@@ -258,9 +256,7 @@ class PlatformCredentialService:
                 "authorized_login": AUTHORIZED_LOGIN_FIELDS,
                 "authorized_session": AUTHORIZED_SESSION_FIELDS,
             }[row.mode]
-            return row.mode, {
-                field: value for field, value in config.items() if field in fields
-            }
+            return row.mode, {field: value for field, value in config.items() if field in fields}
         if key == "youtube" and self.settings.youtube_api_key is not None:
             return "api", {"api_key": self.settings.youtube_api_key.get_secret_value()}
         return "unconfigured", {}
@@ -276,9 +272,7 @@ class PlatformCredentialService:
             )
         return key
 
-    async def _row(
-        self, workspace_id: UUID, platform_key: str
-    ) -> PlatformCredentialSetting | None:
+    async def _row(self, workspace_id: UUID, platform_key: str) -> PlatformCredentialSetting | None:
         return cast(
             PlatformCredentialSetting | None,
             await self.session.scalar(
@@ -477,8 +471,7 @@ class PlatformCredentialService:
             {
                 key: value
                 for key, value in config.items()
-                if key
-                not in {"username", "storage_state_json", "legacy_account_configs"}
+                if key not in {"username", "storage_state_json", "legacy_account_configs"}
             }
         )
         if config.get("username"):

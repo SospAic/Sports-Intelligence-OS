@@ -229,11 +229,7 @@ class DouyinAdapter(PlatformAdapter):
                     if error_code is not None and int(error_code) != 0:
                         error = self._map_douyin_error(int(error_code), data)
                         if error.retryable and attempt < self._max_attempts:
-                            delay = (
-                                error.retry_after
-                                if isinstance(error, RateLimitError)
-                                else None
-                            )
+                            delay = error.retry_after if isinstance(error, RateLimitError) else None
                             await asyncio.sleep(
                                 delay or self._retry_base_seconds * (2 ** (attempt - 1))
                             )
@@ -312,17 +308,13 @@ class DouyinAdapter(PlatformAdapter):
             parsed = urlparse(value)
             host = parsed.hostname or ""
             if "douyin.com" not in host:
-                raise AdapterConfigurationError(
-                    "Douyin locator URL must be a douyin.com domain"
-                )
+                raise AdapterConfigurationError("Douyin locator URL must be a douyin.com domain")
             path = parsed.path.strip("/")
             if path.startswith("user/"):
                 segments = path.split("/")
                 if len(segments) >= 2 and segments[1]:
                     return segments[1]
-            raise AdapterConfigurationError(
-                "Douyin URL must follow the pattern /user/{sec_uid}"
-            )
+            raise AdapterConfigurationError("Douyin URL must follow the pattern /user/{sec_uid}")
         return value
 
     # ------------------------------------------------------------------
@@ -372,14 +364,10 @@ class DouyinAdapter(PlatformAdapter):
                 "sec_uid": sec_uid if sec_uid != open_id else None,
                 "e_account_info": e_account_info,
                 "total_fans": (
-                    parse_int(fan_data.get("total_fans"))
-                    if isinstance(fan_data, dict)
-                    else None
+                    parse_int(fan_data.get("total_fans")) if isinstance(fan_data, dict) else None
                 ),
                 "all_fans_num": (
-                    parse_int(fan_data.get("all_fans_num"))
-                    if isinstance(fan_data, dict)
-                    else None
+                    parse_int(fan_data.get("all_fans_num")) if isinstance(fan_data, dict) else None
                 ),
                 "provider_schema_version": "douyin-open-platform-v1",
             },
@@ -415,9 +403,7 @@ class DouyinAdapter(PlatformAdapter):
             cover_url=str(cover) if isinstance(cover, str) and cover else None,
             language="zh-CN",
             status=(
-                str(video_status)
-                if isinstance(video_status, str) and video_status
-                else "published"
+                str(video_status) if isinstance(video_status, str) and video_status else "published"
             ),
             source_kind="live",
             provider=self.key,
@@ -433,18 +419,14 @@ class DouyinAdapter(PlatformAdapter):
     # Public API: resolve_account
     # ------------------------------------------------------------------
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         open_id = self._resolve_open_id(locator)
         account = await self._fetch_account_by_open_id(ctx, open_id)
         if locator.startswith(("https://", "http://")):
             return replace(account, profile_url=locator)
         return account
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self._fetch_account_by_open_id(ctx, external_id)
 
     async def _fetch_account_by_id(
@@ -552,9 +534,7 @@ class DouyinAdapter(PlatformAdapter):
     # Public API: fetch_content
     # ------------------------------------------------------------------
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         # The video_data endpoint requires both open_id and item_id.
         # When called with only an item_id we cannot determine the open_id.
         # We pass external_id as item_id; the caller must supply a config

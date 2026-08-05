@@ -58,16 +58,10 @@ async def compute_adaptive_interval(
         return ADAPTIVE_SYNC_DEFAULT_INTERVAL_SECONDS, None
 
     rows.sort()
-    gaps = [
-        (rows[i] - rows[i - 1]).total_seconds() for i in range(1, len(rows))
-    ]
+    gaps = [(rows[i] - rows[i - 1]).total_seconds() for i in range(1, len(rows))]
     gaps.sort()
     mid = len(gaps) // 2
-    median_gap = (
-        gaps[mid]
-        if len(gaps) % 2 == 1
-        else (gaps[mid - 1] + gaps[mid]) / 2.0
-    )
+    median_gap = gaps[mid] if len(gaps) % 2 == 1 else (gaps[mid - 1] + gaps[mid]) / 2.0
 
     interval = int(median_gap * ADAPTIVE_SYNC_GAP_RATIO)
     interval = max(
@@ -77,9 +71,7 @@ async def compute_adaptive_interval(
     return interval, int(median_gap)
 
 
-def interval_for_next_sync(
-    base: datetime, interval_seconds: int
-) -> datetime:
+def interval_for_next_sync(base: datetime, interval_seconds: int) -> datetime:
     """Compute the next due timestamp from a finished sync time."""
     return base + timedelta(seconds=interval_seconds)
 

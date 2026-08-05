@@ -14,7 +14,7 @@ from app.services.outbox import OutboxService
 from app.services.trend_collector import _infer_sports_category, _trend_terms
 from app.services.trends import TrendService
 
-from .conftest import TEST_PASSWORD, PG_ASYNC_URL
+from .conftest import PG_ASYNC_URL, TEST_PASSWORD
 
 
 def authenticate(client: TestClient) -> str:
@@ -67,9 +67,7 @@ async def test_outbox_failure_is_recorded_and_dead_lettered_without_false_succes
             assert stored.published_at is None
             assert stored.payload_json == {"truth": "preserved"}
             attempt = await session.scalar(
-                select(OutboxEventAttempt).where(
-                    OutboxEventAttempt.outbox_event_id == event.id
-                )
+                select(OutboxEventAttempt).where(OutboxEventAttempt.outbox_event_id == event.id)
             )
             assert attempt is not None
             assert attempt.status == "failed"

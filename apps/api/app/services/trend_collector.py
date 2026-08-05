@@ -45,12 +45,48 @@ _DEFAULT_HEADERS: dict[str, str] = {
 
 # 体育类关键词，用于检测体育分类
 _SPORTS_KEYWORDS: list[str] = [
-    "NBA", "CBA", "足球", "篮球", "体育", "football", "basketball", "soccer",
-    "UFC", "奥运", "tennis", "F1", "网球", "排球", "乒乓", "羽毛球",
-    "世界杯", "欧冠", "英超", "西甲", "德甲", "意甲", "中超",
-    "ESPN", "马拉松", "游泳", "田径", "拳击", "滑冰", "滑雪",
-    "电竞", "esports", "棒球", "baseball", "高尔夫", "golf",
-    "赛车", "racing", "MotoGP", "NFL", "橄榄球", "曲棍球",
+    "NBA",
+    "CBA",
+    "足球",
+    "篮球",
+    "体育",
+    "football",
+    "basketball",
+    "soccer",
+    "UFC",
+    "奥运",
+    "tennis",
+    "F1",
+    "网球",
+    "排球",
+    "乒乓",
+    "羽毛球",
+    "世界杯",
+    "欧冠",
+    "英超",
+    "西甲",
+    "德甲",
+    "意甲",
+    "中超",
+    "ESPN",
+    "马拉松",
+    "游泳",
+    "田径",
+    "拳击",
+    "滑冰",
+    "滑雪",
+    "电竞",
+    "esports",
+    "棒球",
+    "baseball",
+    "高尔夫",
+    "golf",
+    "赛车",
+    "racing",
+    "MotoGP",
+    "NFL",
+    "橄榄球",
+    "曲棍球",
 ]
 _HASHTAG_PATTERN = re.compile(r"#([\w\u4e00-\u9fff]{2,40})", re.UNICODE)
 _CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -86,11 +122,7 @@ def _is_sports_related(text: str) -> bool:
 def _trend_terms(text: str) -> set[str]:
     """Extract controlled sports terms and explicit hashtags from real content."""
     lowered = text.casefold()
-    terms = {
-        keyword
-        for keyword in _SPORTS_KEYWORDS
-        if keyword.casefold() in lowered
-    }
+    terms = {keyword for keyword in _SPORTS_KEYWORDS if keyword.casefold() in lowered}
     terms.update(match.group(1) for match in _HASHTAG_PATTERN.finditer(text))
     return {term.strip()[:200] for term in terms if term.strip()}
 
@@ -259,9 +291,7 @@ class TrendCollectorService:
         term_aggregates: dict[str, dict[str, dict[str, Any]]] = {}
         for item, snapshot, platform, _account in rows:
             views = (
-                float(snapshot.view_count)
-                if snapshot and snapshot.view_count is not None
-                else None
+                float(snapshot.view_count) if snapshot and snapshot.view_count is not None else None
             )
             age_hours = (
                 max(1.0, (now - item.published_at.astimezone(UTC)).total_seconds() / 3600)
@@ -288,9 +318,7 @@ class TrendCollectorService:
                     platform_signal_lists[key].append(value)
         for item, snapshot, platform, account in rows:
             views = (
-                int(snapshot.view_count)
-                if snapshot and snapshot.view_count is not None
-                else None
+                int(snapshot.view_count) if snapshot and snapshot.view_count is not None else None
             )
             row_signal = row_signals[item.id]
             population = platform_signals[platform.key]
@@ -413,9 +441,7 @@ class TrendCollectorService:
             summary = counts[platform_key]
             volume_population = [int(item["video_count"]) for item in ranked]
             view_population = [
-                int(item["total_views"])
-                for item in ranked
-                if int(item["view_sample_count"]) > 0
+                int(item["total_views"]) for item in ranked if int(item["view_sample_count"]) > 0
             ]
             average_view_population = [
                 float(item["total_views"]) / int(item["view_sample_count"])
@@ -436,15 +462,11 @@ class TrendCollectorService:
             ).all()
             previous_by_keyword: dict[str, TrendKeywordSnapshot] = {}
             for previous_row in previous_rows:
-                previous_by_keyword.setdefault(
-                    previous_row.keyword.casefold(), previous_row
-                )
+                previous_by_keyword.setdefault(previous_row.keyword.casefold(), previous_row)
             for rank, aggregate in enumerate(ranked, start=1):
                 video_count = int(aggregate["video_count"])
                 view_sample_count = int(aggregate["view_sample_count"])
-                total_views = (
-                    int(aggregate["total_views"]) if view_sample_count > 0 else None
-                )
+                total_views = int(aggregate["total_views"]) if view_sample_count > 0 else None
                 average_views = (
                     total_views / view_sample_count
                     if total_views is not None and view_sample_count
@@ -467,12 +489,9 @@ class TrendCollectorService:
                 )
                 confidence = sample_confidence(video_count, target_size=8)
                 heat_score = _confidence_adjusted(raw_heat, confidence) or 50.0
-                previous_snapshot = previous_by_keyword.get(
-                    str(aggregate["title"]).casefold()
-                )
+                previous_snapshot = previous_by_keyword.get(str(aggregate["title"]).casefold())
                 growth_rate = (
-                    (total_views - previous_snapshot.total_views)
-                    / previous_snapshot.total_views
+                    (total_views - previous_snapshot.total_views) / previous_snapshot.total_views
                     if previous_snapshot is not None
                     and total_views is not None
                     and previous_snapshot.total_views is not None
@@ -539,9 +558,9 @@ class TrendCollectorService:
         counts = {"topics": 0, "videos": 0, "keywords": 0}
 
         # 检查 API Key 是否可用
-        mode, credential = await PlatformCredentialService(
-            self.session, self._settings
-        ).resolve(workspace_id, "youtube")
+        mode, credential = await PlatformCredentialService(self.session, self._settings).resolve(
+            workspace_id, "youtube"
+        )
         api_key = credential.get("api_key") if mode == "api" else None
         if not isinstance(api_key, str) or not api_key:
             logger.info("youtube_api_key_not_configured, skipping youtube collection")
@@ -550,11 +569,20 @@ class TrendCollectorService:
 
         # YouTube categoryId 到分类名称的映射
         category_map = {
-            "1": "Film & Animation", "2": "Autos & Vehicles", "10": "Music",
-            "15": "Pets & Animals", "17": "Sports", "19": "Travel & Events",
-            "20": "Gaming", "22": "People & Blogs", "23": "Comedy",
-            "24": "Entertainment", "25": "News & Politics", "26": "Howto & Style",
-            "27": "Education", "28": "Science & Technology",
+            "1": "Film & Animation",
+            "2": "Autos & Vehicles",
+            "10": "Music",
+            "15": "Pets & Animals",
+            "17": "Sports",
+            "19": "Travel & Events",
+            "20": "Gaming",
+            "22": "People & Blogs",
+            "23": "Comedy",
+            "24": "Entertainment",
+            "25": "News & Politics",
+            "26": "Howto & Style",
+            "27": "Education",
+            "28": "Science & Technology",
         }
 
         try:
@@ -687,12 +715,10 @@ class TrendCollectorService:
         view_counts = [
             value
             for item in items
-            if (value := _optional_int(item.get("statistics", {}).get("viewCount")))
-            is not None
+            if (value := _optional_int(item.get("statistics", {}).get("viewCount"))) is not None
         ]
         engagement_rates = [
-            _engagement_from_statistics(item.get("statistics", {}))
-            for item in items
+            _engagement_from_statistics(item.get("statistics", {})) for item in items
         ]
 
         for rank, item in enumerate(items, start=1):

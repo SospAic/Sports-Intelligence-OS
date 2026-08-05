@@ -18,7 +18,6 @@ import { adapterErrorCodeTone } from "@/lib/adapter-errors";
 import { formatDate, formatNumber } from "@/lib/format";
 import {
   SyncRunDetail,
-  SyncRunEvent,
   SyncRunEventLevel,
 } from "@sio/shared-types";
 

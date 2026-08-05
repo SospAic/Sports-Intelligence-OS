@@ -16,11 +16,11 @@ import {
 export function NeedsConditionBadge({ text }: { text: string }) {
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-0.5 text-xs font-medium text-amber-300"
+      className="inline-flex max-w-full min-w-0 items-center gap-1 rounded-md border border-amber-900/60 bg-amber-950/30 px-2 py-0.5 text-xs font-medium text-amber-300"
       title={text}
     >
-      <span className="size-1.5 rounded-full bg-amber-400" />
-      {text}
+      <span className="size-1.5 shrink-0 rounded-full bg-amber-400" />
+      <span className="truncate">{text}</span>
     </span>
   );
 }

@@ -14,7 +14,7 @@ export default async function LoginPage() {
       <section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-950/75 p-8 shadow-2xl shadow-cyan-950/20 backdrop-blur">
         <div className="mb-8">
           <p className="mb-3 text-xs font-semibold tracking-[0.28em] text-cyan-300 uppercase">
-            Sports Intelligence OS
+            Content Intelligence OS
           </p>
           <h1 className="text-3xl font-semibold tracking-tight text-white">
             登录工作台

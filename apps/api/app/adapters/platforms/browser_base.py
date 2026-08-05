@@ -146,9 +146,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         password = ctx.config.get("password")
         if not isinstance(username, str) or not isinstance(password, str):
             return None
-        return hashlib.sha256(
-            f"{self.key}\0{username}\0{password}".encode()
-        ).hexdigest()
+        return hashlib.sha256(f"{self.key}\0{username}\0{password}".encode()).hexdigest()
 
     def _proxy_from_config(self, ctx: AdapterCallContext) -> ProxySettings | None:
         """Build a Playwright proxy dict from the workspace credential config.
@@ -171,9 +169,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
             proxy["password"] = password
         return proxy
 
-    async def _ensure_browser(
-        self, ctx: AdapterCallContext | None = None
-    ) -> Browser:
+    async def _ensure_browser(self, ctx: AdapterCallContext | None = None) -> Browser:
         """Lazily acquire a browser instance.
 
         Selection order (lets the project reuse the operator's *real* browser to
@@ -265,13 +261,9 @@ class BrowserPlatformAdapter(PlatformAdapter):
             try:
                 parsed_state = json.loads(raw_storage_state)
             except json.JSONDecodeError as exc:
-                raise LoginRequiredError(
-                    self.descriptor.name, "加密会话状态不是有效 JSON"
-                ) from exc
+                raise LoginRequiredError(self.descriptor.name, "加密会话状态不是有效 JSON") from exc
             if not isinstance(parsed_state, dict):
-                raise LoginRequiredError(
-                    self.descriptor.name, "加密会话状态格式无效"
-                )
+                raise LoginRequiredError(self.descriptor.name, "加密会话状态格式无效")
             storage_state = cast(StorageState, parsed_state)
         context = await browser.new_context(
             viewport={
@@ -332,17 +324,13 @@ class BrowserPlatformAdapter(PlatformAdapter):
         current_url = page.url.lower()
         for pattern in LOGIN_URL_PATTERNS:
             if pattern in current_url:
-                raise LoginRequiredError(
-                    platform_name, f"被重定向到登录页: {page.url[:80]}"
-                )
+                raise LoginRequiredError(platform_name, f"被重定向到登录页: {page.url[:80]}")
         # Check for login wall overlays in DOM.
         for selector in LOGIN_WALL_SELECTORS:
             try:
                 el = page.locator(selector).first
                 if await el.is_visible(timeout=500):
-                    raise LoginRequiredError(
-                        platform_name, f"检测到登录弹窗 ({selector})"
-                    )
+                    raise LoginRequiredError(platform_name, f"检测到登录弹窗 ({selector})")
             except LoginRequiredError:
                 raise
             except Exception as exc:
@@ -352,9 +340,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 )
                 continue
 
-    async def _login_if_configured(
-        self, page: Page, ctx: AdapterCallContext
-    ) -> bool:
+    async def _login_if_configured(self, page: Page, ctx: AdapterCallContext) -> bool:
         """Platform adapters override this for permitted credential login flows."""
         del page, ctx
         return False

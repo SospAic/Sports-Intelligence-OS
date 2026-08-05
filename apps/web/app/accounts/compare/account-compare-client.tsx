@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 
 import { StatePanel, secondaryButtonClass } from "@/components/ui";
 import { useWorkspace } from "@/components/app-shell";
+import { accountDisplayName } from "@/lib/account-label";
 import { apiRequest } from "@/lib/browser-api";
 import { BackButton } from "@/components/back-button";
 import type { AccountRecord } from "@sio/shared-types";
@@ -108,18 +109,19 @@ export function AccountCompare() {
   }
 
   return (
-    <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+    <main className="mx-auto min-w-0 max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
       <BackButton label="返回账号监控" />
 
       <div>
         <h1 className="text-2xl font-semibold text-white">账号横向对比</h1>
         <p className="mt-1 text-sm text-slate-400">
-          选择 2–5 个账号，对比粉丝、播放、互动与增长。仅基于真实同步观测（live/imported），不合成数据。
+          选择 2–5
+          个账号，对比粉丝、播放、互动与增长。仅基于真实同步观测（live/imported），不合成数据。
         </p>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-        <aside className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <aside className="min-w-0 rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-medium text-slate-200">选择账号</h2>
             <span className="text-xs text-slate-500">
@@ -144,8 +146,10 @@ export function AccountCompare() {
                 return (
                   <li key={acc.id}>
                     <label
-                      className={`flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${
-                        checked ? "bg-cyan-500/15 text-cyan-100" : "text-slate-300 hover:bg-slate-800"
+                      className={`flex min-w-0 cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm ${
+                        checked
+                          ? "bg-cyan-500/15 text-cyan-100"
+                          : "text-slate-300 hover:bg-slate-800"
                       }`}
                     >
                       <input
@@ -154,9 +158,13 @@ export function AccountCompare() {
                         onChange={() => toggle(acc.id)}
                         className="accent-cyan-500"
                       />
-                      <span className="truncate">
-                        {acc.display_name}
-                        <span className="ml-1 text-xs text-slate-500">
+                      <span className="min-w-0 flex-1 truncate">
+                        {accountDisplayName({
+                          ...acc,
+                          platform_name:
+                            acc.platform?.name ?? acc.platform?.key,
+                        })}
+                        <span className="ml-1 shrink-0 text-xs text-slate-500">
                           · {acc.platform?.name ?? acc.platform?.key ?? ""}
                         </span>
                       </span>
@@ -176,7 +184,7 @@ export function AccountCompare() {
           </button>
         </aside>
 
-        <section className="space-y-4">
+        <section className="min-w-0 space-y-4">
           {error && (
             <div className="rounded-xl border border-amber-700/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
               {error}
@@ -190,30 +198,60 @@ export function AccountCompare() {
           {result && (
             <>
               <div className="grid gap-3 sm:grid-cols-3">
-                <SummaryCard label="总粉丝" value={fmt(result.summary.total_followers)} />
-                <SummaryCard label="总播放" value={fmt(result.summary.total_views)} />
-                <SummaryCard label="对比账号数" value={String(result.summary.account_count)} />
+                <SummaryCard
+                  label="总粉丝"
+                  value={fmt(result.summary.total_followers)}
+                />
+                <SummaryCard
+                  label="总播放"
+                  value={fmt(result.summary.total_views)}
+                />
+                <SummaryCard
+                  label="对比账号数"
+                  value={String(result.summary.account_count)}
+                />
               </div>
               <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950/70">
                 <table className="w-full min-w-[900px] text-left text-sm">
                   <caption className="sr-only">账号对比表</caption>
                   <thead className="border-b border-slate-800 bg-slate-900/60 text-xs text-slate-400">
                     <tr>
-                      <th className="whitespace-nowrap px-4 py-3 font-medium">账号</th>
+                      <th className="whitespace-nowrap px-4 py-3 font-medium">
+                        账号
+                      </th>
                       <th className="px-4 py-3 font-medium">平台</th>
                       <th className="px-4 py-3 text-right font-medium">粉丝</th>
-                      <th className="px-4 py-3 text-right font-medium">粉丝增量</th>
-                      <th className="px-4 py-3 text-right font-medium">总播放</th>
-                      <th className="px-4 py-3 text-right font-medium">播放增量</th>
-                      <th className="px-4 py-3 text-right font-medium">互动率</th>
+                      <th className="px-4 py-3 text-right font-medium">
+                        粉丝增量
+                      </th>
+                      <th className="px-4 py-3 text-right font-medium">
+                        总播放
+                      </th>
+                      <th className="px-4 py-3 text-right font-medium">
+                        播放增量
+                      </th>
+                      <th className="px-4 py-3 text-right font-medium">
+                        互动率
+                      </th>
                       <th className="px-4 py-3 font-medium">同步状态</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {result.rows.map((row) => (
-                      <tr key={row.account_id} className="hover:bg-slate-900/60">
-                        <td className="whitespace-nowrap px-4 py-3 text-slate-200">
-                          {row.display_name}
+                      <tr
+                        key={row.account_id}
+                        className="hover:bg-slate-900/60"
+                      >
+                        <td className="max-w-[260px] px-4 py-3 text-slate-200">
+                          <span
+                            className="block truncate"
+                            title={row.display_name}
+                          >
+                            {accountDisplayName({
+                              ...row,
+                              platform_name: row.platform_key,
+                            })}
+                          </span>
                         </td>
                         <td className="whitespace-nowrap px-4 py-3 text-slate-400">
                           {row.platform_key}

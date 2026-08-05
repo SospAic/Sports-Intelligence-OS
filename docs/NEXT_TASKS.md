@@ -12,7 +12,7 @@
 
 ## P1：数据与产品完善
 
-5. 当前垂直产品继续使用 **Sports Intelligence OS**。若未来扩展为全方向内容创作，建议上层品牌改为 **Creator Intelligence OS**，体育能力保留为 Sports Edition；在领域模型抽象完成前不直接改名。
+5. 产品品牌已统一为 **Content Intelligence OS（内容智能生产平台）**；体育能力作为首期垂直工作区保留，后续可扩展至全品类内容生产。
 
 ## LLM 网关集成（已完成）
 

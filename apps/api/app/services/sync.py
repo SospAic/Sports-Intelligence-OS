@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -7,7 +8,7 @@ from statistics import median
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,15 +84,23 @@ class RetryableSyncError(Exception):
     pass
 
 
-
-
-
 def _as_int(value: int | float | None) -> int | None:
     return int(value) if value is not None else None
 
 
 def _as_decimal(value: int | float | None) -> Decimal | None:
     return Decimal(str(value)) if value is not None else None
+
+
+def merge_media_manifest(
+    existing: Mapping[str, Any] | None,
+    discovered: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Merge newly archived files without erasing older media on metadata syncs."""
+
+    if not discovered:
+        return dict(existing) if existing else None
+    return {**(existing or {}), **dict(discovered)}
 
 
 def _utc(value: datetime) -> datetime:
@@ -141,9 +150,9 @@ class SyncService:
             raise SyncNotFoundError("account was not found")
         if not account.is_active or account.sync_status == "disabled":
             raise SyncValidationError("disabled accounts cannot be synchronized")
-        mode, _ = await PlatformCredentialService(
-            self.session, self.settings
-        ).resolve(workspace_id, account.platform.key)
+        mode, _ = await PlatformCredentialService(self.session, self.settings).resolve(
+            workspace_id, account.platform.key
+        )
         if mode == "unconfigured" and account.platform.key in MANAGED_PLATFORM_KEYS:
             raise SyncValidationError(
                 "platform acquisition is not configured: add official API credentials "
@@ -333,9 +342,7 @@ class SyncService:
         runs = list(
             (
                 await self.session.scalars(
-                    select(SyncRun)
-                    .where(SyncRun.status.in_(("queued", "running")))
-                    .limit(500)
+                    select(SyncRun).where(SyncRun.status.in_(("queued", "running"))).limit(500)
                 )
             ).all()
         )
@@ -391,9 +398,7 @@ class SyncService:
                     SyncRun.workspace_id == run.workspace_id,
                     SyncRun.target_id == run.target_id,
                     SyncRun.id != run.id,
-                    SyncRun.status.in_(
-                        ("success", "degraded", "error", "cancelled", "skipped")
-                    ),
+                    SyncRun.status.in_(("success", "degraded", "error", "cancelled", "skipped")),
                 )
                 .order_by(
                     SyncRun.started_at.desc().nullslast(),
@@ -401,13 +406,9 @@ class SyncService:
                 )
                 .limit(1)
             )
-            newer_anchor = (
-                _utc(newer.started_at or newer.queued_at) if newer is not None else None
-            )
+            newer_anchor = _utc(newer.started_at or newer.queued_at) if newer is not None else None
             if newer is None or (
-                anchor is not None
-                and newer_anchor is not None
-                and newer_anchor < anchor
+                anchor is not None and newer_anchor is not None and newer_anchor < anchor
             ):
                 account.sync_status = "error"
                 account.last_sync_error_code = run.error_code
@@ -440,6 +441,20 @@ class PlatformSyncExecutor:
         # derived value rides along on the new (append-only) row — never via an
         # UPDATE of an existing snapshot.
         self._pending_account_snapshot: AccountSnapshot | None = None
+
+    def _remaining_budget_seconds(self, run: SyncRun) -> float:
+        """Return the remaining wall-clock budget for an external call.
+
+        The page-boundary check alone cannot protect a worker while a browser
+        fallback or a provider call is in flight.  Callers use this value as
+        the timeout for the individual awaitable and mark the run truncated
+        when the budget is exhausted.
+        """
+
+        anchor = run.started_at or run.queued_at
+        return float(self.settings.sync_run_timeout_seconds) - max(
+            0.0, (datetime.now(UTC) - _utc(anchor)).total_seconds()
+        )
 
     def _emit(
         self,
@@ -493,13 +508,11 @@ class PlatformSyncExecutor:
         return run.status == "cancelled"
 
     async def _config_for(self, account: Account) -> dict[str, Any]:
-        mode, config = await PlatformCredentialService(
-            self.session, self.settings
-        ).resolve(account.workspace_id, account.platform.key)
+        mode, config = await PlatformCredentialService(self.session, self.settings).resolve(
+            account.workspace_id, account.platform.key
+        )
         if mode == "unconfigured" and account.platform.key in MANAGED_PLATFORM_KEYS:
-            raise AdapterConfigurationError(
-                "platform acquisition policy is no longer configured"
-            )
+            raise AdapterConfigurationError("platform acquisition policy is no longer configured")
         # Merge the workspace's global fetch policy (yt-dlp window / passthrough
         # args, plus the works cap) on top of the platform-resolved credential
         # config. The global ``sync_settings`` wins on conflict so operators tune
@@ -564,7 +577,8 @@ class PlatformSyncExecutor:
         for key, value in override.items():
             if isinstance(value, Mapping) and isinstance(result.get(key), Mapping):
                 result[key] = PlatformSyncExecutor._deep_merge_download(
-                    result[key], value  # type: ignore[arg-type]
+                    result[key],
+                    value,
                 )
             else:
                 result[key] = value
@@ -904,9 +918,7 @@ class PlatformSyncExecutor:
                 target_url=account.profile_url,
                 started_at=started_at,
                 finished_at=finished_at,
-                duration_ms=max(
-                    0, int((finished_at - started_at).total_seconds() * 1000)
-                ),
+                duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                 http_status=None,
                 error_code=error_code,
                 error_detail_safe=error_detail[:500] if error_detail else None,
@@ -953,7 +965,8 @@ class PlatformSyncExecutor:
         original_locator = account.external_id
         account.external_id = data.external_id
         account.username = data.username
-        account.display_name = data.display_name
+        if (account.metadata_json or {}).get("display_name_source") != "manual":
+            account.display_name = data.display_name
         account.profile_url = data.profile_url
         if data.avatar_url:
             account.avatar_url = data.avatar_url
@@ -1106,17 +1119,26 @@ class PlatformSyncExecutor:
         sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
         max_contents = sync_cfg.get("max_contents")
         skip_existing = bool(sync_cfg.get("skip_existing", True))
+        latest_published_at = await self.session.scalar(
+            select(func.max(ContentItem.published_at)).where(ContentItem.account_id == account.id)
+        )
+        incremental_since = latest_published_at - timedelta(days=7) if latest_published_at else None
         self._emit(
             run,
             "stage",
             "info",
             "开始获取作品列表与指标",
-            {"max_contents": max_contents, "skip_existing": skip_existing},
+            {
+                "max_contents": max_contents,
+                "skip_existing": skip_existing,
+                "mode": "incremental" if incremental_since else "initial_catalogue",
+                "published_after": incremental_since.isoformat() if incremental_since else None,
+            },
         )
-        # Default behaviour is a full-catalogue fetch: we never shortcut by the
-        # newest-known publish date. The yt-dlp date window (``dateafter`` /
-        # ``datebefore``) from the global policy is applied by the adapter, so
-        # narrowing the range is done through settings, not incremental state.
+        # Existing accounts use a bounded overlap window so normal syncs remain
+        # fast while still re-reading the recent edge for late-arriving posts.
+        # A new account has no watermark and therefore starts with the adapter's
+        # configured catalogue window.
         for page_index in range(self.settings.sync_page_limit):
             # Heartbeat BEFORE the (potentially slow) external page fetch so the
             # stale-recovery watchdog never mislabels a run that is merely
@@ -1146,19 +1168,39 @@ class PlatformSyncExecutor:
             if max_contents is not None:
                 remaining = max_contents - (created + updated + skipped + failed)
                 window = max(1, min(window, remaining))
-            published_after = None
+            published_after = incremental_since
             # A failing page fetch must not abort the entire sync. If we have
             # already collected works, stop paging gracefully and finalise what
             # we have; only a first-page failure (nothing collected yet) is a
             # genuine, re-raisable outage that the caller handles as retry/error.
+            remaining_budget = self._remaining_budget_seconds(run)
+            if remaining_budget <= 0:
+                self._budget_exceeded = True
+                break
             try:
-                page = await adapter.list_contents(
-                    ctx,
-                    account.external_id,
-                    published_after=published_after,
-                    cursor=cursor,
-                    page_size=window,
+                page = await asyncio.wait_for(
+                    adapter.list_contents(
+                        ctx,
+                        account.external_id,
+                        published_after=published_after,
+                        cursor=cursor,
+                        page_size=window,
+                    ),
+                    timeout=remaining_budget,
                 )
+            except TimeoutError:
+                self._budget_exceeded = True
+                self._emit(
+                    run,
+                    "page",
+                    "warn",
+                    f"第 {page_index + 1} 页获取超过同步时间预算，已保留前面已入库内容",
+                    {
+                        "page_index": page_index,
+                        "budget_seconds": self.settings.sync_run_timeout_seconds,
+                    },
+                )
+                break
             except PlatformAdapterError as exc:
                 if run.items_processed == 0:
                     raise
@@ -1224,9 +1266,7 @@ class PlatformSyncExecutor:
                         )
                     run.metadata_json = {
                         **run.metadata_json,
-                        "rejected_item_count": int(
-                            run.metadata_json.get("rejected_item_count", 0)
-                        )
+                        "rejected_item_count": int(run.metadata_json.get("rejected_item_count", 0))
                         + 1,
                         "rejected_items": rejected,
                     }
@@ -1289,8 +1329,7 @@ class PlatformSyncExecutor:
                     self._set_progress(
                         run,
                         min(
-                            30
-                            + round(55 * (page_index + 0.5) / self.settings.sync_page_limit),
+                            30 + round(55 * (page_index + 0.5) / self.settings.sync_page_limit),
                             85,
                         ),
                         "content_metrics",
@@ -1310,19 +1349,44 @@ class PlatformSyncExecutor:
             # Analytics fetch is best-effort: a failure here degrades metrics but
             # must never discard the works already ingested this page.
             synthesized = 0
+            analytics: Sequence[PlatformMetricsData] = ()
             try:
-                analytics = await adapter.fetch_content_analytics(
-                    ctx, [item.external_id for item in page_items]
-                )
+                remaining_budget = self._remaining_budget_seconds(run)
+                if remaining_budget <= 0:
+                    self._budget_exceeded = True
+                    analytics = ()
+                    content_analytics_failed = True
+                    self._emit(
+                        run,
+                        "analytics",
+                        "warn",
+                        f"第 {page_index + 1} 页指标分析未开始：同步时间预算已耗尽",
+                        {"page_index": page_index, "requested": len(page_items)},
+                    )
+                else:
+                    analytics = await asyncio.wait_for(
+                        adapter.fetch_content_analytics(
+                            ctx, [item.external_id for item in page_items]
+                        ),
+                        timeout=remaining_budget,
+                    )
                 by_external_id = {item.external_id: item for item in page_items}
                 for analytics_data in analytics:
                     matched_content = by_external_id.get(analytics_data.external_id)
                     if matched_content is not None and analytics_data.metrics:
-                        self.session.add(
-                            self._content_snapshot(matched_content.id, analytics_data)
-                        )
+                        self.session.add(self._content_snapshot(matched_content.id, analytics_data))
                 synthesized = self._synthesize_content_snapshots(
                     adapter, ctx, page_items, analytics
+                )
+            except TimeoutError:
+                self._budget_exceeded = True
+                content_analytics_failed = True
+                self._emit(
+                    run,
+                    "analytics",
+                    "warn",
+                    f"第 {page_index + 1} 页指标分析超过同步时间预算，已保留作品",
+                    {"page_index": page_index, "requested": len(page_items)},
                 )
             except Exception as exc:  # noqa: BLE001
                 content_analytics_failed = True
@@ -1346,18 +1410,19 @@ class PlatformSyncExecutor:
                     },
                 )
             else:
-                self._emit(
-                    run,
-                    "analytics",
-                    "info",
-                    f"第 {page_index + 1} 页分析完成：{len(analytics)} 条指标",
-                    {
-                        "page_index": page_index,
-                        "requested": len(page_items),
-                        "returned": len(analytics),
-                        "synthesized": synthesized,
-                    },
-                )
+                if not content_analytics_failed:
+                    self._emit(
+                        run,
+                        "analytics",
+                        "info",
+                        f"第 {page_index + 1} 页分析完成：{len(analytics)} 条指标",
+                        {
+                            "page_index": page_index,
+                            "requested": len(page_items),
+                            "returned": len(analytics),
+                            "synthesized": synthesized,
+                        },
+                    )
             run.records_created = created
             # Field updates + browser-derived snapshots both count as updates.
             run.records_updated = updated + synthesized
@@ -1533,11 +1598,18 @@ class PlatformSyncExecutor:
             )
             self.session.add(content)
         elif skip_existing:
-            # Dedup-on-scrape: the work already exists, so keep the operator's
-            # stored editable fields (title / cover / canonical) and only bump
-            # last_seen_at. A fresh metrics snapshot is still appended upstream,
-            # so analytics stay current without clobbering edited data.
+            # Keep operator-edited fields, but repair missing acquisition
+            # artifacts. Older runs often stored the work before thumbnails or
+            # subtitles were available; skipping must not make that state permanent.
             content.last_seen_at = data.fetched_at
+            if not content.cover_url and data.cover_url:
+                content.cover_url = data.cover_url
+            if not content.description and data.description:
+                content.description = data.description
+            content.media = merge_media_manifest(content.media, data.media)
+            content.metadata_json = {**(content.metadata_json or {}), **dict(data.metadata)}
+            if data.tags:
+                content.tags = list(dict.fromkeys([*(content.tags or []), *data.tags]))[:30]
             skipped = True
         else:
             content.title = data.title
@@ -1555,7 +1627,11 @@ class PlatformSyncExecutor:
             content.source_provider = data.provider
             content.fetched_at = data.fetched_at
             content.source_url = data.canonical_url
-            content.media = dict(data.media) if data.media else None
+            # A metadata-only sync must never erase files archived by an
+            # earlier download-enabled run.  Merge newly discovered files and
+            # preserve the existing manifest when this adapter/fallback did
+            # not produce media in the current pass.
+            content.media = merge_media_manifest(content.media, data.media)
             if data.tags:
                 # union with existing to avoid clobbering manually added tags
                 merged = list(dict.fromkeys([*content.tags, *data.tags]))
@@ -1873,9 +1949,7 @@ class PlatformSyncExecutor:
         candidates = [
             item
             for item in snapshots[1:]
-            if minimum
-            <= (latest_utc - _utc(item.captured_at)).total_seconds() / 3600
-            <= maximum
+            if minimum <= (latest_utc - _utc(item.captured_at)).total_seconds() / 3600 <= maximum
         ]
         if not candidates:
             return None
@@ -1926,9 +2000,7 @@ def enqueue_platform_sync(run_id: UUID) -> None:
     sync_account.delay(str(run_id))
 
 
-async def cancel_sync_run(
-    session: AsyncSession, workspace_id: UUID, run_id: UUID
-) -> SyncRunRead:
+async def cancel_sync_run(session: AsyncSession, workspace_id: UUID, run_id: UUID) -> SyncRunRead:
     """Mark a queued/running sync run as cancelled and release its account lock.
 
     Idempotent for runs that are already in a terminal state. Best-effort revokes
@@ -1958,7 +2030,5 @@ async def cancel_sync_run(
 
         sync_account.revoke(str(run.id), terminate=True)
     except Exception:  # pragma: no cover - broker may be unavailable in dev/test
-        logger.warning(
-            "could not revoke celery task for cancelled sync run %s", run.id
-        )
+        logger.warning("could not revoke celery task for cancelled sync run %s", run.id)
     return SyncRunRead.model_validate(run)

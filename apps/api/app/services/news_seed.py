@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import select
@@ -135,8 +136,7 @@ DEFAULT_SOURCE_EXAMPLES = (
 SOURCE_CONFIG_NOTES: dict[str, dict[str, str]] = {
     "ESPN Top Headlines（示例，默认停用）": {
         "disabled_reason": (
-            "confirmed_unreachable: connection errors since 2026-07, "
-            "no ETA for restoration"
+            "confirmed_unreachable: connection errors since 2026-07, no ETA for restoration"
         ),
     },
     "CBS Sports MLB（示例，默认停用）": {
@@ -146,16 +146,14 @@ SOURCE_CONFIG_NOTES: dict[str, dict[str, str]] = {
         "terms": "© BBC; RSS for personal/non-commercial aggregation",
         "robots": "allows /sport/rss.xml",
         "rate_limit_basis": (
-            "conservative ≤1 req/30 min; no published limit, "
-            "aligned with BBC fair-use guidance"
+            "conservative ≤1 req/30 min; no published limit, aligned with BBC fair-use guidance"
         ),
     },
     "The Guardian Sport（示例，默认停用）": {
         "terms": "© Guardian News & Media; RSS for personal use via open platform",
         "robots": "allows /sport/rss",
         "rate_limit_basis": (
-            "conservative ≤1 req/30 min; Guardian open platform TOS "
-            "recommends reasonable polling"
+            "conservative ≤1 req/30 min; Guardian open platform TOS recommends reasonable polling"
         ),
     },
     "Sports Illustrated Top Stories（示例，默认停用）": {
@@ -168,12 +166,13 @@ SOURCE_CONFIG_NOTES: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # Expanded sources (added 2026-08): popular open-source projects, free
 # sports/community sites, expanded media RSS, and browser-scrapable sites.
-# Per product decision these are ENABLED by default so the hot-intelligence
-# pipeline starts ingesting immediately; they fail gracefully (the news service
-# tracks consecutive_failures and backs off) if a site is unreachable.
+# Sports-specific sources are enabled by default so the hot-intelligence
+# pipeline starts ingesting immediately.  Broad technology feeds remain
+# visible as opt-in sources, but must not pollute a sports workspace on first
+# boot.
 # ---------------------------------------------------------------------------
 
-EXPANDED_SOURCE_EXAMPLES: list[dict] = [
+EXPANDED_SOURCE_EXAMPLES: list[dict[str, Any]] = [
     # --- 开源社区源 (open-source community) ---
     {
         "name": "dev.to · Sports Analytics（开源社区，默认启用）",
@@ -182,41 +181,52 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "open_source",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 70, "priority": 55,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 70,
+        "priority": 55,
         "config": {"sync_interval_seconds": 21600},
     },
     {
-        "name": "dev.to · Data Science（开源社区，默认启用）",
+        "name": "dev.to · Data Science（开源社区，默认停用）",
         "url": "https://dev.to/feed/tag/datascience",
         "sport": "general_sports",
         "category": "open_source",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 70, "priority": 55,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 70,
+        "priority": 55,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
-        "name": "Hacker News · Front Page（开源社区，默认启用）",
+        "name": "Hacker News · Front Page（开源社区，默认停用）",
         "url": "https://hnrss.org/frontpage",
         "sport": "general_sports",
         "category": "open_source",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 72, "priority": 60,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 72,
+        "priority": 60,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
-        "name": "Hacker News · Sports（开源社区，默认启用）",
+        "name": "Hacker News · Sports（开源社区，默认停用）",
         "url": "https://hnrss.org/search?q=sports",
         "sport": "general_sports",
         "category": "open_source",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 72, "priority": 60,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 72,
+        "priority": 60,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
@@ -226,8 +236,10 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "open_source",
         "provider_key": "atom",
         "source_type": "atom",
-        "language": "en", "country": "US",
-        "reliability_score": 75, "priority": 58,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 75,
+        "priority": 58,
         "config": {"sync_interval_seconds": 86400},
     },
     {
@@ -237,42 +249,53 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "open_source",
         "provider_key": "atom",
         "source_type": "atom",
-        "language": "en", "country": "US",
-        "reliability_score": 75, "priority": 58,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 75,
+        "priority": 58,
         "config": {"sync_interval_seconds": 86400},
     },
     # --- 免费体育/社区站点 (free sports & community) ---
     {
-        "name": "Reddit · r/soccer（免费社区，默认启用）",
+        "name": "Reddit · r/soccer（免费社区，默认停用）",
         "url": "https://www.reddit.com/r/soccer/.rss",
         "sport": "football",
         "category": "community_web",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 65, "priority": 50,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 65,
+        "priority": 50,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
-        "name": "Reddit · r/nba（免费社区，默认启用）",
+        "name": "Reddit · r/nba（免费社区，默认停用）",
         "url": "https://www.reddit.com/r/nba/.rss",
         "sport": "basketball",
         "category": "community_web",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 65, "priority": 50,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 65,
+        "priority": 50,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
-        "name": "Reddit · r/sports（免费社区，默认启用）",
+        "name": "Reddit · r/sports（免费社区，默认停用）",
         "url": "https://www.reddit.com/r/sports/.rss",
         "sport": "general_sports",
         "category": "community_web",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 65, "priority": 50,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 65,
+        "priority": 50,
+        "enabled": False,
         "config": {"sync_interval_seconds": 21600},
     },
     {
@@ -282,8 +305,10 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "community_web",
         "provider_key": "browser_news",
         "source_type": "rss",
-        "language": "en", "country": "GB",
-        "reliability_score": 60, "priority": 35,
+        "language": "en",
+        "country": "GB",
+        "reliability_score": 60,
+        "priority": 35,
         "config": {"sync_interval_seconds": 86400, "preset": "fbref"},
     },
     {
@@ -293,20 +318,25 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "community_web",
         "provider_key": "browser_news",
         "source_type": "rss",
-        "language": "en", "country": "DE",
-        "reliability_score": 60, "priority": 35,
+        "language": "en",
+        "country": "DE",
+        "reliability_score": 60,
+        "priority": 35,
         "config": {"sync_interval_seconds": 86400, "preset": "transfermarkt"},
     },
     # --- 扩充媒体 RSS (expanded media) ---
     {
-        "name": "AP News · Sports（媒体，默认启用）",
+        "name": "AP News · Sports（媒体，默认停用）",
         "url": "https://apnews.com/index.rss",
         "sport": "general_sports",
         "category": "sports_media",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "US",
-        "reliability_score": 88, "priority": 80,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 88,
+        "priority": 80,
+        "enabled": False,
         "config": {"sync_interval_seconds": 18000},
     },
     {
@@ -316,8 +346,10 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "sports_media",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "GB",
-        "reliability_score": 85, "priority": 78,
+        "language": "en",
+        "country": "GB",
+        "reliability_score": 85,
+        "priority": 78,
         "config": {"sync_interval_seconds": 18000},
     },
     {
@@ -327,19 +359,24 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         "category": "sports_media",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "GB",
-        "reliability_score": 85, "priority": 78,
+        "language": "en",
+        "country": "GB",
+        "reliability_score": 85,
+        "priority": 78,
         "config": {"sync_interval_seconds": 18000},
     },
     {
-        "name": "NPR · Sports（媒体，默认启用）",
+        "name": "NPR · Sports（媒体，默认停用）",
         "url": "https://feeds.npr.org/104092227/feed.json",
         "sport": "general_sports",
         "category": "sports_media",
         "provider_key": "json",
         "source_type": "json",
-        "language": "en", "country": "US",
-        "reliability_score": 84, "priority": 76,
+        "language": "en",
+        "country": "US",
+        "reliability_score": 84,
+        "priority": 76,
+        "enabled": False,
         "config": {
             "sync_interval_seconds": 18000,
             "field_mappings": {
@@ -351,14 +388,17 @@ EXPANDED_SOURCE_EXAMPLES: list[dict] = [
         },
     },
     {
-        "name": "Goal · Football（媒体，默认启用）",
+        "name": "Goal · Football（媒体，默认停用）",
         "url": "https://www.goal.com/en/feeds/news",
         "sport": "football",
         "category": "sports_media",
         "provider_key": "rss",
         "source_type": "rss",
-        "language": "en", "country": "GB",
-        "reliability_score": 78, "priority": 72,
+        "language": "en",
+        "country": "GB",
+        "reliability_score": 78,
+        "priority": 72,
+        "enabled": False,
         "config": {"sync_interval_seconds": 18000},
     },
 ]
@@ -371,9 +411,7 @@ async def seed_expanded_news_sources(session: AsyncSession, workspace_id: UUID) 
     for spec in EXPANDED_SOURCE_EXAMPLES:
         name = spec["name"]
         source_id = source_uuid(workspace_id, name)
-        existing = await session.scalar(
-            select(Source).where(Source.id == source_id)
-        )
+        existing = await session.scalar(select(Source).where(Source.id == source_id))
         if existing is not None:
             continue
 
@@ -430,9 +468,7 @@ async def seed_news_source_examples(session: AsyncSession, workspace_id: UUID) -
     created = 0
     for name, url, sport in DEFAULT_SOURCE_EXAMPLES:
         source_id = source_uuid(workspace_id, name)
-        source = await session.scalar(
-            select(Source).where(Source.id == source_id)
-        )
+        source = await session.scalar(select(Source).where(Source.id == source_id))
         if source is not None:
             continue
 
@@ -475,9 +511,7 @@ async def seed_news_source_examples(session: AsyncSession, workspace_id: UUID) -
 
     manual_name = "手动新闻录入"
     manual_id = source_uuid(workspace_id, manual_name)
-    manual = await session.scalar(
-        select(Source).where(Source.id == manual_id)
-    )
+    manual = await session.scalar(select(Source).where(Source.id == manual_id))
     if manual is None:
         session.add(
             Source(

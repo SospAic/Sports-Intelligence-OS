@@ -7,7 +7,6 @@ import type {
 } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Database,
   HeartPulse,
   KeyRound,
   Newspaper,
@@ -38,7 +37,6 @@ import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
 import { fetchReadyHealth } from "@/lib/health";
 import { LLMSettingsPanel } from "./llm-settings-panel";
-import { RuntimeSettingsPanel } from "./runtime-settings-panel";
 import { SyncSettingsPanel } from "./sync-settings-panel";
 
 type SourcePage = {
@@ -59,19 +57,17 @@ type PlatformCredential = {
 };
 type SettingsTab =
   | "overview"
-  | "runtime"
   | "llm"
   | "notifications"
   | "sources"
   | "platforms"
   | "sync";
 
-const TABS: Array<{ key: SettingsTab; label: string; icon: typeof Database }> =
+const TABS: Array<{ key: SettingsTab; label: string; icon: typeof HeartPulse }> =
   [
     { key: "overview", label: "概览", icon: HeartPulse },
     { key: "platforms", label: "平台管理", icon: Plug },
     { key: "sync", label: "同步设置", icon: RefreshCw },
-    { key: "runtime", label: "数据库与 Redis", icon: Database },
     { key: "llm", label: "LLM API", icon: Sparkles },
     { key: "notifications", label: "通知 Provider", icon: Send },
     { key: "sources", label: "新闻源", icon: Newspaper },
@@ -86,7 +82,6 @@ export function SettingsClient() {
   const [tab, setTab] = useState<SettingsTab>(
     [
       "overview",
-      "runtime",
       "llm",
       "notifications",
       "sources",
@@ -313,10 +308,6 @@ export function SettingsClient() {
             <h2 className="font-medium text-white">配置边界</h2>
             <div className="mt-4 grid gap-4 text-sm md:grid-cols-3">
               <SummaryCard
-                title="数据库与 Redis"
-                detail="查看脱敏连接拓扑、连接池、超时、重试与任务参数，复制环境变量草稿。"
-              />
-              <SummaryCard
                 title="LLM API"
                 detail="工作区级加密配置、默认模型与采样参数、成本、超时、重试和真实连接测试。"
               />
@@ -328,7 +319,6 @@ export function SettingsClient() {
           </Panel>
         </div>
       )}
-      {tab === "runtime" && <RuntimeSettingsPanel />}
       {tab === "llm" && <LLMSettingsPanel />}
       {tab === "notifications" && <NotificationChannelsClient embedded />}
       {tab === "sources" && (
@@ -518,6 +508,9 @@ export function SettingsClient() {
                               ? "正常"
                               : "待首次同步"}
                       </Badge>
+                      <p className="mt-1 text-xs text-slate-500">
+                        最近尝试 {formatDate(source.last_attempt_at)}
+                      </p>
                       <p className="mt-1 text-xs text-slate-500">
                         最近成功 {formatDate(source.last_synced_at)}
                       </p>

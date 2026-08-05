@@ -22,6 +22,7 @@ from app.models.operations import AuditEntry
 # Errors
 # --------------------------------------------------------------------------- #
 
+
 class NotificationTemplateError(RuntimeError):
     def __init__(self, message: str, *, code: str, status_code: int) -> None:
         super().__init__(message)
@@ -52,6 +53,7 @@ class NotificationTemplateValidationError(NotificationTemplateError):
 # --------------------------------------------------------------------------- #
 # Pydantic schemas
 # --------------------------------------------------------------------------- #
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -103,6 +105,7 @@ class TemplateVersionRead(BaseModel):
 # Service
 # --------------------------------------------------------------------------- #
 
+
 class NotificationTemplateService:
     """Manages notification templates and their versioned content."""
 
@@ -130,9 +133,7 @@ class NotificationTemplateService:
             raise NotificationTemplateNotFound()
         return template
 
-    def _latest_version(
-        self, template: NotificationTemplate
-    ) -> NotificationTemplateVersion | None:
+    def _latest_version(self, template: NotificationTemplate) -> NotificationTemplateVersion | None:
         if not template.versions:
             return None
         return max(template.versions, key=lambda v: v.version)
@@ -183,9 +184,7 @@ class NotificationTemplateService:
         category: str | None = None,
     ) -> dict[str, Any]:
         """Return a paginated list of templates with optional category filter."""
-        base = select(NotificationTemplate).where(
-            NotificationTemplate.workspace_id == workspace_id
-        )
+        base = select(NotificationTemplate).where(NotificationTemplate.workspace_id == workspace_id)
         if category:
             base = base.where(NotificationTemplate.category == category)
 
@@ -227,9 +226,7 @@ class NotificationTemplateService:
     # 2. get_template
     # ------------------------------------------------------------------ #
 
-    async def get_template(
-        self, workspace_id: UUID, template_id: UUID
-    ) -> dict[str, Any]:
+    async def get_template(self, workspace_id: UUID, template_id: UUID) -> dict[str, Any]:
         """Return a single template with all its versions."""
         template = await self._get_template_or_raise(workspace_id, template_id)
         latest = self._latest_version(template)
@@ -376,9 +373,7 @@ class NotificationTemplateService:
         latest = self._latest_version(template)
 
         if latest is None:
-            raise NotificationTemplateValidationError(
-                "Template has no versions to update"
-            )
+            raise NotificationTemplateValidationError("Template has no versions to update")
 
         now = datetime.now(UTC)
 
@@ -413,7 +408,8 @@ class NotificationTemplateService:
                 changes={
                     "version": latest.version,
                     "fields_updated": [
-                        k for k, v in [
+                        k
+                        for k, v in [
                             ("subject_template", subject_template),
                             ("body_template", body_template),
                             ("variables_schema", variables_schema),
@@ -439,16 +435,13 @@ class NotificationTemplateService:
                 version=new_version_num,
                 status="draft",
                 subject_template=(
-                    subject_template if subject_template is not None
-                    else latest.subject_template
+                    subject_template if subject_template is not None else latest.subject_template
                 ),
                 body_template=(
-                    body_template if body_template is not None
-                    else latest.body_template
+                    body_template if body_template is not None else latest.body_template
                 ),
                 variables_schema=(
-                    variables_schema if variables_schema is not None
-                    else latest.variables_schema
+                    variables_schema if variables_schema is not None else latest.variables_schema
                 ),
                 change_notes=change_notes,
                 created_by=actor_id,
@@ -502,9 +495,7 @@ class NotificationTemplateService:
                     draft = v
 
         if draft is None:
-            raise NotificationTemplateValidationError(
-                "No draft version available to publish"
-            )
+            raise NotificationTemplateValidationError("No draft version available to publish")
 
         now = datetime.now(UTC)
 
@@ -622,9 +613,7 @@ class NotificationTemplateService:
     # 7. delete_template
     # ------------------------------------------------------------------ #
 
-    async def delete_template(
-        self, workspace_id: UUID, template_id: UUID, actor_id: UUID
-    ) -> None:
+    async def delete_template(self, workspace_id: UUID, template_id: UUID, actor_id: UUID) -> None:
         """Delete a template and all its versions."""
         template = await self._get_template_or_raise(workspace_id, template_id)
         self._audit(
@@ -701,6 +690,7 @@ class NotificationTemplateService:
 # --------------------------------------------------------------------------- #
 # Internal helpers
 # --------------------------------------------------------------------------- #
+
 
 class _SafeFormat(dict[str, Any]):
     """Dict subclass that returns ``{key}`` for missing keys instead of raising."""

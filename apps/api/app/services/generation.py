@@ -410,6 +410,9 @@ class GenerationService:
             token_usage={},
             estimated_cost=None,
             error=None,
+            error_code=None,
+            error_detail_safe=None,
+            error_hint=None,
             run_metadata={
                 "source_kind": "live",
                 "provider_is_mock": provider.is_mock,
@@ -519,6 +522,9 @@ class GenerationService:
             token_usage={},
             estimated_cost=None,
             error=None,
+            error_code=None,
+            error_detail_safe=None,
+            error_hint=None,
             run_metadata={
                 "source_kind": source.run_metadata.get("source_kind"),
                 "provider_is_mock": source.run_metadata.get("provider_is_mock", False),
@@ -562,6 +568,9 @@ class GenerationService:
         run.status = "queued"
         run.current_step = None
         run.error = None
+        run.error_code = None
+        run.error_detail_safe = None
+        run.error_hint = None
         run.completed_at = None
         self._audit(workspace_id, actor_id, "generation_run.retried", "generation_run", run.id)
         await self.session.commit()
@@ -575,6 +584,8 @@ class GenerationService:
             "code": "generation_dispatch_failed",
             "message": "Background generation worker is unavailable",
         }
+        run.error_code = "generation_dispatch_failed"
+        run.error_detail_safe = "Background generation worker is unavailable"
         run.error_hint = business_hint_for("generation_dispatch_failed", category="generation")
         await self.session.commit()
 
@@ -611,6 +622,9 @@ class GenerationService:
         run.status = "running"
         run.started_at = datetime.now(UTC)
         run.error = None
+        run.error_code = None
+        run.error_detail_safe = None
+        run.error_hint = None
         await self.session.commit()
 
         context: dict[str, Any] = {"frozen_input": run.input_payload}
@@ -694,6 +708,8 @@ class GenerationService:
                     "code": code,
                     "message": str(exc)[:1000],
                 }
+                failed.error_code = code
+                failed.error_detail_safe = str(exc)[:2000]
                 failed.error_hint = business_hint_for(code, category="generation")
                 current = next(
                     (item for item in failed.steps if item.step_key == failed.current_step), None
@@ -1020,9 +1036,7 @@ class GenerationService:
                     target_url=None,
                     started_at=started_at,
                     finished_at=finished_at,
-                    duration_ms=max(
-                        0, int((finished_at - started_at).total_seconds() * 1000)
-                    ),
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                     http_status=None,
                     error_code=None,
                     error_detail_safe=None,
@@ -1052,9 +1066,7 @@ class GenerationService:
                     target_url=None,
                     started_at=started_at,
                     finished_at=finished_at,
-                    duration_ms=max(
-                        0, int((finished_at - started_at).total_seconds() * 1000)
-                    ),
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                     http_status=None,
                     error_code=exc.code,
                     error_detail_safe=str(exc)[:500],
@@ -1064,9 +1076,7 @@ class GenerationService:
                 )
             )
             # ── Fallback: retry via llm_fallback_base_url if configured ──────
-            fallback_url = (
-                self.settings.llm_fallback_base_url if self.settings else None
-            )
+            fallback_url = self.settings.llm_fallback_base_url if self.settings else None
             if fallback_url:
                 fallback_response = await self._attempt_fallback(
                     run, request, step_key, fallback_url, attempt_number
@@ -1089,9 +1099,7 @@ class GenerationService:
                     target_url=None,
                     started_at=started_at,
                     finished_at=finished_at,
-                    duration_ms=max(
-                        0, int((finished_at - started_at).total_seconds() * 1000)
-                    ),
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                     http_status=None,
                     error_code=exc.code,
                     error_detail_safe=str(exc)[:500],
@@ -1116,9 +1124,7 @@ class GenerationService:
                     target_url=None,
                     started_at=started_at,
                     finished_at=finished_at,
-                    duration_ms=max(
-                        0, int((finished_at - started_at).total_seconds() * 1000)
-                    ),
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                     http_status=None,
                     error_code="unexpected_llm_provider_error",
                     error_detail_safe="LLM provider failed unexpectedly",
@@ -1144,15 +1150,11 @@ class GenerationService:
         import logging as _logging
 
         _logger = _logging.getLogger(__name__)
-        internal_hosts = tuple(
-            self.settings.llm_internal_hosts_allowlist if self.settings else []
-        )
+        internal_hosts = tuple(self.settings.llm_internal_hosts_allowlist if self.settings else [])
         fallback_provider = OpenAICompatibleProvider(
             base_url=fallback_url,
             api_key="fallback-no-key-required",
-            timeout_seconds=float(
-                request.parameters.get("timeout_seconds", 60)
-            ),
+            timeout_seconds=float(request.parameters.get("timeout_seconds", 60)),
             max_attempts=1,
             internal_hosts=internal_hosts,
         )
@@ -1175,10 +1177,7 @@ class GenerationService:
                     finished_at=fallback_finished,
                     duration_ms=max(
                         0,
-                        int(
-                            (fallback_finished - fallback_started).total_seconds()
-                            * 1000
-                        ),
+                        int((fallback_finished - fallback_started).total_seconds() * 1000),
                     ),
                     http_status=None,
                     error_code=None,
@@ -1223,10 +1222,7 @@ class GenerationService:
                     finished_at=fallback_finished,
                     duration_ms=max(
                         0,
-                        int(
-                            (fallback_finished - fallback_started).total_seconds()
-                            * 1000
-                        ),
+                        int((fallback_finished - fallback_started).total_seconds() * 1000),
                     ),
                     http_status=None,
                     error_code="llm_fallback_failed",

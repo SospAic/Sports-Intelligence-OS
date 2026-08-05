@@ -371,11 +371,7 @@ class AutomationService:
             deduplication_key=deduplication_key,
             event_key=event_key,
             execution_status=(
-                "suppressed"
-                if suppression
-                else "queued"
-                if matched
-                else "not_matched"
+                "suppressed" if suppression else "queued" if matched else "not_matched"
             ),
             evaluation_metadata={
                 "source_kind": payload.source_kind,
@@ -578,15 +574,11 @@ class AutomationService:
                 .limit(1)
             )
             if template_version is None:
-                raise ValueError(
-                    "notification template is missing or has no published version"
-                )
+                raise ValueError("notification template is missing or has no published version")
             rendered = NotificationTemplateService.render_template(template_version, values)
         else:
             rendered = {
-                "subject": str(action.config.get("title", "{rule_name} 已触发")).format_map(
-                    values
-                ),
+                "subject": str(action.config.get("title", "{rule_name} 已触发")).format_map(values),
                 "body": str(
                     action.config.get("body", "实体 {entity_id} 满足监控条件。")
                 ).format_map(values),
@@ -1144,8 +1136,7 @@ class AutomationService:
             published = await self.session.scalar(
                 select(NotificationTemplateVersion.id).where(
                     NotificationTemplateVersion.workspace_id == workspace_id,
-                    NotificationTemplateVersion.template_id
-                    == UUID(str(config["template_id"])),
+                    NotificationTemplateVersion.template_id == UUID(str(config["template_id"])),
                     NotificationTemplateVersion.status == "published",
                 )
             )

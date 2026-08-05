@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 class Workspace(TimestampMixin, Base):
     __tablename__ = "workspaces"
+    __table_args__ = (CheckConstraint("status IN ('active', 'disabled')", name="workspace_status"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -32,7 +33,14 @@ class Workspace(TimestampMixin, Base):
 
 class WorkspaceMembership(Base):
     __tablename__ = "workspace_memberships"
-    __table_args__ = (UniqueConstraint("workspace_id", "user_id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'editor', 'analyst', 'viewer')",
+            name="membership_role",
+        ),
+        CheckConstraint("status IN ('active', 'disabled')", name="membership_status"),
+        UniqueConstraint("workspace_id", "user_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(

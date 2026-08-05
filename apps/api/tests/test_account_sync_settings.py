@@ -62,9 +62,7 @@ async def session():
         await s.commit()
         # Detach so the fixture's session is the only writer; reload in tests.
         await s.refresh(account)
-        yield SimpleNamespace(
-            session=s, workspace_id=workspace.id, account_id=account.id
-        )
+        yield SimpleNamespace(session=s, workspace_id=workspace.id, account_id=account.id)
     await engine.dispose()
 
 
@@ -166,9 +164,7 @@ async def test_executor_config_for_applies_override(monkeypatch) -> None:
         async def resolve(workspace_id, platform_key):  # noqa: ANN001
             return "api", {}
 
-    monkeypatch.setattr(
-        "app.services.sync.PlatformCredentialService", _FakeCredService
-    )
+    monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
 
     account = SimpleNamespace(
         workspace_id=uuid4(),
@@ -222,9 +218,7 @@ async def test_executor_config_for_no_override_keeps_workspace(monkeypatch) -> N
         async def resolve(workspace_id, platform_key):  # noqa: ANN001
             return "api", {}
 
-    monkeypatch.setattr(
-        "app.services.sync.PlatformCredentialService", _FakeCredService
-    )
+    monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
 
     account = SimpleNamespace(
         workspace_id=uuid4(),
@@ -261,9 +255,7 @@ async def test_executor_config_for_forces_thumbnail_for_expiring_platforms(
         async def resolve(workspace_id, platform_key):  # noqa: ANN001
             return "api", {}
 
-    monkeypatch.setattr(
-        "app.services.sync.PlatformCredentialService", _FakeCredService
-    )
+    monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
 
     account = SimpleNamespace(
         workspace_id=uuid4(),
@@ -307,9 +299,7 @@ async def test_executor_config_for_explicit_thumbnail_off_respected(
         async def resolve(workspace_id, platform_key):  # noqa: ANN001
             return "api", {}
 
-    monkeypatch.setattr(
-        "app.services.sync.PlatformCredentialService", _FakeCredService
-    )
+    monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
 
     account = SimpleNamespace(
         workspace_id=uuid4(),
@@ -318,4 +308,3 @@ async def test_executor_config_for_explicit_thumbnail_off_respected(
     )
     config = await executor._config_for(account)
     assert config["download"]["write_thumbnail"] is False
-

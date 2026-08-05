@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  LLMModelsResult,
   LLMProviderSettingRecord,
   LLMProviderTestResult,
 } from "@sio/shared-types";
@@ -274,6 +275,16 @@ const LLM_PRESETS: Array<{
   },
 ];
 
+const MODEL_CATALOGS: Record<string, string[]> = {
+  openai: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
+  anthropic: ["claude-sonnet-4-20250514", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
+  gemini: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+  deepseek: ["deepseek-chat", "deepseek-reasoner"],
+  openrouter: ["openai/gpt-4.1-mini", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-flash"],
+  "groq-lpu": ["llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct"],
+  ollama: ["qwen3:8b", "llama3.2", "deepseek-r1:8b"],
+};
+
 /** Detect which preset matches a saved base_url (by hostname). */
 function detectPresetKey(baseUrl: string | undefined): string {
   if (!baseUrl) return "openai";
@@ -317,6 +328,15 @@ export function LLMSettingsPanel() {
       }),
     enabled: Boolean(workspaceId),
   });
+  const modelCatalog = useQuery({
+    queryKey: ["llm-models", workspaceId],
+    queryFn: () =>
+      apiRequest<LLMModelsResult>("/settings/llm/models", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && Boolean(setting.data?.configured),
+    staleTime: 60_000,
+  });
   const canAdmin = ["owner", "admin"].includes(role ?? "");
   const presetDetected = useRef(false);
 
@@ -336,6 +356,13 @@ export function LLMSettingsPanel() {
     () => ({ ...formFromRecord(setting.data), ...formOverrides }),
     [formOverrides, setting.data],
   );
+  const modelOptions = useMemo(() => {
+    const live = modelCatalog.data?.items ?? [];
+    if (live.length) return live.map((item) => ({ id: item.id, name: item.name }));
+    const preset = LLM_PRESETS.find((item) => item.key === selectedPreset);
+    const ids = MODEL_CATALOGS[selectedPreset] ?? (preset ? [preset.default_model] : []);
+    return ids.map((id) => ({ id, name: id }));
+  }, [modelCatalog.data?.items, selectedPreset]);
 
   function update<K extends keyof LLMForm>(key: K, value: LLMForm[K]) {
     setFormOverrides((current) => ({ ...current, [key]: value }));
@@ -610,11 +637,28 @@ export function LLMSettingsPanel() {
             value={form.api_key}
             onChange={(value) => update("api_key", value)}
           />
-          <TextField
-            label="默认模型"
-            value={form.default_model}
-            onChange={(value) => update("default_model", value)}
-          />
+          <label className="flex min-w-0 flex-col gap-1.5 text-sm text-slate-300">
+            <span className="flex items-center justify-between gap-2">
+              <span>默认模型</span>
+              <span className="text-[11px] text-slate-500">
+                {modelCatalog.data?.source === "live" ? "当前 Provider 模型" : "推荐模型"}
+              </span>
+            </span>
+            <select
+              className={inputClass}
+              value={form.default_model}
+              onChange={(event) => update("default_model", event.target.value)}
+            >
+              {!modelOptions.some((item) => item.id === form.default_model) && (
+                <option value={form.default_model}>{form.default_model}（当前）</option>
+              )}
+              {modelOptions.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <TextField
             label="Organization（可选）"
             value={form.organization}

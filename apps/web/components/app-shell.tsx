@@ -49,6 +49,7 @@ import {
 } from "react";
 
 import { apiRequest } from "@/lib/browser-api";
+import { accountDisplayName } from "@/lib/account-label";
 import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Tooltip } from "@/components/ui";
@@ -316,7 +317,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <div className="w-full max-w-sm text-center">
             <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-cyan-400 font-black text-slate-950 shadow-lg shadow-cyan-950/40">
-              SI
+              CI
             </div>
             <p className="mt-4 text-sm text-slate-300">正在加载工作区…</p>
             <div className="mx-auto mt-4 h-1 w-40 overflow-hidden rounded-full bg-slate-800">
@@ -388,14 +389,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <>
       <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-4">
         <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-cyan-400 font-black text-slate-950">
-          SI
+          CI
         </div>
         {!collapsed && (
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-white">
-              Sports Intelligence OS
+              Content Intelligence OS
             </p>
-            <p className="text-[11px] text-slate-500">体育内容情报工作台</p>
+            <p className="text-[11px] text-slate-500">内容智能生产平台</p>
           </div>
         )}
         <button
@@ -454,7 +455,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <WorkspaceContext.Provider value={context}>
-      <div className="min-h-screen bg-transparent text-slate-100">
+      <div className="min-h-screen min-w-0 overflow-x-clip bg-transparent text-slate-100">
         {mobileOpen && (
           <button
             aria-label="关闭导航遮罩"
@@ -605,6 +606,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
             <ThemeToggle />
             <div className="relative hidden md:block">
               <button
@@ -662,7 +664,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="truncate text-sm text-slate-200">
-                                  {account.display_name}
+                                  {accountDisplayName({
+                                    ...account,
+                                    platform_name: account.platform.name,
+                                  })}
                                 </span>
                                 <span className="shrink-0 text-[11px] text-slate-500">
                                   {account.platform.name}
@@ -764,6 +769,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Tooltip>
             <div className="relative">
               <button
+                aria-label="用户菜单"
                 className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 px-2 text-sm hover:bg-slate-900"
                 onClick={() => setUserOpen((value) => !value)}
               >
@@ -799,6 +805,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   </button>
                 </div>
               )}
+            </div>
             </div>
           </header>
           <div className="page-enter min-h-[calc(100vh-4rem)]" key={pathname}>

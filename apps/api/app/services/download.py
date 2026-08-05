@@ -17,9 +17,7 @@ class DownloadService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(
-        self, workspace_id: UUID, payload: DownloadCreate
-    ) -> DownloadRead:
+    async def create(self, workspace_id: UUID, payload: DownloadCreate) -> DownloadRead:
         now = datetime.now(UTC)
         download = Download(
             workspace_id=workspace_id,
@@ -37,6 +35,7 @@ class DownloadService:
                 "subtitle_langs": payload.subtitle_langs,
                 "write_thumbnail": payload.write_thumbnail,
                 "write_info_json": payload.write_info_json,
+                "save_to_works": payload.save_to_works,
             },
             created_at=now,
             updated_at=now,
@@ -46,16 +45,12 @@ class DownloadService:
         await self._session.refresh(download)
         return DownloadRead.model_validate(download)
 
-    async def list(
-        self, workspace_id: UUID, *, page: int = 1, page_size: int = 20
-    ) -> DownloadPage:
+    async def list(self, workspace_id: UUID, *, page: int = 1, page_size: int = 20) -> DownloadPage:
         conditions = [Download.workspace_id == workspace_id]
         total = int(
             (
                 await self._session.scalar(
-                    select(func.count())
-                    .select_from(Download)
-                    .where(*conditions)
+                    select(func.count()).select_from(Download).where(*conditions)
                 )
             )
             or 0

@@ -2,10 +2,25 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download as DownloadIcon, Film, FileJson, Captions } from "lucide-react";
+import {
+  Captions,
+  Download as DownloadIcon,
+  FileJson,
+  Film,
+  Link2,
+  Loader2,
+} from "lucide-react";
 import { useWorkspace } from "@/components/app-shell";
+import { ExternalImage } from "@/components/external-image";
 import { apiRequest } from "@/lib/browser-api";
-import { Badge, buttonClass, inputClass, Panel } from "@/components/ui";
+import {
+  Badge,
+  PageHeader,
+  Panel,
+  buttonClass,
+  inputClass,
+  secondaryButtonClass,
+} from "@/components/ui";
 import { formatDate } from "@/lib/format";
 
 interface DownloadMedia {
@@ -28,6 +43,18 @@ interface DownloadRecord {
   updated_at: string;
 }
 
+interface DownloadPreview {
+  url: string;
+  platform: string | null;
+  external_id: string | null;
+  title: string | null;
+  uploader: string | null;
+  thumbnail: string | null;
+  duration_seconds: number | null;
+  description: string | null;
+  subtitle_languages: string[];
+}
+
 function statusBadge(status: string) {
   if (status === "done")
     return <Badge tone="success">已完成</Badge>;
@@ -41,6 +68,7 @@ export default function DownloadPage() {
   const { workspaceId } = useWorkspace();
   const queryClient = useQueryClient();
   const [url, setUrl] = useState("");
+  const [preview, setPreview] = useState<DownloadPreview | null>(null);
   const [downloadVideo, setDownloadVideo] = useState(true);
   const [videoFormat, setVideoFormat] = useState("best");
   const [writeSubtitles, setWriteSubtitles] = useState(true);
@@ -48,6 +76,7 @@ export default function DownloadPage() {
   const [subtitleLangs, setSubtitleLangs] = useState("zh.*,en.*");
   const [writeThumbnail, setWriteThumbnail] = useState(true);
   const [writeInfoJson, setWriteInfoJson] = useState(false);
+  const [saveToWorks, setSaveToWorks] = useState(false);
 
   const list = useQuery({
     queryKey: ["downloads", workspaceId],
@@ -57,6 +86,16 @@ export default function DownloadPage() {
       }),
     enabled: Boolean(workspaceId),
     refetchInterval: 4000,
+  });
+
+  const resolve = useMutation({
+    mutationFn: async () =>
+      apiRequest<DownloadPreview>("/downloads/preview", {
+        method: "POST",
+        workspaceId: workspaceId!,
+        body: JSON.stringify({ url: url.trim() }),
+      }),
+    onSuccess: (result) => setPreview(result),
   });
 
   const create = useMutation({
@@ -74,35 +113,97 @@ export default function DownloadPage() {
           subtitle_langs: subtitleLangs,
           write_thumbnail: writeThumbnail,
           write_info_json: writeInfoJson,
+          save_to_works: saveToWorks,
         }),
       });
     },
     onSuccess: () => {
-      setUrl("");
       queryClient.invalidateQueries({ queryKey: ["downloads", workspaceId] });
+      setUrl("");
+      setPreview(null);
+      resolve.reset();
     },
   });
 
   return (
-    <main className="mx-auto max-w-[1100px] space-y-6 px-4 py-7 lg:px-8">
-      <div>
-        <h1 className="text-2xl font-semibold text-white">视频 / 字幕下载</h1>
-        <p className="mt-1 text-sm text-slate-400">
-          复用系统 yt-dlp 能力，支持尽可能多的视频网站（YouTube、TikTok、抖音、B站等）。
-          提交链接后在后台下载视频与字幕，完成后可在此直接预览与下载。
-        </p>
-      </div>
+    <main className="mx-auto max-w-[1280px] space-y-6 px-4 py-7 lg:px-8">
+      <PageHeader
+        eyebrow="MEDIA WORKSPACE"
+        title="视频下载"
+        description="先解析公开地址，再选择视频、字幕、封面和清晰度。任务提交后异步执行，页面不会被下载过程锁死。"
+      />
 
       <Panel className="p-5">
-        <h2 className="font-medium text-white">新建下载任务</h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-medium text-white">解析视频地址</h2>
+            <p className="mt-1 text-sm text-slate-500">先获取公开页面信息，再选择需要保存的媒体资源。</p>
+          </div>
+          {preview && <Badge tone="success">地址已解析</Badge>}
+        </div>
         <div className="mt-4 space-y-4">
-          <input
-            className={`${inputClass} w-full`}
-            placeholder="粘贴视频链接，例如 https://www.youtube.com/watch?v=..."
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              className={`${inputClass} min-w-0 flex-1`}
+              placeholder="粘贴视频链接，例如 https://www.youtube.com/watch?v=..."
+              value={url}
+              onChange={(e) => {
+                setUrl(e.target.value);
+                setPreview(null);
+                resolve.reset();
+              }}
+            />
+            <button
+              className={`${secondaryButtonClass} shrink-0 sm:min-w-28`}
+              disabled={!url.trim() || resolve.isPending}
+              onClick={() => resolve.mutate()}
+              type="button"
+            >
+              {resolve.isPending ? <Loader2 size={15} className="animate-spin" /> : <Link2 size={15} />}
+              {resolve.isPending ? "解析中…" : "解析地址"}
+            </button>
+          </div>
+          {resolve.isError && (
+            <p className="rounded-lg border border-rose-900/50 bg-rose-950/30 p-3 text-sm text-rose-300">
+              {resolve.error instanceof Error ? resolve.error.message : "地址解析失败，请检查链接或稍后重试"}
+            </p>
+          )}
+          {preview && (
+            <div className="grid overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40 md:grid-cols-[minmax(220px,320px)_1fr]">
+              <div className="aspect-video bg-slate-900 md:aspect-auto">
+                {preview.thumbnail ? (
+                  <ExternalImage
+                    src={preview.thumbnail}
+                    alt={preview.title ?? "视频封面"}
+                    className="h-full min-h-44 w-full object-cover"
+                  />
+                ) : (
+                  <div className="grid h-full min-h-44 place-items-center text-slate-600">
+                    <Film size={38} />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 p-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone="info">{preview.platform ?? "视频"}</Badge>
+                  {preview.uploader && <span className="text-xs text-slate-500">{preview.uploader}</span>}
+                </div>
+                <h3 className="mt-2 line-clamp-2 text-lg font-semibold text-white">
+                  {preview.title || "未读取到标题"}
+                </h3>
+                <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-400">
+                  {preview.description || "源站未提供简介。"}
+                </p>
+                <div className="mt-3 flex flex-wrap gap-3 text-xs text-slate-500">
+                  {preview.duration_seconds != null && <span>时长 {Math.round(preview.duration_seconds)} 秒</span>}
+                  {preview.subtitle_languages.length > 0 && (
+                    <span>字幕 {preview.subtitle_languages.slice(0, 6).join("、")}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          <div className={preview ? "grid gap-4 md:grid-cols-2 xl:grid-cols-3" : "hidden"}>
             <label className="flex items-center gap-2 text-sm text-slate-300">
               <input
                 type="checkbox"
@@ -168,15 +269,25 @@ export default function DownloadPage() {
               />
               下载 info.json
             </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={saveToWorks}
+                onChange={(e) => setSaveToWorks(e.target.checked)}
+              />
+              下载后保存至作品列表
+            </label>
           </div>
           <button
             className={`${buttonClass} w-full sm:w-auto`}
-            disabled={!url.trim() || create.isPending}
+            disabled={!url.trim() || !preview}
             onClick={() => create.mutate()}
+            type="button"
           >
             <DownloadIcon size={16} />
-            {create.isPending ? "提交中…" : "开始下载"}
+            {create.isPending ? "任务已提交，可继续添加" : "提交异步下载"}
           </button>
+          {!preview && <p className="text-sm text-slate-500">解析成功后才能提交下载任务。</p>}
           {create.isError && (
             <p className="text-sm text-rose-300">
               {create.error instanceof Error ? create.error.message : "提交失败"}

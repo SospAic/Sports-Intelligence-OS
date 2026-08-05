@@ -78,9 +78,7 @@ def extract_username(locator: str) -> str:
         parsed = urlparse(value)
         host = (parsed.hostname or "").lower()
         if "tiktok.com" not in host:
-            raise AdapterConfigurationError(
-                "TikTok URL must point to tiktok.com"
-            )
+            raise AdapterConfigurationError("TikTok URL must point to tiktok.com")
         path = parsed.path.strip("/")
         if path.startswith("@"):
             username = path.split("/", 1)[0].lstrip("@")
@@ -309,11 +307,7 @@ class TikTokAdapter(PlatformAdapter):
 
             if not response.is_success:
                 error = self._map_http_error(response)
-                if (
-                    isinstance(error, AuthenticationError)
-                    and _allow_token_refresh
-                    and attempt == 1
-                ):
+                if isinstance(error, AuthenticationError) and _allow_token_refresh and attempt == 1:
                     refreshed = await self._refresh_access_token(ctx.config)
                     if refreshed is not None:
                         access_token = cast(str, refreshed["access_token"])
@@ -440,9 +434,7 @@ class TikTokAdapter(PlatformAdapter):
             country=None,
             language=None,
             is_verified=(
-                user.get("is_verified")
-                if isinstance(user.get("is_verified"), bool)
-                else None
+                user.get("is_verified") if isinstance(user.get("is_verified"), bool) else None
             ),
             source_kind="live",
             provider=self.key,
@@ -456,9 +448,7 @@ class TikTokAdapter(PlatformAdapter):
             },
         )
 
-    async def _fetch_user_info(
-        self, ctx: AdapterCallContext
-    ) -> dict[str, Any]:
+    async def _fetch_user_info(self, ctx: AdapterCallContext) -> dict[str, Any]:
         fields = [
             "username",
             "display_name",
@@ -485,9 +475,7 @@ class TikTokAdapter(PlatformAdapter):
             raise AdapterNotFoundError("TikTok user info response missing user object")
         return cast(dict[str, Any], user)
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         target_username = extract_username(locator)
         user = await self._fetch_user_info(ctx)
         api_username = str(user.get("username") or "")
@@ -497,16 +485,12 @@ class TikTokAdapter(PlatformAdapter):
             "TikTok Display API can only resolve the account authorized by the access token"
         )
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         user = await self._fetch_user_info(ctx)
         api_username = str(user.get("username") or "")
         if api_username and api_username.lower() == external_id.lower():
             return self._map_account(user, ctx.observed_at)
-        raise PermissionDeniedError(
-            "TikTok Display API returned a different authorized account"
-        )
+        raise PermissionDeniedError("TikTok Display API returned a different authorized account")
 
     async def list_contents(
         self,
@@ -523,28 +507,24 @@ class TikTokAdapter(PlatformAdapter):
             try:
                 cursor_int = int(cursor)
             except (TypeError, ValueError) as exc:
-                raise AdapterConfigurationError(
-                    "TikTok cursor must be a numeric string"
-                ) from exc
+                raise AdapterConfigurationError("TikTok cursor must be a numeric string") from exc
         fields = [
-                "id",
-                "title",
-                "create_time",
-                "duration",
-                "cover_image_url",
-                "embed_link",
-                "like_count",
-                "comment_count",
-                "share_count",
-                "view_count",
-            ]
+            "id",
+            "title",
+            "create_time",
+            "duration",
+            "cover_image_url",
+            "embed_link",
+            "like_count",
+            "comment_count",
+            "share_count",
+            "view_count",
+        ]
         body: dict[str, Any] = {
             "max_count": max_count,
             "cursor": cursor_int,
         }
-        payload = await self._request(
-            ctx, "video/list/", body, params={"fields": ",".join(fields)}
-        )
+        payload = await self._request(ctx, "video/list/", body, params={"fields": ",".join(fields)})
         data = payload.get("data")
         if not isinstance(data, dict):
             raise AdapterContractError("TikTok video list response missing data object")
@@ -617,9 +597,7 @@ class TikTokAdapter(PlatformAdapter):
             },
         )
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         fields = [
             "id",
             "title",

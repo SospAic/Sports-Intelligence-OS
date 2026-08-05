@@ -32,6 +32,7 @@ from app.models.topics import SavedTopic
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+
 class SearchResult(BaseModel):
     """A single search result with relevance metadata."""
 
@@ -71,17 +72,19 @@ class SearchPage(BaseModel):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-ALL_ENTITY_TYPES: frozenset[str] = frozenset({
-    "account",
-    "content",
-    "article",
-    "event",
-    "rule",
-    "automation_rule",
-    "topic",
-    "generation_run",
-    "notification_channel",
-})
+ALL_ENTITY_TYPES: frozenset[str] = frozenset(
+    {
+        "account",
+        "content",
+        "article",
+        "event",
+        "rule",
+        "automation_rule",
+        "topic",
+        "generation_run",
+        "notification_channel",
+    }
+)
 
 _CJK_PATTERN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
@@ -183,6 +186,7 @@ def _ts_rank(query: str, *columns: Any) -> Any:
 # Service
 # ---------------------------------------------------------------------------
 
+
 class SearchService:
     """Cross-domain full-text search backed by PostgreSQL tsvector (with an
     ``ilike`` fallback for CJK queries that the English dictionary cannot segment).
@@ -229,11 +233,7 @@ class SearchService:
         page = max(1, page)
         page_size = max(1, min(page_size, 100))
 
-        wanted = (
-            frozenset(entity_types) & ALL_ENTITY_TYPES
-            if entity_types
-            else ALL_ENTITY_TYPES
-        )
+        wanted = frozenset(entity_types) & ALL_ENTITY_TYPES if entity_types else ALL_ENTITY_TYPES
 
         hits: list[_RawHit] = []
 
@@ -294,9 +294,9 @@ class SearchService:
                 select(
                     Account,
                     Platform.name.label("platform_name"),
-                    _ts_rank(
-                        query, Account.display_name, Account.external_id, Platform.name
-                    ).label("rank"),
+                    _ts_rank(query, Account.display_name, Account.external_id, Platform.name).label(
+                        "rank"
+                    ),
                 )
                 .join(Platform, Account.platform_id == Platform.id)
                 .where(Account.workspace_id == workspace_id)
@@ -498,15 +498,22 @@ class SearchService:
                 select(
                     TopicEvent,
                     _ts_rank(
-                        query, TopicEvent.title, TopicEvent.sport,
-                        TopicEvent.league, TopicEvent.summary,
+                        query,
+                        TopicEvent.title,
+                        TopicEvent.sport,
+                        TopicEvent.league,
+                        TopicEvent.summary,
                     ).label("rank"),
                 )
                 .where(TopicEvent.workspace_id == workspace_id)
                 .where(
                     _ts_match(
-                        query, TopicEvent.title, TopicEvent.sport,
-                        TopicEvent.league, TopicEvent.status, TopicEvent.summary,
+                        query,
+                        TopicEvent.title,
+                        TopicEvent.sport,
+                        TopicEvent.league,
+                        TopicEvent.status,
+                        TopicEvent.summary,
                     )
                 )
                 .order_by(text("rank DESC"))
@@ -803,9 +810,7 @@ class SearchService:
             )
         return hits
 
-    async def _search_notification_channels(
-        self, workspace_id: UUID, query: str
-    ) -> list[_RawHit]:
+    async def _search_notification_channels(self, workspace_id: UUID, query: str) -> list[_RawHit]:
         like = f"%{query}%"
         if self._uses_tsvector(query):
             stmt = (

@@ -259,7 +259,7 @@ class OpenAICompatibleProvider(LLMProvider):
                         # SSE comment, skip
                         continue
                     if line.startswith("data:"):
-                        data_str = line[len("data:"):].strip()
+                        data_str = line[len("data:") :].strip()
                     else:
                         continue
                     if data_str == "[DONE]":
@@ -325,6 +325,51 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"LLM connection test was rejected with status {response.status_code}"
             )
         return LLMHealth(status="ok", detail="Authentication and /models endpoint verified")
+
+    async def list_models(self) -> list[dict[str, str | None]]:
+        await self.validate_config({})
+        assert self.base_url is not None
+        if not self._is_internal_host():
+            try:
+                await ensure_public_endpoint(self.base_url, allow_secret_query=False)
+            except ValueError as exc:
+                raise LLMProviderConfigurationError(str(exc)) from exc
+            except OSError as exc:
+                raise LLMProviderTransientError(str(exc)) from exc
+        headers = {**self.custom_headers, "Authorization": f"Bearer {self._api_key}"}
+        if self.organization:
+            headers["OpenAI-Organization"] = self.organization
+        if self.project:
+            headers["OpenAI-Project"] = self.project
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds, follow_redirects=False
+            ) as client:
+                response = await client.get(f"{self.base_url}/models", headers=headers)
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            raise LLMProviderTransientError("LLM model list request failed") from exc
+        if response.status_code in {401, 403}:
+            raise LLMProviderAuthenticationError("LLM credentials were rejected")
+        if response.status_code >= 500:
+            raise LLMProviderTransientError("LLM service is unavailable")
+        if response.status_code >= 400:
+            raise LLMProviderContractError(
+                f"LLM model list request was rejected with status {response.status_code}"
+            )
+        try:
+            payload = response.json()
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            return [
+                {
+                    "id": str(row["id"]),
+                    "name": str(row.get("name") or row["id"]),
+                    "owned_by": str(row["owned_by"]) if row.get("owned_by") else None,
+                }
+                for row in rows
+                if isinstance(row, dict) and row.get("id")
+            ]
+        except (TypeError, ValueError, KeyError) as exc:
+            raise LLMProviderContractError("LLM model list response was invalid") from exc
 
     async def aclose(self) -> None:
         return None

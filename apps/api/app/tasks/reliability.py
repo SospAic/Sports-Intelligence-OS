@@ -74,9 +74,7 @@ async def _calculate_dashboard_stats() -> int:
         async with session_factory() as session:
             workspace_ids = list(
                 (
-                    await session.scalars(
-                        select(Workspace.id).where(Workspace.status == "active")
-                    )
+                    await session.scalars(select(Workspace.id).where(Workspace.status == "active"))
                 ).all()
             )
             service = DashboardStatsService(session)

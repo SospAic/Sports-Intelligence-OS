@@ -25,6 +25,8 @@ from app.providers.registry import ProviderRegistry
 from app.schemas.settings import (
     DEFAULT_SYNC_SETTINGS_CONFIG,
     ConfigFieldDescriptor,
+    LLMModelOption,
+    LLMModelsRead,
     LLMProviderSettingRead,
     LLMProviderSettingUpdate,
     LLMProviderTestRead,
@@ -513,7 +515,10 @@ class SettingsService:
                             await self.effective_sync_task_max_retries(),
                             "number",
                             "SIO_SYNC_TASK_MAX_RETRIES",
-                            "Celery 同步任务重试上限；可在「设置中心 → 同步」页调整，立即生效无需重启。",
+                            (
+                                "Celery 同步任务重试上限；可在「设置中心 → 同步」页调整，"
+                                "立即生效无需重启。"
+                            ),
                             0,
                             10,
                             restart_required=False,
@@ -720,9 +725,7 @@ class SettingsService:
         )
         return row.value_json if row is not None else None
 
-    async def set_runtime_override(
-        self, key: str, value: Any, actor_id: UUID | None
-    ) -> None:
+    async def set_runtime_override(self, key: str, value: Any, actor_id: UUID | None) -> None:
         """Upsert a global runtime override (effective without restart)."""
 
         row = await self.session.scalar(
@@ -907,6 +910,29 @@ class SettingsService:
             )
             await self.session.commit()
         return LLMProviderTestRead(status=health.status, detail=health.detail, tested_at=tested_at)
+
+    async def llm_models(self, workspace_id: UUID) -> LLMModelsRead:
+        provider = await self.resolve_llm_provider(workspace_id, "openai_compatible")
+        if not isinstance(provider, OpenAICompatibleProvider) or not provider.configured:
+            return LLMModelsRead(
+                provider_key="openai_compatible",
+                source="unavailable",
+                detail="请先保存可用的 Base URL 与 API Key",
+            )
+        try:
+            rows = await provider.list_models()
+        except Exception as exc:
+            return LLMModelsRead(
+                provider_key="openai_compatible",
+                source="unavailable",
+                detail=str(exc),
+            )
+        return LLMModelsRead(
+            provider_key="openai_compatible",
+            source="live",
+            items=[LLMModelOption.model_validate(row) for row in rows],
+            detail="已从当前 Provider 的 /models 接口读取",
+        )
 
     async def resolve_llm_provider(self, workspace_id: UUID, key: str) -> LLMProvider:
         if key != "openai_compatible":

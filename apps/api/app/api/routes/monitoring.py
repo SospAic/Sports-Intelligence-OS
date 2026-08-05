@@ -31,11 +31,11 @@ from app.schemas.monitoring import (
     AccountSort,
     AccountSyncSettingsOverride,
     AccountUpdate,
+    CommentRead,
     ContentCalendarResponse,
     ContentCreate,
     ContentPage,
     ContentRead,
-    CommentRead,
     ContentSnapshotPage,
     ContentSort,
     ContentUpdate,
@@ -231,9 +231,7 @@ async def batch_sync_accounts(
         except SyncError as exc:
             failed += 1
             items.append(
-                AccountBatchSyncItem(
-                    account_id=account_id, status="failed", detail=str(exc)
-                )
+                AccountBatchSyncItem(account_id=account_id, status="failed", detail=str(exc))
             )
             continue
         if created:
@@ -251,13 +249,9 @@ async def batch_sync_accounts(
                 continue
         accepted += 1
         items.append(
-            AccountBatchSyncItem(
-                account_id=account_id, status="accepted", sync_run_id=run.id
-            )
+            AccountBatchSyncItem(account_id=account_id, status="accepted", sync_run_id=run.id)
         )
-    return AccountBatchSyncResult(
-        accepted=accepted, skipped=skipped, failed=failed, items=items
-    )
+    return AccountBatchSyncResult(accepted=accepted, skipped=skipped, failed=failed, items=items)
 
 
 @router.get("/accounts/{account_id}", response_model=AccountRead)
@@ -275,9 +269,7 @@ async def get_account_sync_settings(
     account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
 ) -> AccountSyncSettingsOverride | None:
     """Return the account's per-account sync settings override (None = inherit)."""
-    return await MonitoringService(db).get_account_sync_settings(
-        workspace.workspace_id, account_id
-    )
+    return await MonitoringService(db).get_account_sync_settings(workspace.workspace_id, account_id)
 
 
 @router.patch(
@@ -556,9 +548,7 @@ async def contents_calendar(
     """Per-day calendar aggregation of published works for a given month."""
     return await MonitoringService(db).contents_calendar(
         workspace.workspace_id,
-        filters=ContentFilters(
-            platform=platform, account=account, query=query
-        ),
+        filters=ContentFilters(platform=platform, account=account, query=query),
         year=year,
         month=month,
     )
@@ -601,9 +591,7 @@ async def list_contents(
 
 
 @router.get("/contents/tags", response_model=list[str])
-async def list_content_tags(
-    workspace: CurrentWorkspace, db: DatabaseSession
-) -> list[str]:
+async def list_content_tags(workspace: CurrentWorkspace, db: DatabaseSession) -> list[str]:
     """Distinct tags across the workspace's works, for the multi-select filter."""
     return await MonitoringService(db).list_content_tags(workspace.workspace_id)
 
@@ -661,13 +649,17 @@ async def list_content_comments(
 
 @router.post("/contents/{content_id}/comments/collect", status_code=202)
 async def collect_content_comments(
-    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: CsrfProtectedAuth,
 ) -> dict[str, str]:
     """Trigger a best-effort comment collection for a content item.
 
     Dispatched to the worker so the HTTP request returns immediately; the
     result is visible via ``GET /contents/{content_id}/comments`` once fetched.
     """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     from app.tasks.monitoring import collect_content_comments as collect_task
 
     await MonitoringService(db).get_content(workspace.workspace_id, content_id)
@@ -687,9 +679,7 @@ async def create_content(
 ) -> ContentRead:
     """Manually create a content item under an existing account."""
     require_workspace_role(workspace, {"owner", "admin", "editor"})
-    return await MonitoringService(db).create_content(
-        workspace.workspace_id, auth.user.id, payload
-    )
+    return await MonitoringService(db).create_content(workspace.workspace_id, auth.user.id, payload)
 
 
 @router.patch("/contents/{content_id}", response_model=ContentRead)

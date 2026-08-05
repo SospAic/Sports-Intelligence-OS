@@ -88,6 +88,7 @@ def normalize_for_comparison(title: str) -> str:
 # Entity overlap counting
 # ---------------------------------------------------------------------------
 
+
 def count_entity_overlap(
     entities_a: list[ExtractedEntity],
     entities_b: list[ExtractedEntity],
@@ -104,6 +105,7 @@ def count_entity_overlap(
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
+
 
 class CrossPlatformClusterService:
     """Cross-platform same-topic clustering service."""
@@ -212,7 +214,7 @@ class CrossPlatformClusterService:
 
         # Compare videos across different platforms
         for i, video_a in enumerate(videos):
-            for video_b in videos[i + 1:]:
+            for video_b in videos[i + 1 :]:
                 # Only cross-platform comparisons
                 if video_a.platform == video_b.platform:
                     continue
@@ -300,9 +302,7 @@ class CrossPlatformClusterService:
 
         # Determine if cross-language
         is_cross_lang = (
-            source_lang != target_lang
-            and source_lang != "mixed"
-            and target_lang != "mixed"
+            source_lang != target_lang and source_lang != "mixed" and target_lang != "mixed"
         )
 
         # Apply thresholds
@@ -368,11 +368,7 @@ class CrossPlatformClusterService:
         Cross-language matches are penalized to reflect higher uncertainty.
         """
         # Base confidence from weighted signals
-        base = (
-            0.35 * title_sim
-            + 0.40 * entity_sim
-            + 0.25 * min(entity_overlap / 4.0, 1.0)
-        )
+        base = 0.35 * title_sim + 0.40 * entity_sim + 0.25 * min(entity_overlap / 4.0, 1.0)
 
         # Cross-language penalty: reduce confidence by 20%
         if is_cross_lang:
@@ -414,9 +410,7 @@ class CrossPlatformClusterService:
         items = list((await self.session.scalars(stmt)).all())
         return items, total
 
-    async def confirm_link(
-        self, workspace_id: UUID, link_id: UUID
-    ) -> CrossPlatformLink:
+    async def confirm_link(self, workspace_id: UUID, link_id: UUID) -> CrossPlatformLink:
         """Confirm a suggested cross-platform link."""
         from fastapi import HTTPException
 
@@ -432,9 +426,7 @@ class CrossPlatformClusterService:
         await self.session.flush()
         return link
 
-    async def reject_link(
-        self, workspace_id: UUID, link_id: UUID
-    ) -> CrossPlatformLink:
+    async def reject_link(self, workspace_id: UUID, link_id: UUID) -> CrossPlatformLink:
         """Reject a suggested cross-platform link."""
         from fastapi import HTTPException
 

@@ -151,9 +151,7 @@ class InfrastructureContractTests(unittest.TestCase):
         self.assertIn('@router.post("/events/merge"', routes)
         self.assertIn("enabled=False", seed)
         self.assertIn("this never downloads or stores articles", seed)
-        self.assertIn(
-            "--queues=maintenance,monitoring,news", self.read("docker-compose.yml")
-        )
+        self.assertIn("--queues=maintenance,monitoring,news", self.read("docker-compose.yml"))
 
     def test_prompt_06_editorial_rule_contract_is_present(self) -> None:
         model = self.read("apps/api/app/models/editorial_rules.py")
@@ -291,8 +289,8 @@ class InfrastructureContractTests(unittest.TestCase):
         self.assertIn("GenericWebhookProvider", integration)
         for flow in ("LoginForm", "RuleEditor", "PromptEditor", "GenerationForm"):
             self.assertIn(flow, frontend)
-        self.assertIn('cd apps/api && alembic upgrade head', makefile)
-        self.assertIn('cd apps/api && pytest', makefile)
+        self.assertIn("cd apps/api && alembic upgrade head", makefile)
+        self.assertIn("cd apps/api && pytest", makefile)
 
     def test_prompt_11_hardening_contract_is_present(self) -> None:
         celery = self.read("apps/api/app/tasks/celery_app.py")

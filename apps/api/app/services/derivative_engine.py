@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.trends import DerivativeTopic, TrendTopic
+from app.providers.llm.base import LLMProvider
 from app.providers.registry import ProviderRegistry
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import yt_search
@@ -82,7 +83,7 @@ class DerivativeService:
     def __init__(
         self,
         session: AsyncSession,
-        llm_providers: ProviderRegistry,
+        llm_providers: ProviderRegistry[LLMProvider],
         settings: Settings | None = None,
     ) -> None:
         self.session = session
@@ -97,16 +98,12 @@ class DerivativeService:
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[DerivativeTopic], int]:
-        stmt = select(DerivativeTopic).where(
-            DerivativeTopic.workspace_id == workspace_id
-        )
+        stmt = select(DerivativeTopic).where(DerivativeTopic.workspace_id == workspace_id)
         if topic_id is not None:
             stmt = stmt.where(DerivativeTopic.source_topic_id == topic_id)
         if kind is not None:
             stmt = stmt.where(DerivativeTopic.kind == kind)
-        total = await self.session.scalar(
-            select(func.count()).select_from(stmt.subquery())
-        )
+        total = await self.session.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = await self.session.scalars(
             stmt.order_by(DerivativeTopic.confidence.desc(), DerivativeTopic.created_at.desc())
             .offset((page - 1) * page_size)
@@ -191,10 +188,8 @@ class DerivativeService:
         existing: list[DerivativeTopic],
         results: list[dict[str, Any]],
     ) -> list[DerivativeTopic]:
-        existing_angles = [r.angle for r in existing]
-        sample_titles = [
-            i.get("title") for i in results[:12] if i.get("title")
-        ]
+        existing_angles = [str(r.angle) for r in existing if r.angle]
+        sample_titles = [str(i["title"]) for i in results[:12] if i.get("title") is not None]
         system_prompt = (
             "你是体育/短视频热点衍生内容策划专家。给定一条平台热点话题、"
             "其已经在平台上存在的衍生角度，以及若干样本标题，请预测尚未被"
@@ -206,9 +201,9 @@ class DerivativeService:
             f"当前热度分：{topic.heat_score}\n"
             f"已存在的衍生角度：{', '.join(existing_angles) if existing_angles else '（无）'}\n"
             f"样本标题：\n- " + "\n- ".join(sample_titles) + "\n\n"
-            "请输出 JSON：{\"derivatives\": [{\"title\": str, \"angle\": str, "
-            "\"description\": str, \"predicted_heat_score\": int(0-100), "
-            "\"rationale\": str}]}，给出 5-8 个高潜力且尚未饱和的衍生角度。"
+            '请输出 JSON：{"derivatives": [{"title": str, "angle": str, '
+            '"description": str, "predicted_heat_score": int(0-100), '
+            '"rationale": str}]}，给出 5-8 个高潜力且尚未饱和的衍生角度。'
         )
         data = await call_json_llm(
             self.session,

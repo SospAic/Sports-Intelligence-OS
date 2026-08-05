@@ -30,7 +30,7 @@ function parseSubtitles(raw: string): Cue[] {
   for (const block of blocks) {
     const lines = block.split(/\r?\n/).filter((l) => l.trim().length > 0);
     if (lines.length === 0) continue;
-    let timingIdx = lines.findIndex((l) => l.includes("-->"));
+    const timingIdx = lines.findIndex((l) => l.includes("-->"));
     if (timingIdx === -1) continue;
     const timingLine = lines[timingIdx];
     if (!timingLine) continue;
@@ -83,8 +83,10 @@ export function SubtitleVideoPlayer({
   const { workspaceId } = useWorkspace();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [currentTime, setCurrentTime] = useState(0);
-  const [primaryLang, setPrimaryLang] = useState<string>("");
-  const [secondaryLang, setSecondaryLang] = useState<string>("");
+  const [primaryLang, setPrimaryLang] = useState<string>(() => subtitles[0]?.lang ?? "");
+  const [secondaryLang, setSecondaryLang] = useState<string>(
+    () => subtitles[1]?.lang ?? "",
+  );
   const [showTimeline, setShowTimeline] = useState(false);
   const [cues, setCues] = useState<Record<string, Cue[]>>({});
   const [loadingLang, setLoadingLang] = useState<string | null>(null);
@@ -119,18 +121,13 @@ export function SubtitleVideoPlayer({
   );
 
   useEffect(() => {
-    if (primaryLang) loadLang(primaryLang);
+    if (!primaryLang) return;
+    queueMicrotask(() => void loadLang(primaryLang));
   }, [primaryLang, loadLang]);
   useEffect(() => {
-    if (secondaryLang) loadLang(secondaryLang);
+    if (!secondaryLang) return;
+    queueMicrotask(() => void loadLang(secondaryLang));
   }, [secondaryLang, loadLang]);
-
-  // default both dropdowns to the first two distinct languages
-  useEffect(() => {
-    if (langs.length > 0 && !primaryLang) setPrimaryLang(langs[0] ?? "");
-    if (langs.length > 1 && !secondaryLang) setSecondaryLang(langs[1] ?? "");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [langs.join("|")]);
 
   const onTimeUpdate = () => {
     if (videoRef.current) setCurrentTime(videoRef.current.currentTime);

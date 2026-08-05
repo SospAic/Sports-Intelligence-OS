@@ -87,9 +87,7 @@ class NewsRepository:
             conditions.append(Source.enabled.is_(enabled))
         if not include_quarantined:
             quarantine_value = Source.config_json["quarantined"].as_boolean()
-            conditions.append(
-                or_(quarantine_value.is_(None), quarantine_value.is_(False))
-            )
+            conditions.append(or_(quarantine_value.is_(None), quarantine_value.is_(False)))
         items = list(
             (
                 await self.session.scalars(
@@ -179,6 +177,10 @@ class NewsRepository:
         page_size: int,
     ) -> tuple[list[ArticleRow], int]:
         conditions = [Article.workspace_id == workspace_id]
+        # Disabled sources remain available through an explicit source filter
+        # for history/audit, but must not pollute the default news feed.
+        if filters.source is None:
+            conditions.append(Source.enabled.is_(True))
         if filters.published_from is not None:
             conditions.append(Article.published_at >= filters.published_from)
         if filters.published_to is not None:
@@ -297,6 +299,14 @@ class NewsRepository:
             TopicEvent.workspace_id == workspace_id,
             TopicEvent.status != "closed",
             TopicEvent.last_update_time >= updated_after,
+            select(Article.id)
+            .join(EventArticle, EventArticle.article_id == Article.id)
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                EventArticle.event_id == TopicEvent.id,
+                Source.enabled.is_(True),
+            )
+            .exists(),
         ]
         if sport:
             conditions.append(
@@ -326,7 +336,17 @@ class NewsRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[TopicEvent], int]:
-        conditions = [TopicEvent.workspace_id == workspace_id]
+        conditions = [
+            TopicEvent.workspace_id == workspace_id,
+            select(Article.id)
+            .join(EventArticle, EventArticle.article_id == Article.id)
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                EventArticle.event_id == TopicEvent.id,
+                Source.enabled.is_(True),
+            )
+            .exists(),
+        ]
         if filters.updated_from:
             conditions.append(TopicEvent.last_update_time >= filters.updated_from)
         if filters.updated_to:

@@ -15,9 +15,7 @@ def _items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def main() -> int:
     email = os.getenv("SIO_ACCEPTANCE_EMAIL") or os.getenv("SIO_BOOTSTRAP_ADMIN_EMAIL")
-    password = os.getenv("SIO_ACCEPTANCE_PASSWORD") or os.getenv(
-        "SIO_BOOTSTRAP_ADMIN_PASSWORD"
-    )
+    password = os.getenv("SIO_ACCEPTANCE_PASSWORD") or os.getenv("SIO_BOOTSTRAP_ADMIN_PASSWORD")
     base_url = os.getenv("SIO_ACCEPTANCE_BASE_URL", "http://127.0.0.1:8000/api/v1")
     if not email or not password:
         print("FAIL  acceptance credentials are not configured", file=sys.stderr)
@@ -37,9 +35,7 @@ def main() -> int:
         read_headers = {"X-Workspace-Id": workspace_id}
         write_headers = {**read_headers, "X-CSRF-Token": csrf}
 
-        sources_response = client.get(
-            "/news/sources?page=1&page_size=100", headers=read_headers
-        )
+        sources_response = client.get("/news/sources?page=1&page_size=100", headers=read_headers)
         sources_response.raise_for_status()
         sources = [
             item
@@ -59,9 +55,7 @@ def main() -> int:
             else:
                 print(f"WARN  news sync queue {source['name']}: HTTP {response.status_code}")
 
-        accounts_response = client.get(
-            "/accounts?page=1&page_size=100", headers=read_headers
-        )
+        accounts_response = client.get("/accounts?page=1&page_size=100", headers=read_headers)
         accounts_response.raise_for_status()
         queued_accounts = 0
         for account in _items(accounts_response.json()):
@@ -128,9 +122,7 @@ def main() -> int:
         refresh = client.post("/dashboard/stats/refresh", headers=write_headers, json={})
         refresh.raise_for_status()
 
-        successful_sources = [
-            run for run in terminal.values() if run.get("status") == "success"
-        ]
+        successful_sources = [run for run in terminal.values() if run.get("status") == "success"]
         failed_sources = [run for run in terminal.values() if run.get("status") == "error"]
         live_articles = sum(
             item.get("source_kind") == "live" for item in _items(payloads["articles"])

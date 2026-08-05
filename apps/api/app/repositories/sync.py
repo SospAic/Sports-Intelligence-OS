@@ -103,9 +103,7 @@ class SyncRepository:
 
         self.session.add(event)
 
-    async def list_sync_run_events(
-        self, run_id: UUID, *, limit: int = 1000
-    ) -> list[SyncRunEvent]:
+    async def list_sync_run_events(self, run_id: UUID, *, limit: int = 1000) -> list[SyncRunEvent]:
         """Return a run's tracklog events ordered by sequence (creation order)."""
 
         statement = (

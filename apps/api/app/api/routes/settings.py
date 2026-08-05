@@ -12,6 +12,7 @@ from app.schemas.adapters import (
     build_adapter_descriptor_read,
 )
 from app.schemas.settings import (
+    LLMModelsRead,
     LLMProviderSettingRead,
     LLMProviderSettingUpdate,
     LLMProviderTestRead,
@@ -90,18 +91,25 @@ async def test_llm_setting(
     return await service(request, db).test_llm_setting(workspace.workspace_id, auth.user.id)
 
 
+@router.get("/llm/models", response_model=LLMModelsRead)
+async def list_llm_models(
+    request: Request,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> LLMModelsRead:
+    return await service(request, db).llm_models(workspace.workspace_id)
+
+
 @router.get("/platform-credentials", response_model=list[PlatformCredentialRead])
 async def list_platform_credentials(
     request: Request, workspace: CurrentWorkspace, db: DatabaseSession
 ) -> list[PlatformCredentialRead]:
-    return await PlatformCredentialService(
-        db, request.app.state.settings
-    ).list(workspace.workspace_id)
+    return await PlatformCredentialService(db, request.app.state.settings).list(
+        workspace.workspace_id
+    )
 
 
-@router.get(
-    "/platform-credentials/{platform_key}", response_model=PlatformCredentialRead
-)
+@router.get("/platform-credentials/{platform_key}", response_model=PlatformCredentialRead)
 async def get_platform_credentials(
     platform_key: str,
     request: Request,
@@ -113,9 +121,7 @@ async def get_platform_credentials(
     )
 
 
-@router.put(
-    "/platform-credentials/{platform_key}", response_model=PlatformCredentialRead
-)
+@router.put("/platform-credentials/{platform_key}", response_model=PlatformCredentialRead)
 async def update_platform_credentials(
     platform_key: str,
     payload: PlatformCredentialUpdate,
@@ -142,9 +148,9 @@ async def revoke_platform_login_access(
     db: DatabaseSession,
 ) -> PlatformCredentialRead:
     require_workspace_role(workspace, {"owner", "admin"})
-    return await PlatformCredentialService(
-        db, request.app.state.settings
-    ).revoke_login_access(workspace.workspace_id, auth.user.id, platform_key)
+    return await PlatformCredentialService(db, request.app.state.settings).revoke_login_access(
+        workspace.workspace_id, auth.user.id, platform_key
+    )
 
 
 @router.get("/sync", response_model=SyncSettingsRead)
@@ -189,7 +195,4 @@ async def list_platform_adapters(
     """
     del workspace, db
     registry = request.app.state.platform_adapters
-    return [
-        build_adapter_descriptor_read(adapter.descriptor)
-        for adapter in registry.values()
-    ]
+    return [build_adapter_descriptor_read(adapter.descriptor) for adapter in registry.values()]

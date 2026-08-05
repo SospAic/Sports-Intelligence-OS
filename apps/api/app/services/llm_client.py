@@ -16,8 +16,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import Settings
-from app.providers.llm.base import LLMMessage, LLMRequest
+from app.core.config import Settings, get_settings
+from app.providers.llm.base import LLMMessage, LLMProvider, LLMRequest
 from app.providers.registry import ProviderRegistry
 from app.services.settings import SettingsService
 
@@ -33,7 +33,7 @@ _JSON_OBJECT = re.compile(r"\{.*\}|\[.*\]", re.DOTALL)
 
 async def call_json_llm(
     session: AsyncSession,
-    llm_providers: ProviderRegistry,
+    llm_providers: ProviderRegistry[LLMProvider],
     settings: Settings | None,
     workspace_id: uuid.UUID,
     *,
@@ -48,7 +48,7 @@ async def call_json_llm(
     provider is unconfigured or the response cannot be parsed as JSON, so
     callers can degrade gracefully instead of 500-ing.
     """
-    svc = SettingsService(session, settings, llm_providers)
+    svc = SettingsService(session, settings or get_settings(), llm_providers)
     provider = await svc.resolve_llm_provider(workspace_id, "openai_compatible")
     if not provider.configured:
         raise LLMUnavailableError("LLM 未配置，请在「设置 → LLM」中配置 OpenAI 兼容模型")
@@ -81,6 +81,9 @@ async def call_json_llm(
     if not match:
         raise LLMUnavailableError("LLM 未返回可解析的 JSON 结构")
     try:
-        return json.loads(match.group(0))
+        parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise LLMUnavailableError("LLM 返回的 JSON 顶层必须是对象")
+        return {str(key): value for key, value in parsed.items()}
     except json.JSONDecodeError as exc:
         raise LLMUnavailableError(f"LLM 返回的 JSON 解析失败: {exc}") from exc

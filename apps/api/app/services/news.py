@@ -416,9 +416,7 @@ class NewsService:
         row = await self.repository.article(workspace_id, article_id)
         return article_read(row)  # type: ignore[arg-type]
 
-    async def delete_article(
-        self, workspace_id: UUID, actor_id: UUID, article_id: UUID
-    ) -> None:
+    async def delete_article(self, workspace_id: UUID, actor_id: UUID, article_id: UUID) -> None:
         row = await self.repository.article(workspace_id, article_id)
         if row is None:
             raise NewsNotFoundError("article was not found")
@@ -433,10 +431,14 @@ class NewsService:
         )
         # Remove event-article links first
         links = (
-            await self.session.execute(
-                select(EventArticle).where(EventArticle.article_id == article.id)
+            (
+                await self.session.execute(
+                    select(EventArticle).where(EventArticle.article_id == article.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for link in links:
             await self.session.delete(link)
         await self.session.delete(article)
@@ -742,6 +744,7 @@ class NewsService:
         run.started_at = run.started_at or now
         run.error_code = None
         run.error_message = None
+        source.last_attempt_at = now
         await self.session.commit()
         ctx = NewsCallContext(
             config=self._provider_config(source), fetched_at=now, request_id=run.request_id
@@ -973,9 +976,7 @@ class NewsService:
                 target_url=source.url,
                 started_at=started_at,
                 finished_at=finished_at,
-                duration_ms=max(
-                    0, int((finished_at - started_at).total_seconds() * 1000)
-                ),
+                duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
                 http_status=None,
                 error_code=error_code,
                 error_detail_safe=error_detail[:500] if error_detail else None,
@@ -1225,9 +1226,7 @@ class NewsService:
             )
             weighted_score = title_score * 0.65 + entity_score * 0.35
             strong_entity_score = (
-                entity_score * 0.85
-                if entity_score >= 0.7 and title_score >= 0.2
-                else 0.0
+                entity_score * 0.85 if entity_score >= 0.7 and title_score >= 0.2 else 0.0
             )
             # Entity enrichment must never reduce a strong title match.  The
             # previous weighted-only formula made a title score of 0.85 fail
@@ -1406,9 +1405,11 @@ class NewsService:
         if freshness_timestamp:
             try:
                 from datetime import datetime as dt
+
                 ft = dt.fromisoformat(freshness_timestamp)
                 age_hours = max(0.0, (datetime.now(UTC) - self._utc(ft)).total_seconds() / 3600)
                 import math as _math
+
                 freshness_value = round(
                     _math.pow(0.5, age_hours / float(config.freshness_half_life_hours)), 4
                 )
@@ -1416,9 +1417,7 @@ class NewsService:
                 pass
 
         source_count_ratio = min(event.source_count / SOURCE_COUNT_SATURATION, 1.0)
-        article_count_ratio = min(
-            (unique_article_count or 0) / ARTICLE_COUNT_SATURATION, 1.0
-        )
+        article_count_ratio = min((unique_article_count or 0) / ARTICLE_COUNT_SATURATION, 1.0)
 
         components: list[dict[str, object]] = [
             {
@@ -1426,13 +1425,13 @@ class NewsService:
                 "raw_value": round(source_reliability, 2),
                 "percentile": None,
                 "weight": (
-                    round(float(config.source_weight) / total_weight, 4)
-                    if total_weight
-                    else 0
+                    round(float(config.source_weight) / total_weight, 4) if total_weight else 0
                 ),
                 "weighted_contribution": round(
                     float(config.source_weight) * (source_reliability / 100) / total_weight * 100, 2
-                ) if total_weight else None,
+                )
+                if total_weight
+                else None,
                 "missing": False,
                 "note": "工作区对新闻源配置的0-100先验评分",
             },
@@ -1441,17 +1440,18 @@ class NewsService:
                 "raw_value": freshness_value,
                 "percentile": None,
                 "weight": (
-                    round(float(config.freshness_weight) / total_weight, 4)
-                    if total_weight
-                    else 0
+                    round(float(config.freshness_weight) / total_weight, 4) if total_weight else 0
                 ),
                 "weighted_contribution": round(
                     float(config.freshness_weight) * (freshness_value or 0) / total_weight * 100, 2
-                ) if total_weight and freshness_value is not None else None,
+                )
+                if total_weight and freshness_value is not None
+                else None,
                 "missing": freshness_value is None,
                 "note": (
                     f"半衰期{config.freshness_half_life_hours}h；基准: {freshness_basis}"
-                    if freshness_basis else None
+                    if freshness_basis
+                    else None
                 ),
             },
             {
@@ -1465,11 +1465,12 @@ class NewsService:
                 ),
                 "weighted_contribution": round(
                     float(config.source_count_weight) * source_count_ratio / total_weight * 100, 2
-                ) if total_weight else None,
+                )
+                if total_weight
+                else None,
                 "missing": False,
                 "note": (
-                    f"饱和值={SOURCE_COUNT_SATURATION}，"
-                    f"当前比率={round(source_count_ratio, 2)}"
+                    f"饱和值={SOURCE_COUNT_SATURATION}，当前比率={round(source_count_ratio, 2)}"
                 ),
             },
             {
@@ -1483,7 +1484,9 @@ class NewsService:
                 ),
                 "weighted_contribution": round(
                     float(config.article_count_weight) * article_count_ratio / total_weight * 100, 2
-                ) if total_weight else None,
+                )
+                if total_weight
+                else None,
                 "missing": False,
                 "note": f"饱和值={ARTICLE_COUNT_SATURATION}，去重后独立内容数",
             },
@@ -1569,10 +1572,22 @@ class NewsService:
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Phase 1: Remove clearly non-content elements
-            _JUNK_TAGS = frozenset({
-                "script", "style", "nav", "header", "footer", "aside",
-                "iframe", "noscript", "form", "button", "input", "select",
-            })
+            _JUNK_TAGS = frozenset(
+                {
+                    "script",
+                    "style",
+                    "nav",
+                    "header",
+                    "footer",
+                    "aside",
+                    "iframe",
+                    "noscript",
+                    "form",
+                    "button",
+                    "input",
+                    "select",
+                }
+            )
             for tag in soup.find_all(_JUNK_TAGS):
                 tag.decompose()
 
@@ -1639,9 +1654,7 @@ class NewsService:
                     score += min(avg_p_len / 10.0, 10.0)
 
                 # Penalise high link density (navigation-like blocks)
-                link_text = " ".join(
-                    a.get_text(strip=True) for a in el.find_all("a")
-                )
+                link_text = " ".join(a.get_text(strip=True) for a in el.find_all("a"))
                 if text:
                     link_density = len(link_text) / len(text)
                     if link_density > 0.5:

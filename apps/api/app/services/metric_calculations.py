@@ -29,9 +29,7 @@ def percentile_rank(
     if value is None:
         return None
     valid = sorted(
-        float(item)
-        for item in values
-        if item is not None and math.isfinite(float(item))
+        float(item) for item in values if item is not None and math.isfinite(float(item))
     )
     if not valid:
         return None

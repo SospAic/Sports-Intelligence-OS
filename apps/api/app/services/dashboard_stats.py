@@ -13,7 +13,7 @@ from app.models.automation import (
 )
 from app.models.generation import GenerationRun
 from app.models.monitoring import Account, ContentItem, Platform
-from app.models.news import Article, TopicEvent
+from app.models.news import Article, EventArticle, Source, TopicEvent
 from app.models.operations import DashboardStat
 from app.models.sync import SyncRun
 
@@ -102,9 +102,7 @@ class DashboardStatsService:
         ws_filter = Account.workspace_id == workspace_id
 
         total = int(
-            await self._session.scalar(
-                select(func.count()).select_from(Account).where(ws_filter)
-            )
+            await self._session.scalar(select(func.count()).select_from(Account).where(ws_filter))
             or 0
         )
 
@@ -199,9 +197,7 @@ class DashboardStatsService:
 
         failed = int(
             await self._session.scalar(
-                select(func.count())
-                .select_from(SyncRun)
-                .where(*recent, SyncRun.status == "error")
+                select(func.count()).select_from(SyncRun).where(*recent, SyncRun.status == "error")
             )
             or 0
         )
@@ -221,11 +217,19 @@ class DashboardStatsService:
         }
 
     async def _news_stats(self, workspace_id: UUID, cutoff: datetime) -> dict[str, Any]:
-        article_filter = Article.workspace_id == workspace_id
+        article_filter = [
+            Article.workspace_id == workspace_id,
+            Article.source_id.in_(
+                select(Source.id).where(
+                    Source.workspace_id == workspace_id,
+                    Source.enabled.is_(True),
+                )
+            ),
+        ]
 
         total_articles = int(
             await self._session.scalar(
-                select(func.count()).select_from(Article).where(article_filter)
+                select(func.count()).select_from(Article).where(*article_filter)
             )
             or 0
         )
@@ -234,16 +238,27 @@ class DashboardStatsService:
             await self._session.scalar(
                 select(func.count())
                 .select_from(Article)
-                .where(article_filter, Article.published_at >= cutoff)
+                .where(*article_filter, Article.published_at >= cutoff)
             )
             or 0
         )
 
-        event_filter = TopicEvent.workspace_id == workspace_id
+        event_filter = [
+            TopicEvent.workspace_id == workspace_id,
+            TopicEvent.id.in_(
+                select(EventArticle.event_id)
+                .join(Article, Article.id == EventArticle.article_id)
+                .join(Source, Source.id == Article.source_id)
+                .where(
+                    Article.workspace_id == workspace_id,
+                    Source.enabled.is_(True),
+                )
+            ),
+        ]
 
         total_events = int(
             await self._session.scalar(
-                select(func.count()).select_from(TopicEvent).where(event_filter)
+                select(func.count()).select_from(TopicEvent).where(*event_filter)
             )
             or 0
         )
@@ -253,7 +268,7 @@ class DashboardStatsService:
                 select(func.count())
                 .select_from(TopicEvent)
                 .where(
-                    event_filter,
+                    *event_filter,
                     TopicEvent.heat_score > 70,
                     TopicEvent.last_update_time >= cutoff,
                 )
@@ -300,11 +315,11 @@ class DashboardStatsService:
         duration_rows = (
             await self._session.execute(
                 select(GenerationRun.started_at, GenerationRun.completed_at).where(
-                *recent,
-                GenerationRun.status == "completed",
-                GenerationRun.started_at.isnot(None),
-                GenerationRun.completed_at.isnot(None),
-            )
+                    *recent,
+                    GenerationRun.status == "completed",
+                    GenerationRun.started_at.isnot(None),
+                    GenerationRun.completed_at.isnot(None),
+                )
             )
         ).all()
         durations = [

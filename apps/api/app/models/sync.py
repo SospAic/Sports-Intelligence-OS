@@ -39,9 +39,7 @@ class SyncRun(Base):
             "progress_percent >= 0 AND progress_percent <= 100",
             name="sync_run_progress_range",
         ),
-        CheckConstraint(
-            "items_processed >= 0", name="sync_run_items_processed_nonnegative"
-        ),
+        CheckConstraint("items_processed >= 0", name="sync_run_items_processed_nonnegative"),
         Index("ix_sync_runs_workspace_started", "workspace_id", "started_at"),
         Index("ix_sync_runs_target_started", "target_type", "target_id", "started_at"),
     )

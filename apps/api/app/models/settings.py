@@ -57,9 +57,7 @@ class SyncSettings(TimestampMixin, Base):
     """
 
     __tablename__ = "sync_settings"
-    __table_args__ = (
-        UniqueConstraint("workspace_id"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(

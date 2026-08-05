@@ -341,9 +341,7 @@ class MonitoringRepository:
         result = await self._session.execute(statement)
         return sorted(tag for (tag,) in result.all() if tag)
 
-    async def list_content_comments(
-        self, content_item_id: UUID, limit: int = 20
-    ) -> list[Comment]:
+    async def list_content_comments(self, content_item_id: UUID, limit: int = 20) -> list[Comment]:
         """Top comments for a content item, ranked by engagement.
 
         Score = likes + 3×replies (replies weighted higher as they signal
@@ -351,8 +349,7 @@ class MonitoringRepository:
         Capped at ``limit`` (default 20) for the hot-comments widget.
         """
         score = (
-            func.coalesce(Comment.like_count, 0)
-            + 3 * func.coalesce(Comment.reply_count, 0)
+            func.coalesce(Comment.like_count, 0) + 3 * func.coalesce(Comment.reply_count, 0)
         ).label("score")
         statement = (
             select(Comment)
@@ -377,19 +374,19 @@ class MonitoringRepository:
         """
         latest_snapshot_id = self._latest_content_snapshot_id()
         conditions = self._content_conditions(workspace_id, filters)
-        day = func.to_char(
-            func.date_trunc("day", ContentItem.published_at), "YYYY-MM-DD"
-        ).label("day")
+        day = func.to_char(func.date_trunc("day", ContentItem.published_at), "YYYY-MM-DD").label(
+            "day"
+        )
         statement = (
             select(
                 day,
                 func.count(ContentItem.id).label("content_count"),
-                func.coalesce(
-                    func.sum(func.coalesce(ContentSnapshot.view_count, 0)), 0
-                ).label("total_views"),
-                func.coalesce(
-                    func.sum(func.coalesce(ContentSnapshot.like_count, 0)), 0
-                ).label("total_likes"),
+                func.coalesce(func.sum(func.coalesce(ContentSnapshot.view_count, 0)), 0).label(
+                    "total_views"
+                ),
+                func.coalesce(func.sum(func.coalesce(ContentSnapshot.like_count, 0)), 0).label(
+                    "total_likes"
+                ),
             )
             .join(Platform, ContentItem.platform_id == Platform.id)
             .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
@@ -415,9 +412,7 @@ class MonitoringRepository:
         path) come back as ``None`` and the UI shows the required condition.
         """
         latest_snapshot_id = self._latest_content_snapshot_id()
-        view_growth = self._latest_metric_value(
-            "content_item", ContentItem.id, "view_growth_24h"
-        )
+        view_growth = self._latest_metric_value("content_item", ContentItem.id, "view_growth_24h")
         interactions = (
             func.coalesce(ContentSnapshot.like_count, 0)
             + func.coalesce(ContentSnapshot.comment_count, 0)
@@ -481,9 +476,7 @@ class MonitoringRepository:
                 ContentItem.workspace_id == workspace_id,
                 ContentItem.account_id == account_id,
             )
-            .order_by(
-                ContentSnapshot.view_count.desc().nullslast(), ContentItem.id.asc()
-            )
+            .order_by(ContentSnapshot.view_count.desc().nullslast(), ContentItem.id.asc())
             .limit(1)
         )
         top_row = (await self._session.execute(top_statement)).one_or_none()
@@ -494,14 +487,10 @@ class MonitoringRepository:
             .limit(1)
         )
         account_total_likes = (
-            latest_account_snap.total_like_count
-            if latest_account_snap is not None
-            else None
+            latest_account_snap.total_like_count if latest_account_snap is not None else None
         )
         account_total_views = (
-            latest_account_snap.total_view_count
-            if latest_account_snap is not None
-            else None
+            latest_account_snap.total_view_count if latest_account_snap is not None else None
         )
         return {
             "content_count": content_count,

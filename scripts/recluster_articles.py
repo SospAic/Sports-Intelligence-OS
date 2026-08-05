@@ -10,7 +10,8 @@
     python scripts/recluster_articles.py --preview
 
     # 2. 执行：根据提案文件重新聚类（会先备份旧状态）
-    python scripts/recluster_articles.py --execute [--proposal data/recluster_proposal_YYYYMMDD.json]
+    python scripts/recluster_articles.py --execute
+        [--proposal data/recluster_proposal_YYYYMMDD.json]
 
     # 3. 回滚：恢复到执行前的状态
     python scripts/recluster_articles.py --rollback [--backup data/recluster_backup_YYYYMMDD.json]
@@ -39,13 +40,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 API_ROOT = PROJECT_ROOT / "apps" / "api"
 sys.path.insert(0, str(API_ROOT))
 
-from sqlalchemy import select, text  # noqa: E402
-from sqlalchemy.ext.asyncio import (  # noqa: E402
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-
 from app.models.news import Article, EventArticle, TopicEvent  # noqa: E402
 from app.providers.news.utils import normalize_title, title_similarity  # noqa: E402
 from app.services.entity_extraction import (  # noqa: E402
@@ -53,6 +47,12 @@ from app.services.entity_extraction import (  # noqa: E402
     ExtractedEntity,
     compute_entity_similarity,
     extract_article_entities,
+)
+from sqlalchemy import select, text  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ def get_database_url() -> str:
 
 
 def today_stamp() -> str:
-    return datetime.now().strftime("%Y%m%d")
+    return datetime.now(UTC).strftime("%Y%m%d")
 
 
 def ensure_data_dir() -> Path:
@@ -90,10 +90,27 @@ def ensure_data_dir() -> Path:
     return DATA_DIR
 
 
+async def _path_exists(path: Path) -> bool:
+    return await asyncio.to_thread(path.exists)
+
+
+async def _read_text(path: Path) -> str:
+    return await asyncio.to_thread(path.read_text, encoding="utf-8")
+
+
+async def _write_json(path: Path, payload: object) -> None:
+    content = json.dumps(payload, ensure_ascii=False, indent=2)
+    await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+
+
+async def _prompt(message: str) -> str:
+    return await asyncio.to_thread(input, message)
+
+
 def print_header(msg: str) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {msg}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
 
 def print_info(msg: str) -> None:
@@ -129,9 +146,7 @@ def compute_match_score(
     """
     title_score = title_similarity(event_title, article_title)
     entity_score = (
-        compute_entity_similarity(article_entities, event_entities)
-        if event_entities
-        else 0.0
+        compute_entity_similarity(article_entities, event_entities) if event_entities else 0.0
     )
     weighted_score = title_score * TITLE_WEIGHT + entity_score * ENTITY_WEIGHT
     strong_entity_score = (
@@ -197,7 +212,8 @@ async def run_clustering(
         event_entities_map[str(event.id)] = parse_event_entities(event.metadata_json or {})
 
     # Run clustering: assign each article to best matching event or create new
-    new_assignments: dict[str, dict[str, Any]] = {}  # article_id -> {event_id, score, components, is_new_event}
+    # article_id -> {event_id, score, components, is_new_event}
+    new_assignments: dict[str, dict[str, Any]] = {}
     proposed_new_events: list[dict[str, Any]] = []
     # Track events created during this clustering pass (title -> event info)
     runtime_events: list[dict[str, Any]] = [
@@ -245,19 +261,21 @@ async def run_clustering(
                 "is_existing": False,
             }
             runtime_events.append(new_event_info)
-            proposed_new_events.append({
-                "id": new_event_id,
-                "title": article.title,
-                "normalized_title": normalize_title(article.title),
-                "summary": article.summary,
-                "sport": article.sport,
-                "league": article.league,
-                "metadata_json": {
-                    "cluster_algorithm": "entity-enhanced-v2",
-                    "extracted_entities": entity_data,
-                    "created_by": "offline_recluster",
-                },
-            })
+            proposed_new_events.append(
+                {
+                    "id": new_event_id,
+                    "title": article.title,
+                    "normalized_title": normalize_title(article.title),
+                    "summary": article.summary,
+                    "sport": article.sport,
+                    "league": article.league,
+                    "metadata_json": {
+                        "cluster_algorithm": "entity-enhanced-v2",
+                        "extracted_entities": entity_data,
+                        "created_by": "offline_recluster",
+                    },
+                }
+            )
             best_event_id = new_event_id
             best_score = 1.0
             best_components = {"title": 1.0, "entity": 1.0, "combined": 1.0}
@@ -310,14 +328,16 @@ def _compute_changes(
         if old_event_id == new_event_id:
             unchanged += 1
         else:
-            moved.append({
-                "article_id": article_id,
-                "article_title": info["article_title"],
-                "old_event_id": old_event_id,
-                "new_event_id": new_event_id,
-                "score": info["score"],
-                "components": info["components"],
-            })
+            moved.append(
+                {
+                    "article_id": article_id,
+                    "article_title": info["article_title"],
+                    "old_event_id": old_event_id,
+                    "new_event_id": new_event_id,
+                    "score": info["score"],
+                    "components": info["components"],
+                }
+            )
 
     # Find existing events that would lose all their articles
     for event in events:
@@ -373,22 +393,28 @@ async def mode_preview(database_url: str) -> None:
     if moves:
         print_info(f"以下为前 20 条移动示例（共 {len(moves)} 条）:")
         print(f"  {'文章标题':<40} {'得分':<8} {'标题分':<8} {'实体分':<8}")
-        print(f"  {'-'*40} {'-'*8} {'-'*8} {'-'*8}")
+        print(f"  {'-' * 40} {'-' * 8} {'-' * 8} {'-' * 8}")
         for m in moves[:20]:
-            title_display = m["article_title"][:38] + ".." if len(m["article_title"]) > 40 else m["article_title"]
+            title_display = (
+                m["article_title"][:38] + ".."
+                if len(m["article_title"]) > 40
+                else m["article_title"]
+            )
             comp = m["components"]
-            print(f"  {title_display:<40} {comp['combined']:<8.4f} {comp['title']:<8.4f} {comp['entity']:<8.4f}")
+            print(
+                f"  {title_display:<40} {comp['combined']:<8.4f} "
+                f"{comp['title']:<8.4f} {comp['entity']:<8.4f}"
+            )
         print()
 
     # Save proposal
     ensure_data_dir()
     proposal_path = DATA_DIR / f"recluster_proposal_{today_stamp()}.json"
-    with open(proposal_path, "w", encoding="utf-8") as f:
-        json.dump(proposal, f, ensure_ascii=False, indent=2)
+    await _write_json(proposal_path, proposal)
 
     print_success(f"提案已保存至: {proposal_path}")
     print_info("请人工审核提案内容。确认无误后，使用以下命令执行:")
-    print(f"    python scripts/recluster_articles.py --execute --proposal \"{proposal_path}\"")
+    print(f'    python scripts/recluster_articles.py --execute --proposal "{proposal_path}"')
     print()
 
 
@@ -400,12 +426,11 @@ async def mode_preview(database_url: str) -> None:
 async def mode_execute(database_url: str, proposal_path: Path) -> None:
     print_header("离线重聚类工具 — 执行模式")
 
-    if not proposal_path.exists():
+    if not await _path_exists(proposal_path):
         print_error(f"提案文件不存在: {proposal_path}")
         sys.exit(1)
 
-    with open(proposal_path, "r", encoding="utf-8") as f:
-        proposal = json.load(f)
+    proposal = json.loads(await _read_text(proposal_path))
 
     stats = proposal["stats"]
     print_info(f"提案生成时间: {proposal['generated_at']}")
@@ -418,7 +443,7 @@ async def mode_execute(database_url: str, proposal_path: Path) -> None:
     # Human confirmation
     print_warn("此操作将修改数据库中的事件聚类关系！")
     print_warn("执行前会自动备份当前状态，可通过 --rollback 回滚。")
-    answer = input("\n  确认执行？输入 YES 继续: ").strip()
+    answer = (await _prompt("\n  确认执行？输入 YES 继续: ")).strip()
     if answer != "YES":
         print_info("已取消执行。")
         return
@@ -436,8 +461,7 @@ async def mode_execute(database_url: str, proposal_path: Path) -> None:
             backup = await _create_backup(session)
             ensure_data_dir()
             backup_path = DATA_DIR / f"recluster_backup_{today_stamp()}.json"
-            with open(backup_path, "w", encoding="utf-8") as f:
-                json.dump(backup, f, ensure_ascii=False, indent=2)
+            await _write_json(backup_path, backup)
             print_success(f"备份已保存至: {backup_path}")
 
             # --- Step 2: Create new events ---
@@ -538,7 +562,10 @@ async def mode_execute(database_url: str, proposal_path: Path) -> None:
 
     print()
     print_success("重聚类执行完毕！")
-    print_info(f"如需回滚，请使用: python scripts/recluster_articles.py --rollback --backup \"{backup_path}\"")
+    print_info(
+        "如需回滚，请使用: "
+        f'python scripts/recluster_articles.py --rollback --backup "{backup_path}"'
+    )
     print()
 
 
@@ -605,9 +632,7 @@ async def _recalculate_event_stats(session: AsyncSession, event: TopicEvent) -> 
 
     if links:
         article_ids = [link.article_id for link in links]
-        articles_result = await session.execute(
-            select(Article).where(Article.id.in_(article_ids))
-        )
+        articles_result = await session.execute(select(Article).where(Article.id.in_(article_ids)))
         articles = list(articles_result.scalars().all())
         unique_sources = {a.source_id for a in articles}
         event.source_count = len(unique_sources)
@@ -627,12 +652,11 @@ async def _recalculate_event_stats(session: AsyncSession, event: TopicEvent) -> 
 async def mode_rollback(database_url: str, backup_path: Path) -> None:
     print_header("离线重聚类工具 — 回滚模式")
 
-    if not backup_path.exists():
+    if not await _path_exists(backup_path):
         print_error(f"备份文件不存在: {backup_path}")
         sys.exit(1)
 
-    with open(backup_path, "r", encoding="utf-8") as f:
-        backup = json.load(f)
+    backup = json.loads(await _read_text(backup_path))
 
     link_count = len(backup.get("event_articles", []))
     event_count = len(backup.get("events", []))
@@ -644,7 +668,7 @@ async def mode_rollback(database_url: str, backup_path: Path) -> None:
     print_warn("  1. 删除所有当前文章-事件关联")
     print_warn("  2. 删除重聚类期间新建的事件")
     print_warn("  3. 恢复备份中的关联和事件状态")
-    answer = input("\n  确认回滚？输入 YES 继续: ").strip()
+    answer = (await _prompt("\n  确认回滚？输入 YES 继续: ")).strip()
     if answer != "YES":
         print_info("已取消回滚。")
         return
@@ -820,20 +844,14 @@ def main() -> None:
         asyncio.run(mode_preview(database_url))
     elif args.execute:
         proposal_path = (
-            Path(args.proposal)
-            if args.proposal
-            else find_latest_file("recluster_proposal")
+            Path(args.proposal) if args.proposal else find_latest_file("recluster_proposal")
         )
         if proposal_path is None:
             print_error("未找到提案文件。请先运行 --preview 生成提案。")
             sys.exit(1)
         asyncio.run(mode_execute(database_url, proposal_path))
     elif args.rollback:
-        backup_path = (
-            Path(args.backup)
-            if args.backup
-            else find_latest_file("recluster_backup")
-        )
+        backup_path = Path(args.backup) if args.backup else find_latest_file("recluster_backup")
         if backup_path is None:
             print_error("未找到备份文件。只有在执行过 --execute 后才能回滚。")
             sys.exit(1)

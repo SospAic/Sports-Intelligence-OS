@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import CheckConstraint, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 class User(TimestampMixin, Base):
     __tablename__ = "users"
+    __table_args__ = (CheckConstraint("status IN ('active', 'disabled')", name="user_status"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     email_normalized: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)

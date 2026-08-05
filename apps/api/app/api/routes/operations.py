@@ -48,6 +48,8 @@ async def cancel_task(
             status_code=501,
             detail={"code": "unsupported_task_cancel", "detail": str(exc)},
         ) from None
+
+
 Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=200)]
 

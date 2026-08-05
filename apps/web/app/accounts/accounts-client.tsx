@@ -50,6 +50,7 @@ import {
 import { adapterErrorCodeTone } from "@/lib/adapter-errors";
 import { formatDate, formatNumber, sourceKindLabel } from "@/lib/format";
 import { OPERATION_STATUS_LABELS } from "@/lib/operation-labels";
+import { accountDisplayName } from "@/lib/account-label";
 
 type ActiveState = "active" | "inactive" | "all";
 
@@ -235,7 +236,12 @@ function SyncDetailDrawer({
               同步详情
             </h2>
             <p className="mt-0.5 truncate text-xs text-slate-500">
-              {account.display_name} · {account.platform.name}
+              {accountDisplayName({
+                ...account,
+                platform_name: account.platform.name,
+              })}
+              {" · "}
+              {account.platform.name}
             </p>
           </div>
           <button
@@ -436,7 +442,9 @@ export function AccountsClient() {
     () => readLocalAccountView().visibility,
   );
   const [creating, setCreating] = useState(false);
-  const [highlightExternalId, setHighlightExternalId] = useState<string | null>(null);
+  const [highlightExternalId, setHighlightExternalId] = useState<string | null>(
+    null,
+  );
   const [drawerAccount, setDrawerAccount] = useState<AccountRecord | null>(
     null,
   );
@@ -596,14 +604,20 @@ export function AccountsClient() {
           <AccountAvatar
             url={`/accounts/${row.original.id}/avatar`}
             remoteUrl={row.original.avatar_url}
-            name={row.original.display_name}
+            name={accountDisplayName({
+              ...row.original,
+              platform_name: row.original.platform.name,
+            })}
           />
           <div>
             <Link
               className="font-medium text-cyan-300 hover:underline"
               href={`/accounts/${row.original.id}`}
             >
-              {row.original.display_name}
+              {accountDisplayName({
+                ...row.original,
+                platform_name: row.original.platform.name,
+              })}
             </Link>
             <p className="mt-0.5 text-xs text-slate-500">
               {row.original.username ?? row.original.external_id}
@@ -658,7 +672,7 @@ export function AccountsClient() {
     {
       accessorFn: (item) => item.latest_snapshot?.video_count ?? -1,
       id: "videos",
-      header: "作品数",
+      header: "平台作品总数",
       cell: ({ row }) =>
         formatNumber(row.original.latest_snapshot?.video_count),
     },
@@ -786,14 +800,14 @@ export function AccountsClient() {
                 <Columns3 size={16} />
                 列显示
               </summary>
-              <div className="absolute top-12 right-0 z-20 w-44 space-y-2 rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-2xl">
+              <div className="absolute top-12 left-0 z-20 w-44 space-y-2 rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-2xl sm:right-0 sm:left-auto">
                 {(
                   [
                     ["sync_status", "状态"],
                     ["sync_progress", "同步进度"],
                     ["followers", "粉丝"],
                     ["follower_growth_24h", "24h 增长"],
-                    ["videos", "作品数"],
+                    ["videos", "平台作品总数"],
                     ["last_synced_at", "最近同步"],
                   ] as const
                 ).map(([key, label]) => (
@@ -923,7 +937,9 @@ export function AccountsClient() {
           empty="尚未添加监控账号"
           getRowId={(row) => row.id}
           getRowClassName={(row) =>
-            row.external_id === highlightExternalId ? "animate-account-flash" : ""
+            row.external_id === highlightExternalId
+              ? "animate-account-flash"
+              : ""
           }
           columnVisibility={columnVisibility}
           onColumnVisibilityChange={setColumnVisibility}

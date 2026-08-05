@@ -37,7 +37,7 @@ from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
 from app.services.sync import PlatformSyncExecutor, SyncService
 
-from .conftest import PG_ASYNC_URL, RealShapedTestAdapter, TEST_REDIS_URL
+from .conftest import PG_ASYNC_URL, TEST_REDIS_URL, RealShapedTestAdapter
 
 ADAPTER_KEY = "test_sync_adapter"
 # External id that the failing-item executor forces to raise on upsert.
@@ -191,21 +191,13 @@ async def test_single_item_failure_continues_sync_and_records_tracklog() -> None
         assert events, "tracklog must record events for the run"
 
         # The failing item must appear as an item-level error event.
-        item_errors = [
-            e
-            for e in events
-            if e.event_type == "item" and e.level == "error"
-        ]
+        item_errors = [e for e in events if e.event_type == "item" and e.level == "error"]
         assert len(item_errors) == 1, "exactly one item error event expected"
         assert item_errors[0].payload.get("external_id") == BAD_EXTERNAL_ID
         assert item_errors[0].payload.get("action") == "failed"
 
         # The 4 healthy items must each appear as a created/updated item event.
-        item_ok = [
-            e
-            for e in events
-            if e.event_type == "item" and e.level == "info"
-        ]
+        item_ok = [e for e in events if e.event_type == "item" and e.level == "info"]
         assert len(item_ok) == 4
 
         # Detail endpoint must return the run plus the same ordered events.
@@ -213,9 +205,7 @@ async def test_single_item_failure_continues_sync_and_records_tracklog() -> None
             workspace_id, account_id, run_id
         )
         assert detail.run.id == run_id
-        assert [e.sequence for e in detail.events] == sorted(
-            e.sequence for e in detail.events
-        )
+        assert [e.sequence for e in detail.events] == sorted(e.sequence for e in detail.events)
         assert detail.events[0].sequence == 1
         assert detail.events[-1].event_type == "summary"
     await engine.dispose()
@@ -256,13 +246,11 @@ async def test_analytics_failure_degrades_run_and_records_tracklog() -> None:
         assert run.items_processed == 5
 
         events = await _event_rows(session, run_id)
-        analytics_events = [
-            e for e in events if e.event_type == "analytics" and e.level == "warn"
-        ]
+        analytics_events = [e for e in events if e.event_type == "analytics" and e.level == "warn"]
         assert len(analytics_events) == 1
-        assert (
-            analytics_events[0].payload.get("requested") == 5
-        ), "analytics event must note how many items were requested"
+        assert analytics_events[0].payload.get("requested") == 5, (
+            "analytics event must note how many items were requested"
+        )
     await engine.dispose()
 
 

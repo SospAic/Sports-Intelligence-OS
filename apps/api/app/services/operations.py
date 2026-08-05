@@ -21,6 +21,32 @@ from app.schemas.operations import (
 from app.services.error_detail import business_hint_for
 from app.services.sync import cancel_sync_run
 
+_TERMINAL_ERROR_STATUSES = frozenset({"error", "degraded", "skipped", "cancelled"})
+
+
+def _operation_error_hint(
+    status: str,
+    *,
+    code: str | None,
+    message: str | None,
+    detail: str | None,
+    category: str | None = None,
+    adapter_key: str | None = None,
+    existing: str | None = None,
+) -> str | None:
+    """Return an operator hint only when a task actually has an error signal.
+
+    ``business_hint_for(None)`` intentionally has a useful generic fallback for
+    failures, but using it for every successful row makes the operations page
+    look broken.  Keep the fallback for terminal error states with incomplete
+    metadata while leaving queued/running/success rows clean.
+    """
+
+    has_error_fields = any((code, message, detail))
+    if not has_error_fields and status not in _TERMINAL_ERROR_STATUSES:
+        return None
+    return existing or business_hint_for(code, adapter_key=adapter_key, category=category)
+
 
 class UnsupportedTaskCancelError(Exception):
     """Raised when a task category does not support in-UI cancellation yet."""
@@ -30,9 +56,7 @@ class OperationsService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def cancel_task(
-        self, workspace_id: UUID, task_id: UUID, category: str
-    ) -> SyncRunRead:
+    async def cancel_task(self, workspace_id: UUID, task_id: UUID, category: str) -> SyncRunRead:
         """Terminate a background task listed on the operations dashboard.
 
         Only ``platform_sync`` runs support in-UI cancellation today. Other
@@ -85,7 +109,13 @@ class OperationsService:
                         error_code=task_run.error_code,
                         error_message=task_run.error_detail_safe,
                         error_detail=task_run.error_detail_safe,
-                        error_hint=business_hint_for(task_run.error_code, category="worker"),
+                        error_hint=_operation_error_hint(
+                            task_run.status,
+                            code=task_run.error_code,
+                            message=task_run.error_detail_safe,
+                            detail=task_run.error_detail_safe,
+                            category="worker",
+                        ),
                         metadata=task_run.progress_json,
                     )
                 )
@@ -113,8 +143,12 @@ class OperationsService:
                         error_code=sync_run.error_code,
                         error_message=sync_run.error_message,
                         error_detail=sync_run.error_detail,
-                        error_hint=business_hint_for(
-                            sync_run.error_code, adapter_key=sync_run.adapter_key
+                        error_hint=_operation_error_hint(
+                            sync_run.status,
+                            code=sync_run.error_code,
+                            message=sync_run.error_message,
+                            detail=sync_run.error_detail,
+                            adapter_key=sync_run.adapter_key,
                         ),
                         metadata=sync_run.metadata_json,
                     )
@@ -148,7 +182,14 @@ class OperationsService:
                         error_code=news_run.error_code,
                         error_message=news_run.error_message,
                         error_detail=news_run.error_detail,
-                        error_hint=business_hint_for(news_run.error_code, category="news_sync"),
+                        error_hint=_operation_error_hint(
+                            news_run.status,
+                            code=news_run.error_code,
+                            message=news_run.error_message,
+                            detail=news_run.error_detail,
+                            category="news_sync",
+                            existing=news_run.error_hint,
+                        ),
                         metadata=news_run.metadata_json,
                     )
                 )
@@ -171,6 +212,12 @@ class OperationsService:
                 )
             ).all():
                 error = generation_run.error or {}
+                error_code = generation_run.error_code or (
+                    str(error.get("code")) if error.get("code") else None
+                )
+                error_detail = generation_run.error_detail_safe or (
+                    str(error.get("detail") or error.get("message")) if error else None
+                )
                 records.append(
                     OperationTaskRead(
                         id=generation_run.id,
@@ -179,14 +226,16 @@ class OperationsService:
                         status=generation_run.status,
                         started_at=generation_run.started_at or generation_run.created_at,
                         finished_at=generation_run.completed_at,
-                        error_code=str(error.get("code")) if error.get("code") else None,
-                        error_message=str(error.get("message") or error.get("detail"))
-                        if error
-                        else None,
-                        error_detail=str(error.get("detail") or error.get("message"))
-                        if error
-                        else None,
-                        error_hint=generation_run.error_hint,
+                        error_code=error_code,
+                        error_message=error_detail,
+                        error_detail=error_detail,
+                        error_hint=_operation_error_hint(
+                            generation_run.status,
+                            code=error_code,
+                            message=error_detail,
+                            detail=error_detail,
+                            existing=generation_run.error_hint,
+                        ),
                         metadata={
                             "provider": generation_run.provider,
                             "input_type": generation_run.input_type,

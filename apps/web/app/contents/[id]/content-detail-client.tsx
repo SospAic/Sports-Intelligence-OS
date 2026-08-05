@@ -268,11 +268,15 @@ function DownloadModalFrame({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4"
+      role="presentation"
       onClick={onClose}
     >
       <div
-        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl"
+        className="my-auto max-h-[calc(100dvh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">
@@ -355,9 +359,6 @@ function VideoDownloadModal({ open, onClose, content, workspaceId }: ModalProps)
   const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
     useDownloadModal(content, workspaceId);
   const [form, setForm] = useState<DownloadForm>(() => videoDefaultForm());
-  useEffect(() => {
-    if (open) setForm(videoDefaultForm());
-  }, [open]);
   const isAudio = form.video_quality === "audio";
   return (
     <DownloadModalFrame
@@ -454,9 +455,6 @@ function SubtitleDownloadModal({ open, onClose, content, workspaceId }: ModalPro
   const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
     useDownloadModal(content, workspaceId);
   const [form, setForm] = useState<DownloadForm>(() => subtitleDefaultForm());
-  useEffect(() => {
-    if (open) setForm(subtitleDefaultForm());
-  }, [open]);
   return (
     <DownloadModalFrame
       open={open}
@@ -506,9 +504,6 @@ function MetadataDownloadModal({ open, onClose, content, workspaceId }: ModalPro
   const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
     useDownloadModal(content, workspaceId);
   const [form, setForm] = useState<DownloadForm>(() => metadataDefaultForm());
-  useEffect(() => {
-    if (open) setForm(metadataDefaultForm());
-  }, [open]);
   return (
     <DownloadModalFrame
       open={open}
@@ -658,7 +653,7 @@ export function ContentDetailClient({ id }: { id: string }) {
           <MediaCard
             title="视频"
             icon={<Film size={15} />}
-            present={Boolean(media?.video)}
+            present={true}
             notDownloadedHint="未下载 · 点击「下载」用 yt-dlp 从源站重新拉取"
             action={dlBtn("video")}
           >
@@ -719,18 +714,21 @@ export function ContentDetailClient({ id }: { id: string }) {
         </div>
       </Panel>
       <VideoDownloadModal
+        key={dlVideo ? "open" : "closed"}
         open={dlVideo}
         onClose={() => setDlVideo(false)}
         content={data}
         workspaceId={workspaceId!}
       />
       <SubtitleDownloadModal
+        key={dlSubtitle ? "open" : "closed"}
         open={dlSubtitle}
         onClose={() => setDlSubtitle(false)}
         content={data}
         workspaceId={workspaceId!}
       />
       <MetadataDownloadModal
+        key={dlMetadata ? "open" : "closed"}
         open={dlMetadata}
         onClose={() => setDlMetadata(false)}
         content={data}

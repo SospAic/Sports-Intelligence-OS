@@ -198,9 +198,7 @@ class OutboxService:
     # 4. replay_dead_letter
     # ------------------------------------------------------------------
 
-    async def replay_dead_letter(
-        self, workspace_id: UUID, dead_letter_id: UUID
-    ) -> OutboxEvent:
+    async def replay_dead_letter(self, workspace_id: UUID, dead_letter_id: UUID) -> OutboxEvent:
         """Reset a dead-lettered event back to ``pending`` for retry."""
         dead_letter = await self.session.scalar(
             select(DeadLetterEvent).where(
@@ -407,7 +405,7 @@ class OutboxService:
             )
         else:
             # Exponential backoff: min(2^attempts, 300) seconds.
-            backoff_seconds = min(2 ** event.attempts, _MAX_BACKOFF_SECONDS)
+            backoff_seconds = min(2**event.attempts, _MAX_BACKOFF_SECONDS)
             event.next_attempt_at = finished + timedelta(seconds=backoff_seconds)
 
             logger.info(

@@ -199,7 +199,13 @@ class ContentItem(TimestampMixin, Base):
         # feature the same Olympic clips). Scoping the unique key by account_id
         # lets each account own its own copy instead of one global row that the
         # second account can never claim (the old skip_existing "hollow success").
-        UniqueConstraint("workspace_id", "platform_id", "account_id", "external_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "platform_id",
+            "account_id",
+            "external_id",
+            name="uq_content_items_account",
+        ),
         CheckConstraint(
             "source_kind IN ('live', 'imported')",
             name="content_item_source_kind",
@@ -211,6 +217,7 @@ class ContentItem(TimestampMixin, Base):
         Index("ix_content_items_platform_published", "platform_id", "published_at"),
         Index("ix_content_items_account_published", "account_id", "published_at"),
         Index("ix_content_items_workspace_status", "workspace_id", "status"),
+        Index("ix_content_items_tags", "tags", postgresql_using="gin"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -250,15 +257,11 @@ class ContentItem(TimestampMixin, Base):
     # Local media archived during sync (thumbnail / video / subtitles / info
     # json). ``None`` when no download toggles are enabled. Stored as a relative
     # reference map consumed by the API ``/media`` route and the detail page.
-    media: Mapped[dict[str, Any] | None] = mapped_column(
-        "media", JSON, nullable=True
-    )
+    media: Mapped[dict[str, Any] | None] = mapped_column("media", JSON, nullable=True)
     # Creator-assigned / platform-extracted topic tags (e.g. yt-dlp "tags",
     # YouTube snippet tags). Used by the works-data multi-select filter.
     # Stored as a native Postgres text array so overlap (&&) filtering is fast.
-    tags: Mapped[list[str]] = mapped_column(
-        "tags", ARRAY(String(64)), nullable=False, default=list
-    )
+    tags: Mapped[list[str]] = mapped_column("tags", ARRAY(String(64)), nullable=False, default=list)
 
     platform: Mapped[Platform] = relationship(back_populates="contents")
     account: Mapped[Account] = relationship(back_populates="contents")
@@ -297,12 +300,8 @@ class Comment(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    published_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    fetched_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     content_item: Mapped[ContentItem] = relationship(back_populates="comments")
 
 

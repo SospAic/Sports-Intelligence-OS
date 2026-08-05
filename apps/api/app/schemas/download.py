@@ -8,8 +8,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.download import Download
-
 
 class DownloadCreate(BaseModel):
     url: str
@@ -29,6 +27,24 @@ class DownloadCreate(BaseModel):
     subtitle_langs: str = "zh.*,en.*"
     write_thumbnail: bool = True
     write_info_json: bool = False
+    save_to_works: bool = False
+
+
+class DownloadPreviewCreate(BaseModel):
+    url: str
+
+
+class DownloadPreviewRead(BaseModel):
+    url: str
+    platform: str | None = None
+    external_id: str | None = None
+    title: str | None = None
+    uploader: str | None = None
+    thumbnail: str | None = None
+    duration_seconds: float | None = None
+    description: str | None = None
+    subtitle_languages: list[str] = Field(default_factory=list)
+    source_kind: str = "live"
 
 
 class DownloadRead(BaseModel):

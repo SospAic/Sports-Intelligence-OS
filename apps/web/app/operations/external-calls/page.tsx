@@ -152,6 +152,7 @@ function DetailPanel({
           <code className="text-cyan-400">{attempt.id.slice(0, 8)}</code>
         </h3>
         <button
+          aria-label="关闭调用详情"
           className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-800 hover:text-white"
           onClick={onClose}
         >
@@ -364,6 +365,7 @@ export default function ExternalCallsPage() {
         const isExpanded = expandedId === row.original.id;
         return (
           <button
+            aria-label={isExpanded ? "收起调用详情" : "展开调用详情"}
             className="rounded-md p-1 text-slate-400 transition hover:bg-slate-800 hover:text-white"
             onClick={(e) => {
               e.stopPropagation();

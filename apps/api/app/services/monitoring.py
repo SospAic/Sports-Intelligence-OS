@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from typing import Any, Literal, cast
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
@@ -10,6 +11,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.adapters.platforms.yt_dlp import YtDlpAdapter
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
@@ -17,7 +19,6 @@ from app.models.monitoring import (
     ContentItem,
     ContentSnapshot,
 )
-from app.adapters.platforms.yt_dlp import YtDlpAdapter
 from app.repositories.monitoring import (
     AccountFilters,
     AccountRow,
@@ -42,12 +43,12 @@ from app.schemas.monitoring import (
     AccountSyncSettingsOverride,
     AccountSyncStatus,
     AccountUpdate,
+    CommentRead,
     ContentCalendarBucket,
     ContentCalendarResponse,
     ContentCreate,
     ContentPage,
     ContentRead,
-    CommentRead,
     ContentSnapshotPage,
     ContentSnapshotRead,
     ContentUpdate,
@@ -72,6 +73,25 @@ RESERVED_METADATA_KEYS = {
 }
 MAX_METADATA_BYTES = 65_536
 MAX_CSV_EXPORT_ROWS = 10_000
+
+
+def _display_name_from_locator(locator: str, username: str | None = None) -> str:
+    """Return a compact human label instead of storing a full profile URL."""
+
+    if username and username.strip():
+        return f"@{username.strip().lstrip('@')}"
+    raw = locator.strip().lstrip("@")
+    candidate = raw if "://" in raw else f"https://{raw}"
+    try:
+        parsed = urlparse(candidate)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parts:
+            handle = parts[-1].lstrip("@").strip()
+            if handle:
+                return f"@{handle}"
+    except ValueError:
+        pass
+    return locator.strip()
 
 
 class MonitoringError(Exception):
@@ -195,7 +215,8 @@ class MonitoringService:
             username=payload.username,
             # First registration only needs the account URL; the display name
             # is refined by the first sync when not supplied by the operator.
-            display_name=payload.display_name or payload.external_id,
+            display_name=payload.display_name
+            or _display_name_from_locator(payload.external_id, payload.username),
             profile_url=str(payload.profile_url) if payload.profile_url else None,
             avatar_url=str(payload.avatar_url) if payload.avatar_url else None,
             description=payload.description,
@@ -203,7 +224,11 @@ class MonitoringService:
             language=payload.language,
             is_verified=payload.is_verified,
             is_active=True,
-            metadata_json={**metadata, "input_mode": "manual"},
+            metadata_json={
+                **metadata,
+                "input_mode": "manual",
+                "display_name_source": "manual" if payload.display_name else "adapter",
+            },
             last_synced_at=None,
             sync_interval_seconds=payload.sync_interval_seconds,
             sync_status="never",
@@ -346,6 +371,11 @@ class MonitoringService:
                     **validate_user_metadata(metadata),
                     "input_mode": account.metadata_json.get("input_mode", "manual"),
                 }
+        if "display_name" in changes:
+            account.metadata_json = {
+                **(account.metadata_json or {}),
+                "display_name_source": "manual",
+            }
         for url_field in ("profile_url", "avatar_url"):
             if url_field in changes:
                 changes[url_field] = str(changes[url_field]) if changes[url_field] else None
@@ -449,9 +479,7 @@ class MonitoringService:
         found = {a.id for a in accounts}
         missing = [str(aid) for aid in account_ids if aid not in found]
         if missing:
-            raise MonitoringNotFoundError(
-                "accounts not found in workspace: " + ", ".join(missing)
-            )
+            raise MonitoringNotFoundError("accounts not found in workspace: " + ", ".join(missing))
 
         rows: list[AccountComparisonRow] = []
         total_followers = total_views = 0
@@ -477,9 +505,7 @@ class MonitoringService:
                     total_view_count=snap.total_view_count,
                     video_count=snap.video_count,
                     engagement_rate=(
-                        float(snap.engagement_rate)
-                        if snap.engagement_rate is not None
-                        else None
+                        float(snap.engagement_rate) if snap.engagement_rate is not None else None
                     ),
                     source_kind=cast("SourceKind", snap.source_kind),
                 )
@@ -490,15 +516,9 @@ class MonitoringService:
             follower_delta = view_delta = None
             window_hours = None
             if latest is not None and previous is not None:
-                if (
-                    latest.follower_count is not None
-                    and previous.follower_count is not None
-                ):
+                if latest.follower_count is not None and previous.follower_count is not None:
                     follower_delta = latest.follower_count - previous.follower_count
-                if (
-                    latest.total_view_count is not None
-                    and previous.total_view_count is not None
-                ):
+                if latest.total_view_count is not None and previous.total_view_count is not None:
                     view_delta = latest.total_view_count - previous.total_view_count
                 window_hours = round(
                     (latest.captured_at - previous.captured_at).total_seconds() / 3600.0, 2
@@ -563,9 +583,7 @@ class MonitoringService:
         interval, median_gap = await compute_adaptive_interval(self._session, account_id)
         account.sync_interval_seconds = interval
         await self._session.commit()
-        basis: Literal["adaptive", "default"] = (
-            "adaptive" if median_gap is not None else "default"
-        )
+        basis: Literal["adaptive", "default"] = "adaptive" if median_gap is not None else "default"
         return SyncIntervalResponse(
             account_id=account.id,
             sync_interval_seconds=interval,
@@ -710,9 +728,7 @@ class MonitoringService:
     ) -> list[CommentRead]:
         """Ranked hot comments for a content item (top ``limit``)."""
         await self.get_content(workspace_id, content_item_id)
-        rows = await self._repository.list_content_comments(
-            content_item_id, limit=limit
-        )
+        rows = await self._repository.list_content_comments(content_item_id, limit=limit)
         return [CommentRead.model_validate(row) for row in rows]
 
     async def collect_content_comments(self, content_item_id: UUID) -> int:
@@ -781,13 +797,9 @@ class MonitoringService:
             account=filters.account,
             query=filters.query,
             published_from=datetime(year, month, 1, 0, 0, 0, tzinfo=UTC),
-            published_to=datetime(
-                year, month, last_day, 23, 59, 59, 999999, tzinfo=UTC
-            ),
+            published_to=datetime(year, month, last_day, 23, 59, 59, 999999, tzinfo=UTC),
         )
-        rows = await self._repository.contents_calendar(
-            workspace_id, filters=month_filters
-        )
+        rows = await self._repository.contents_calendar(workspace_id, filters=month_filters)
         buckets = [
             ContentCalendarBucket(
                 date=date, count=count, total_views=total_views, total_likes=total_likes
@@ -814,9 +826,7 @@ class MonitoringService:
         and the UI renders the required acquisition condition instead of faking.
         """
         await self.get_account(workspace_id, account_id)
-        summary = await self._repository.summarize_account_contents(
-            workspace_id, account_id
-        )
+        summary = await self._repository.summarize_account_contents(workspace_id, account_id)
         return AccountContentSummary(account_id=account_id, **summary)
 
     @staticmethod
@@ -892,9 +902,7 @@ class MonitoringService:
             )
         )
         if existing is not None:
-            raise MonitoringConflictError(
-                "作品外部 ID 在该平台下已存在", code="content_duplicate"
-            )
+            raise MonitoringConflictError("作品外部 ID 在该平台下已存在", code="content_duplicate")
 
         now = datetime.now(UTC)
         content = ContentItem(
@@ -989,9 +997,7 @@ class MonitoringService:
         row = await self._repository.get_content(workspace_id, content_id)
         return content_read(row)  # type: ignore[arg-type]
 
-    async def delete_content(
-        self, workspace_id: UUID, actor_id: UUID, content_id: UUID
-    ) -> None:
+    async def delete_content(self, workspace_id: UUID, actor_id: UUID, content_id: UUID) -> None:
         row = await self._repository.get_content(workspace_id, content_id)
         if row is None:
             raise MonitoringNotFoundError("content item was not found")

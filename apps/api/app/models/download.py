@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -21,6 +21,7 @@ from app.db.base import Base, TimestampMixin
 
 class Download(Base, TimestampMixin):
     __tablename__ = "downloads"
+    __table_args__ = (Index("ix_downloads_workspace_status", "workspace_id", "status"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(
@@ -28,17 +29,11 @@ class Download(Base, TimestampMixin):
     )
     url: Mapped[str] = mapped_column(Text, nullable=False)
     platform: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", index=True
-    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Resolved yt-dlp download options (video format, subtitle langs, toggles).
     options: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Mirror of ContentMedia: {base, video, thumbnail, info_json, subtitles[]}
     media: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

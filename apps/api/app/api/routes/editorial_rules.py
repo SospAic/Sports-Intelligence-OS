@@ -187,22 +187,22 @@ async def list_sections_lazy(
         )
         rules_count = int(
             await db.scalar(
-                select(func.count())
-                .select_from(Rule)
-                .where(Rule.section_id == section.id)
+                select(func.count()).select_from(Rule).where(Rule.section_id == section.id)
             )
             or 0
         )
-        items.append({
-            "id": str(section.id),
-            "title": section.title,
-            "slug": section.slug,
-            "parent_id": str(section.parent_id) if section.parent_id else None,
-            "sort_order": section.sort_order,
-            "children_count": children_count,
-            "rules_count": rules_count,
-            "has_children": children_count > 0,
-        })
+        items.append(
+            {
+                "id": str(section.id),
+                "title": section.title,
+                "slug": section.slug,
+                "parent_id": str(section.parent_id) if section.parent_id else None,
+                "sort_order": section.sort_order,
+                "children_count": children_count,
+                "rules_count": rules_count,
+                "has_children": children_count > 0,
+            }
+        )
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 

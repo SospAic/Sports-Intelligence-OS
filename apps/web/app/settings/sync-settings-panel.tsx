@@ -338,45 +338,52 @@ export function SyncSettingsPanel() {
 
   useEffect(() => {
     if (hydrated || !data.data) return;
-    const cfg = data.data.config;
-    setMaxContents(cfg.max_contents != null ? String(cfg.max_contents) : "");
-    setSkipExisting(cfg.skip_existing);
-    setSyncTaskMaxRetries(
-      data.data.sync_task_max_retries != null
-        ? String(data.data.sync_task_max_retries)
-        : "",
-    );
-    setDateAfter(ymdToDateInput(cfg.yt_dlp.dateafter));
-    setDateBefore(ymdToDateInput(cfg.yt_dlp.datebefore));
-    setPlaylistStart(String(cfg.yt_dlp.playlist_start ?? 1));
-    const source = cfg.yt_dlp as unknown as Record<string, unknown>;
-    const nextYt: Record<string, YtFieldValue> = { ...DEFAULT_YT };
-    for (const group of YTDLP_FIELD_GROUPS) {
-      for (const f of group.fields) {
-        const raw = source[f.key as string];
-        if (f.type === "bool") {
-          nextYt[f.key as string] = Boolean(raw);
-        } else if (f.type === "int") {
-          nextYt[f.key as string] = raw == null || raw === "" ? null : String(raw);
-        } else {
-          nextYt[f.key as string] = raw == null ? "" : String(raw);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const cfg = data.data!.config;
+      setMaxContents(cfg.max_contents != null ? String(cfg.max_contents) : "");
+      setSkipExisting(cfg.skip_existing);
+      setSyncTaskMaxRetries(
+        data.data!.sync_task_max_retries != null
+          ? String(data.data!.sync_task_max_retries)
+          : "",
+      );
+      setDateAfter(ymdToDateInput(cfg.yt_dlp.dateafter));
+      setDateBefore(ymdToDateInput(cfg.yt_dlp.datebefore));
+      setPlaylistStart(String(cfg.yt_dlp.playlist_start ?? 1));
+      const source = cfg.yt_dlp as unknown as Record<string, unknown>;
+      const nextYt: Record<string, YtFieldValue> = { ...DEFAULT_YT };
+      for (const group of YTDLP_FIELD_GROUPS) {
+        for (const f of group.fields) {
+          const raw = source[f.key as string];
+          if (f.type === "bool") {
+            nextYt[f.key as string] = Boolean(raw);
+          } else if (f.type === "int") {
+            nextYt[f.key as string] = raw == null || raw === "" ? null : String(raw);
+          } else {
+            nextYt[f.key as string] = raw == null ? "" : String(raw);
+          }
         }
       }
-    }
-    setYt(nextYt);
-    const dlSource = (cfg.download ?? {}) as unknown as Record<string, unknown>;
-    const nextDl: Record<string, YtFieldValue> = { ...DEFAULT_DOWNLOAD };
-    for (const f of DOWNLOAD_FIELDS) {
-      const raw = dlSource[f.key];
-      if (f.type === "bool") {
-        nextDl[f.key] = Boolean(raw);
-      } else {
-        nextDl[f.key] = raw == null ? "" : String(raw);
+      setYt(nextYt);
+      const dlSource = (cfg.download ?? {}) as unknown as Record<string, unknown>;
+      const nextDl: Record<string, YtFieldValue> = { ...DEFAULT_DOWNLOAD };
+      for (const f of DOWNLOAD_FIELDS) {
+        const raw = dlSource[f.key];
+        if (f.type === "bool") {
+          nextDl[f.key] = Boolean(raw);
+        } else {
+          nextDl[f.key] = raw == null ? "" : String(raw);
+        }
       }
-    }
-    setDownload(nextDl);
-    setExtraArgs(JSON.stringify(cfg.yt_dlp.extra_args ?? {}, null, 2));
-    setHydrated(true);
+      setDownload(nextDl);
+      setExtraArgs(JSON.stringify(cfg.yt_dlp.extra_args ?? {}, null, 2));
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [data.data, hydrated]);
 
   async function saveSettings() {

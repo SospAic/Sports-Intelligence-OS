@@ -66,9 +66,7 @@ async def _collect_all_workspaces() -> dict[str, Any]:
     bind=True,
     max_retries=2,
 )
-def collect_platform_trends(
-    self: Any, workspace_id: str | None = None
-) -> dict[str, Any]:
+def collect_platform_trends(self: Any, workspace_id: str | None = None) -> dict[str, Any]:
     """采集平台趋势数据。
 
     Args:

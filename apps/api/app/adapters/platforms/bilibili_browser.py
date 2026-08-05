@@ -77,36 +77,26 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
     min_action_delay = 1.0
     max_action_delay = 3.0
 
-    async def _login_if_configured(
-        self, page: Page, ctx: AdapterCallContext
-    ) -> bool:
+    async def _login_if_configured(self, page: Page, ctx: AdapterCallContext) -> bool:
         await page.goto(
             "https://passport.bilibili.com/login",
             wait_until="domcontentloaded",
             timeout=self.page_load_timeout_ms,
         )
-        await page.locator(
-            "input[placeholder*='账号'], input[name='username']"
-        ).first.fill(str(ctx.config.get("username", "")))
-        await page.locator("input[type='password']").first.fill(
-            str(ctx.config.get("password", ""))
+        await page.locator("input[placeholder*='账号'], input[name='username']").first.fill(
+            str(ctx.config.get("username", ""))
         )
+        await page.locator("input[type='password']").first.fill(str(ctx.config.get("password", "")))
         await page.locator("button[type='submit'], .btn_primary").first.click()
         await page.wait_for_timeout(3000)
         challenge = page.locator(
             "iframe[src*='captcha'], [class*='captcha'], [id*='captcha']"
         ).first
-        if "passport.bilibili.com/login" in page.url or await challenge.is_visible(
-            timeout=500
-        ):
-            raise LoginRequiredError(
-                "Bilibili", "登录需要验证码、2FA 或其他人工验证"
-            )
+        if "passport.bilibili.com/login" in page.url or await challenge.is_visible(timeout=500):
+            raise LoginRequiredError("Bilibili", "登录需要验证码、2FA 或其他人工验证")
         return True
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         """Navigate to the user's space page and extract profile info.
 
         Intercepts the /x/space/wbi/acc/info API response for reliable data,
@@ -231,9 +221,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
         finally:
             await context.close()
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def fetch_account_analytics(
@@ -271,9 +259,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                 "total_view_count": None,
                 "total_like_count": None,
             }
-            unavailable = tuple(
-                k for k, v in metrics.items() if v is None
-            )
+            unavailable = tuple(k for k, v in metrics.items() if v is None)
             extraction_failed = follower_count is None and video_count is None
             if extraction_failed:
                 logger.warning(
@@ -348,9 +334,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                 # Fallback: try DOM scraping for older page layouts.
                 return await self._list_contents_from_dom(page, mid, page_num, page_size, ctx, url)
 
-            vlist: list[dict[str, Any]] = (
-                api_data.get("data", {}).get("list", {}).get("vlist", [])
-            )
+            vlist: list[dict[str, Any]] = api_data.get("data", {}).get("list", {}).get("vlist", [])
             total = api_data.get("data", {}).get("page", {}).get("count", 0)
 
             items: list[PlatformContentData] = []
@@ -362,9 +346,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                     cover = "https:" + cover
                 play_count = v.get("play")
                 created = v.get("created")
-                pub_dt = (
-                    datetime.fromtimestamp(created, tz=UTC) if created else None
-                )
+                pub_dt = datetime.fromtimestamp(created, tz=UTC) if created else None
                 canonical = BILIBILI_VIDEO_URL.format(bvid=bvid) if bvid else url
                 items.append(
                     PlatformContentData(
@@ -483,9 +465,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
         next_cursor = str(page_num + 1) if count >= page_size else None
         return AdapterPage(items=tuple(items), next_cursor=next_cursor)
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         """Fetch a single video page for details."""
         context, page = await self._new_page(ctx)
         try:

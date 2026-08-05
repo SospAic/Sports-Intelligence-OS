@@ -14,6 +14,7 @@ Then in the app: Settings -> Platforms -> TikTok/Douyin -> set
 "本地浏览器 CDP 地址" to http://127.0.0.1:9222 (or http://host.docker.internal:9222
 if the worker runs inside Docker).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,7 +63,9 @@ def launch(browser: str, port: int) -> int:
         "--no-default-browser-check",
         "about:blank",
     ]
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(  # noqa: S603 - executable comes from a fixed local browser allowlist
+        args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
     # Persist pid so --stop can kill it.
     pid_file = os.path.join(profile, "launcher.pid")
     with open(pid_file, "w") as f:
@@ -77,8 +80,11 @@ def launch(browser: str, port: int) -> int:
         print(f"OK: {browser} launched (pid={proc.pid}). DevTools up:")
         print(f"    http://127.0.0.1:{port}/json/version")
         print(f"    {data[:120]}")
-        print("\nNext: in the app set the platform's CDP endpoint to "
-              f"http://127.0.0.1:{port} (or http://host.docker.internal:{port} if worker is in Docker).")
+        print(
+            "\nNext: in the app set the platform's CDP endpoint to "
+            f"http://127.0.0.1:{port} (or "
+            f"http://host.docker.internal:{port} if worker is in Docker)."
+        )
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"Launched but DevTools endpoint not reachable yet: {exc}", file=sys.stderr)
@@ -91,7 +97,8 @@ def stop() -> int:
     if not os.path.exists(pid_file):
         print("No launched instance found.", file=sys.stderr)
         return 1
-    pid = int(open(pid_file).read().strip())
+    with open(pid_file, encoding="utf-8") as pid_handle:
+        pid = int(pid_handle.read().strip())
     try:
         import signal
 

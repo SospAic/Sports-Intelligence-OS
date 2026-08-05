@@ -743,7 +743,7 @@ export function AccountDetailClient({ id }: { id: string }) {
   return (
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
       <BackButton />
-      <div className="flex items-start gap-4">
+      <div className="flex items-start gap-4 sm:items-center">
         <AccountAvatar
           url={`/accounts/${item.id}/avatar`}
           remoteUrl={item.avatar_url}
@@ -815,7 +815,7 @@ export function AccountDetailClient({ id }: { id: string }) {
           />
         </div>
       </div>
-      <section className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+      <section className="flex min-h-24 flex-col justify-center rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
         <div className="flex flex-wrap items-center gap-2">
           {item.is_verified ? (
             <Badge tone="success">
@@ -885,7 +885,7 @@ export function AccountDetailClient({ id }: { id: string }) {
               }
             />
             <MetricCard
-              label="作品数"
+              label="平台作品总数"
               value={formatNumber(videoCount ?? snapshot?.video_count)}
             />
             <MetricCard
@@ -1104,7 +1104,7 @@ export function AccountDetailClient({ id }: { id: string }) {
               pick={(p) => p.total_view_count}
             />
             <MetricTrendChart
-              title="作品数"
+              title="平台作品总数"
               points={metricsHistory.data?.points ?? []}
               pick={(p) => p.video_count}
             />

@@ -128,6 +128,19 @@ class LLMProviderTestRead(BaseModel):
     tested_at: datetime
 
 
+class LLMModelOption(BaseModel):
+    id: str
+    name: str
+    owned_by: str | None = None
+
+
+class LLMModelsRead(BaseModel):
+    provider_key: str
+    source: Literal["live", "catalog", "unavailable"]
+    items: list[LLMModelOption] = Field(default_factory=list)
+    detail: str | None = None
+
+
 class PlatformCredentialUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -166,6 +179,7 @@ class PlatformCredentialRead(BaseModel):
 
 
 # -- Synchronisation settings (workspace-scoped fetch policy) ---------------
+
 
 class YtDlpSettings(BaseModel):
     """yt-dlp parameters applied to every sync in a workspace.
@@ -358,4 +372,3 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "write_info_json": False,
     },
 }
-

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.models.settings import LLMProviderSetting, PlatformCredentialSetting
 
-from .conftest import TEST_PASSWORD, PG_SYNC_URL
+from .conftest import PG_SYNC_URL, TEST_PASSWORD
 
 
 def authenticate(client: TestClient) -> str:
@@ -221,9 +221,7 @@ def test_platform_acquisition_modes_are_encrypted_retained_and_revocable(
             "config": {
                 "storage_state_json": storage_state,
                 "session_label": "owned account",
-                "session_expires_at": (
-                    datetime.now(UTC) + timedelta(days=1)
-                ).isoformat(),
+                "session_expires_at": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
                 "account_authorization_confirmed": "true",
                 "platform_session_allowed": "true",
                 "oauth_unavailable_or_insufficient": "true",
@@ -283,9 +281,7 @@ def test_platform_adapters_expose_capability_matrix(client: TestClient) -> None:
         }
         assert adapter["implementation_status"] in {"implemented", "skeleton"}
         assert isinstance(adapter["capabilities"], dict)
-        assert all(
-            isinstance(value, bool) for value in adapter["capabilities"].values()
-        )
+        assert all(isinstance(value, bool) for value in adapter["capabilities"].values())
         assert isinstance(adapter["source_kinds"], list)
         for field in adapter["config_fields"]:
             assert set(field) >= {"key", "label", "required", "secret"}

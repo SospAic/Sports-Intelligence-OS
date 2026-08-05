@@ -233,9 +233,7 @@ class YtDlpAdapter(PlatformAdapter):
         return os.path.join(media_dir, "%(id)s", fname)
 
     @staticmethod
-    def _collect_media(
-        media_root: str, media_dir: str, video_id: str
-    ) -> dict[str, Any] | None:
+    def _collect_media(media_root: str, media_dir: str, video_id: str) -> dict[str, Any] | None:
         """Scan the per-video output dir and classify discovered files.
 
         Returns ``None`` when nothing was written. ``base`` is the
@@ -293,11 +291,7 @@ class YtDlpAdapter(PlatformAdapter):
             result["info_json"] = info_json
         if subtitles:
             result["subtitles"] = subtitles
-        return (
-            result
-            if (thumbnail or video or audio or info_json or subtitles)
-            else None
-        )
+        return result if (thumbnail or video or audio or info_json or subtitles) else None
 
     def _account_url(self, handle: str) -> str:
         if self.platform == "youtube":
@@ -338,9 +332,7 @@ class YtDlpAdapter(PlatformAdapter):
             self._fb = DouyinBrowserAdapter()
         return self._fb
 
-    async def _browser_resolve(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def _browser_resolve(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         cached = self._browser_account_cache.get(locator)
         if cached is None:
             cached = await self._fallback().resolve_account(ctx, locator)
@@ -380,6 +372,29 @@ class YtDlpAdapter(PlatformAdapter):
                 if val not in (None, ""):
                     args += [f"--{flag}", str(val)]
         return args
+
+    @staticmethod
+    async def _communicate_with_timeout(
+        proc: asyncio.subprocess.Process, seconds: float
+    ) -> tuple[bytes, bytes]:
+        """Collect a yt-dlp process and terminate it when the wall clock expires."""
+
+        try:
+            async with asyncio.timeout(seconds):
+                return await proc.communicate()
+        except TimeoutError:
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+            # Drain the pipes after termination so a timed-out child cannot
+            # leave a pipe/child process attached to the worker.
+            try:
+                await proc.communicate()
+            except (asyncio.CancelledError, OSError):
+                pass
+            raise
 
     async def _run_yt_dlp(
         self,
@@ -422,14 +437,17 @@ class YtDlpAdapter(PlatformAdapter):
             "yt_dlp",
             "--dump-json",
             "--no-progress",
+            "--extractor-args",
+            "generic:impersonate=false",
         ]
-        download_enabled = self._any_download_enabled(download)
-        quality = str((download or {}).get("video_quality") or "best").strip().lower()
+        download_config: Mapping[str, Any] = download or {}
+        download_enabled = self._any_download_enabled(download_config)
+        quality = str(download_config.get("video_quality") or "best").strip().lower()
         # Default: scrape metadata only. Drop --skip-download when the operator
         # explicitly wants the video file, OR when an audio-only extraction was
         # requested (both produce a media artifact, not just metadata).
         want_media = download_enabled and (
-            download.get("download_video") or quality == "audio"
+            download_config.get("download_video") or quality == "audio"
         )
         if not want_media:
             cmd.append("--skip-download")
@@ -452,31 +470,31 @@ class YtDlpAdapter(PlatformAdapter):
             effective_structured["retries"] = YTDLP_DEFAULT_RETRIES
         cmd += self._render_structured(effective_structured)
         if download_enabled and media_dir:
-            cmd += ["-o", self._output_template(media_dir, download.get("naming_rule"))]
-            if download.get("write_thumbnail"):
+            cmd += ["-o", self._output_template(media_dir, download_config.get("naming_rule"))]
+            if download_config.get("write_thumbnail"):
                 cmd.append("--write-thumbnail")
-            if download.get("write_subtitles"):
+            if download_config.get("write_subtitles"):
                 cmd.append("--write-sub")
-            if download.get("write_auto_subtitles"):
+            if download_config.get("write_auto_subtitles"):
                 cmd.append("--write-auto-sub")
-            sub_langs = download.get("subtitle_langs")
+            sub_langs = download_config.get("subtitle_langs")
             if sub_langs and str(sub_langs).strip():
                 cmd += ["--sub-langs", str(sub_langs).strip()]
-            if download.get("write_info_json"):
+            if download_config.get("write_info_json"):
                 cmd.append("--write-info-json")
-            quality = str(download.get("video_quality") or "best").strip().lower()
+            quality = str(download_config.get("video_quality") or "best").strip().lower()
             if quality == "audio":
                 # Audio-only extraction: pull the best audio stream and remux
                 # into the requested container at the requested bitrate.
                 cmd += ["-f", "bestaudio/best", "-x"]
-                audio_fmt = str(download.get("audio_format") or "best").strip().lower()
+                audio_fmt = str(download_config.get("audio_format") or "best").strip().lower()
                 if audio_fmt not in ("best", ""):
                     cmd += ["--audio-format", audio_fmt]
-                bitrate = str(download.get("bitrate") or "").strip()
+                bitrate = str(download_config.get("bitrate") or "").strip()
                 if bitrate:
                     cmd += ["--audio-quality", bitrate]
             else:
-                fmt = self._video_format_selector(download)
+                fmt = self._video_format_selector(download_config)
                 if fmt:
                     cmd += ["-f", fmt]
         if extra_args:
@@ -496,9 +514,7 @@ class YtDlpAdapter(PlatformAdapter):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, err = await asyncio.wait_for(
-                proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
-            )
+            out, err = await self._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
         except TimeoutError as exc:
             raise TransientAdapterError("yt-dlp subprocess timed out") from exc
 
@@ -543,6 +559,8 @@ class YtDlpAdapter(PlatformAdapter):
             "--skip-download",
             "--no-warnings",
             "--no-progress",
+            "--extractor-args",
+            "generic:impersonate=false",
             "--ignore-errors",
             "--retries",
             str(int(retries)),
@@ -554,9 +572,7 @@ class YtDlpAdapter(PlatformAdapter):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, err = await asyncio.wait_for(
-                proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
-            )
+            out, err = await self._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
         except TimeoutError as exc:
             raise TransientAdapterError("yt-dlp single-json timed out") from exc
 
@@ -594,6 +610,8 @@ class YtDlpAdapter(PlatformAdapter):
             "--skip-download",
             "--no-warnings",
             "--no-progress",
+            "--extractor-args",
+            "generic:impersonate=false",
             "--ignore-errors",
             "--retries",
             str(YTDLP_DEFAULT_RETRIES),
@@ -605,9 +623,7 @@ class YtDlpAdapter(PlatformAdapter):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=YTDLP_TIMEOUT_SECONDS
-            )
+            out, _ = await YtDlpAdapter._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
         except (TimeoutError, OSError):
             return []
         if not out:
@@ -632,9 +648,7 @@ class YtDlpAdapter(PlatformAdapter):
             comments.append(
                 {
                     "platform_comment_id": str(item.get("id") or uuid4()),
-                    "author_name": item.get("author")
-                    or item.get("author_name")
-                    or "未知用户",
+                    "author_name": item.get("author") or item.get("author_name") or "未知用户",
                     "text": text,
                     "like_count": item.get("like_count"),
                     "reply_count": item.get("reply_count")
@@ -656,10 +670,10 @@ class YtDlpAdapter(PlatformAdapter):
         otherwise returns :data:`YTDLP_DEFAULT_RETRIES`. This is the single knob
         that tunes yt-dlp's built-in network retry across account-data calls.
         """
-        yt_cfg = (ctx.config or {}) if isinstance(ctx.config, dict) else {}
-        raw = (yt_cfg.get("yt_dlp") if isinstance(yt_cfg.get("yt_dlp"), dict) else {}).get(
-            "retries"
-        )
+        config = ctx.config if isinstance(ctx.config, dict) else {}
+        raw_yt_cfg = config.get("yt_dlp")
+        yt_cfg: dict[str, Any] = raw_yt_cfg if isinstance(raw_yt_cfg, dict) else {}
+        raw = yt_cfg.get("retries")
         if raw is None:
             return YTDLP_DEFAULT_RETRIES
         try:
@@ -685,9 +699,7 @@ class YtDlpAdapter(PlatformAdapter):
         cached = self._single_json_cache.get(url)
         if cached is not None:
             return cached
-        result = await self._run_yt_dlp_single(
-            url, playlist_end=playlist_end, retries=retries
-        )
+        result = await self._run_yt_dlp_single(url, playlist_end=playlist_end, retries=retries)
         self._single_json_cache[url] = result
         return result
 
@@ -772,9 +784,7 @@ class YtDlpAdapter(PlatformAdapter):
         published = self._parse_timestamp(entry)
         metrics = self._metrics_from_entry(entry)
         language = (
-            "en"
-            if self.platform == "youtube"
-            else ("zh" if self.platform == "douyin" else None)
+            "en" if self.platform == "youtube" else ("zh" if self.platform == "douyin" else None)
         )
         return PlatformContentData(
             external_id=video_id or f"{handle}_{id(entry)}",
@@ -805,9 +815,7 @@ class YtDlpAdapter(PlatformAdapter):
         # yt-dlp works anonymously; browser fallback carries its own validation.
         return None
 
-    async def resolve_account(
-        self, ctx: AdapterCallContext, locator: str
-    ) -> PlatformAccountData:
+    async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         handle = self._normalize_handle(locator)
         try:
             data, _ = await self._run_yt_dlp_single_cached(
@@ -833,9 +841,7 @@ class YtDlpAdapter(PlatformAdapter):
         description = data.get("description")
         channel_id = data.get("channel_id") or data.get("uploader_id")
         language = (
-            "en"
-            if self.platform == "youtube"
-            else ("zh" if self.platform == "douyin" else None)
+            "en" if self.platform == "youtube" else ("zh" if self.platform == "douyin" else None)
         )
         result = PlatformAccountData(
             external_id=handle,
@@ -860,9 +866,7 @@ class YtDlpAdapter(PlatformAdapter):
         # when yt-dlp is unavailable, never to "fill gaps".
         return result
 
-    async def fetch_account(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformAccountData:
+    async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
 
     async def fetch_account_analytics(
@@ -917,9 +921,7 @@ class YtDlpAdapter(PlatformAdapter):
         # and are surfaced via ``unavailable_metrics`` rather than misreported
         # as a degraded sync. YouTube keeps using yt-dlp's channel JSON, which
         # does carry these metrics.
-        if self.platform in ("tiktok", "douyin") and all(
-            v is None for v in metrics.values()
-        ):
+        if self.platform in ("tiktok", "douyin") and all(v is None for v in metrics.values()):
             try:
                 fb = await self._browser_analytics(ctx, handle)
                 merged: dict[str, int | float | None] = dict(metrics)
@@ -969,11 +971,12 @@ class YtDlpAdapter(PlatformAdapter):
         self._cache.clear()
 
         cfg = ctx.config or {}
-        yt_cfg = cfg.get("yt_dlp") if isinstance(cfg.get("yt_dlp"), dict) else {}
-        dateafter = yt_cfg.get("dateafter") if isinstance(yt_cfg, dict) else None
-        datebefore = yt_cfg.get("datebefore") if isinstance(yt_cfg, dict) else None
-        max_items = yt_cfg.get("max_items") if isinstance(yt_cfg, dict) else None
-        extra_args = yt_cfg.get("extra_args") if isinstance(yt_cfg, dict) else None
+        raw_yt_cfg = cfg.get("yt_dlp")
+        yt_cfg: dict[str, Any] = raw_yt_cfg if isinstance(raw_yt_cfg, dict) else {}
+        dateafter = yt_cfg.get("dateafter")
+        datebefore = yt_cfg.get("datebefore")
+        max_items = yt_cfg.get("max_items")
+        extra_args = yt_cfg.get("extra_args")
         # Download policy (yt-dlp file-producing flags). When enabled we stage
         # artifacts under a per-account media dir resolved from the workspace
         # media root; the sync executor stores the produced paths on the row.
@@ -1056,9 +1059,7 @@ class YtDlpAdapter(PlatformAdapter):
                 # ``media_root`` is workspace-scoped (MEDIA_ROOT/<ws>); the
                 # relative ``base`` stored on the row must be relative to the
                 # global MEDIA_ROOT so the ``/media`` route resolves it.
-                media = self._collect_media(
-                    os.path.dirname(media_root), media_dir, str(vid)
-                )
+                media = self._collect_media(os.path.dirname(media_root), media_dir, str(vid))
             content = self._entry_to_content(entry, handle, ctx, media=media)
             items.append(content)
             self._cache[content.external_id] = self._metrics_from_entry(entry)
@@ -1078,9 +1079,7 @@ class YtDlpAdapter(PlatformAdapter):
         # failure (TransientAdapterError or an empty first page above).
         return AdapterPage(items=tuple(items), next_cursor=next_cursor)
 
-    async def fetch_content(
-        self, ctx: AdapterCallContext, external_id: str
-    ) -> PlatformContentData:
+    async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         if self.platform == "youtube":
             url = f"https://www.youtube.com/watch?v={external_id}"
             try:
@@ -1142,7 +1141,7 @@ class YtDlpAdapter(PlatformAdapter):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            _, _ = await self._communicate_with_timeout(proc, 15)
             if proc.returncode == 0:
                 return AdapterHealth(
                     status="ok",

@@ -52,7 +52,11 @@ export const METRIC_CONTRACT: Record<string, MetricContract> = {
     conditionText: "",
     label: "总播放量",
   },
-  video_count: { method: "public_browse", conditionText: "", label: "作品数" },
+  video_count: {
+    method: "public_browse",
+    conditionText: "",
+    label: "平台作品总数",
+  },
   engagement_rate: {
     method: "public_browse",
     conditionText: "",

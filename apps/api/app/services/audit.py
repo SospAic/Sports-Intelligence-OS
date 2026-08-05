@@ -10,6 +10,8 @@ recorded — there is a single place to keep that behaviour consistent.
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from app.models.operations import AuditEntry, ExternalCallAttempt
@@ -27,11 +29,11 @@ def build_audit_entry(
     resource_id: UUID | None,
     before_hash: str | None = None,
     after_hash: str | None = None,
-    change_summary_json: dict | None = None,
+    change_summary_json: dict[str, Any] | None = None,
     reason: str | None = None,
     ip_hash: str | None = None,
     trace_id: UUID,
-    created_at,
+    created_at: datetime,
     status: str = "success",
     error_code: str | None = None,
     error_detail: str | None = None,
@@ -70,7 +72,7 @@ def build_audit_entry(
     )
 
 
-def build_external_call_attempt(**kwargs) -> ExternalCallAttempt:
+def build_external_call_attempt(**kwargs: Any) -> ExternalCallAttempt:
     """Construct an :class:`ExternalCallAttempt`, deriving ``error_hint``.
 
     When an ``error_code`` is present (i.e. the call failed), the

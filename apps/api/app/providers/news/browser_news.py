@@ -50,8 +50,7 @@ _USER_AGENTS = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) "
-    "Gecko/20100101 Firefox/127.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
 )
@@ -246,9 +245,7 @@ class BrowserNewsProvider(NewsProvider):
     # ─── Selector resolution ──────────────────────────────────────────────
 
     @staticmethod
-    def _selectors_from_config(
-        config: Mapping[str, Any], url: str
-    ) -> dict[str, str | None]:
+    def _selectors_from_config(config: Mapping[str, Any], url: str) -> dict[str, str | None]:
         """Resolve CSS selectors from config or built-in presets."""
         preset = _resolve_preset(url, config)
         return {
@@ -257,13 +254,9 @@ class BrowserNewsProvider(NewsProvider):
                 or (preset.article_container if preset else "article")
             ),
             "title": str(
-                config.get("selector_title")
-                or (preset.title if preset else "h1, h2, h3")
+                config.get("selector_title") or (preset.title if preset else "h1, h2, h3")
             ),
-            "link": str(
-                config.get("selector_link")
-                or (preset.link if preset else "a[href]")
-            ),
+            "link": str(config.get("selector_link") or (preset.link if preset else "a[href]")),
             "summary": (
                 str(config["selector_summary"])
                 if config.get("selector_summary")
@@ -290,9 +283,7 @@ class BrowserNewsProvider(NewsProvider):
                 "browser_news source requires a 'url' config field"
             )
         if not url.lower().startswith(("https://", "http://")):
-            raise NewsProviderConfigurationError(
-                "browser_news source URL must be absolute HTTP(S)"
-            )
+            raise NewsProviderConfigurationError("browser_news source URL must be absolute HTTP(S)")
 
     async def fetch_latest(
         self,
@@ -323,33 +314,28 @@ class BrowserNewsProvider(NewsProvider):
         filtered = [
             article
             for article in articles
-            if article.published_at is None
-            or (start <= article.published_at <= end)
+            if article.published_at is None or (start <= article.published_at <= end)
         ]
         return NewsPage(items=tuple(filtered[:limit]), next_cursor=None)
 
     async def normalize_article(
         self, raw: Mapping[str, Any], ctx: NewsCallContext
     ) -> NewsArticleData:
-        title = str(raw.get("title", "")).strip()
+        title = clean_text(raw.get("title"), limit=1000)
         link = str(raw.get("link", "")).strip()
         if not title or not link:
-            raise NewsProviderContractError(
-                "browser_news article requires both title and link"
-            )
+            raise NewsProviderContractError("browser_news article requires both title and link")
         try:
             canonical = canonicalize_url(link)
         except ValueError:
             canonical = link
         published_at = parse_iso_datetime(raw.get("timestamp"))
-        external_id = hashlib.sha256(
-            f"browser_news:{canonical}:{title}".encode()
-        ).hexdigest()[:32]
+        external_id = hashlib.sha256(f"browser_news:{canonical}:{title}".encode()).hexdigest()[:32]
         return NewsArticleData(
             external_id=external_id,
             canonical_url=canonical,
             title=title,
-            summary=clean_text(raw.get("summary")),
+            summary=clean_text(raw.get("summary"), limit=20_000),
             content=None,
             author=None,
             published_at=published_at,

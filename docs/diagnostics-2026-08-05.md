@@ -1,9 +1,5 @@
 # 开放诊断项（#9 / #10 / #11）
 
-> 环境约束：本机 Docker Desktop 当前无法启动，无法连库执行。以下为**可执行的诊断 SQL + 根因分析**，
-> 待 Docker 恢复（`docker compose up -d`）后在 `postgres` 容器中执行，或在 api 容器内用
-> `python -c "import sqlalchemy..."` 跑。前置：先 `docker compose up -d postgres redis` 再连。
->
 > **2026-08-05 更新**：Docker 已恢复，全部 SQL 已实际执行。注意 #11 原 SQL 为推测，与真实表结构不符——
 > `sync_run_events` 实际列：`sync_run_id(uuid)`、`sequence`、`event_type`、`level`、`message`、`payload(jsonb)`、
 > `created_at`，**没有** `run_id` / `started_at` / `ended_at` / `stage` / `detail`。下方已替换为已验证的 SQL。
@@ -120,7 +116,9 @@ LIMIT 30;
 
 字幕/缩略图归档的**实现已在代码中就位**：`DEFAULT_SYNC_SETTINGS_CONFIG["download"]` 默认
 `write_subtitles=True / write_thumbnail=True`，`_config_for` 透传给 yt-dlp，`_collect_media` 写入
-`content.media` 并由 `/media/{content_id}/{file}` 提供。因此**后续同步会自动归档字幕**。
+`content.media` 并由 `/media/{content_id}/{file}` 提供。另已修复元数据同步覆盖旧媒体清单的问题：
+若本次未发现新文件，会保留历史 `content.media`；若发现新文件则合并写入。因此**后续启用下载的同步会归档，
+已有媒体不会被元数据同步擦除**。
 历史 0 字幕行（DB 统计 8974 条内容中 `media->subtitles` 非空为 0）是旧同步遗留，回填 = 对 YouTube 账号
 重新同步一次（注意 8000+ 视频较慢，建议分批 / 限 `max_items`）。无需新增代码。
 
@@ -140,3 +138,9 @@ LIMIT 30;
 - **修复动作**：对 `ITTFWorld`、`fitvisionn` 两个 YouTube 账号各重跑一次同步，即可回填快照
   （属运行操作，无需改代码）。
 
+## 本轮新增修复（2026-08-05）
+
+- 同步调用增加整体墙钟预算：分页、指标分析和浏览器/外部适配器调用均受剩余预算约束；预算耗尽时保留已入库作品并明确标记为截断/降级。
+- yt-dlp 超时会终止并回收子进程，避免 worker 留下悬挂进程或管道。
+- 账号 URL 展示名规范化为短句柄；账号对比移动端对长 URL 做可读化、截断和溢出保护。
+- 生成任务补齐可查询的 `error_code` / `error_detail_safe`，新闻源补齐 `last_attempt_at`；迁移为 `20260805_0005_complete_error_contract`，并以 `20260805_0006_schema_alignment` 对齐模型、约束和索引，`alembic check` 已通过。

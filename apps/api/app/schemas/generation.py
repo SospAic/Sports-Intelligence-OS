@@ -220,6 +220,9 @@ class GenerationRunRead(BaseModel):
     token_usage: dict[str, Any]
     estimated_cost: Decimal | None
     error: dict[str, Any] | None
+    error_code: str | None = None
+    error_detail: str | None = Field(default=None, validation_alias="error_detail_safe")
+    error_hint: str | None = None
     metadata: dict[str, Any] = Field(
         validation_alias="run_metadata", serialization_alias="metadata"
     )

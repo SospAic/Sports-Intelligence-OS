@@ -34,7 +34,7 @@ from app.models.workspace import Workspace
 from app.providers.registry import ProviderRegistry
 from app.services.sync import PlatformSyncExecutor, SyncService
 
-from .conftest import PG_ASYNC_URL, RealShapedTestAdapter, TEST_REDIS_URL
+from .conftest import PG_ASYNC_URL, TEST_REDIS_URL, RealShapedTestAdapter
 
 ADAPTER_KEY = "test_sync_adapter"
 SKELETON_KEY = "skeleton_test"
@@ -308,29 +308,49 @@ async def test_recover_stale_orphan_without_lock_key() -> None:
         s.add_all(
             [
                 Workspace(
-                    id=workspace_id, name="ws", slug="ws", status="active",
-                    default_timezone="UTC", row_version=1,
+                    id=workspace_id,
+                    name="ws",
+                    slug="ws",
+                    status="active",
+                    default_timezone="UTC",
+                    row_version=1,
                 ),
                 Platform(
-                    id=platform_id, key="test_platform", name="Test", category="video",
-                    enabled=True, adapter_key=ADAPTER_KEY, capabilities={},
+                    id=platform_id,
+                    key="test_platform",
+                    name="Test",
+                    category="video",
+                    enabled=True,
+                    adapter_key=ADAPTER_KEY,
+                    capabilities={},
                 ),
                 Account(
-                    id=account_id, workspace_id=workspace_id, platform_id=platform_id,
-                    external_id="external-orphan", display_name="孤儿账号",
-                    source_kind="imported", source_provider="manual",
-                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC), sync_status="syncing",
+                    id=account_id,
+                    workspace_id=workspace_id,
+                    platform_id=platform_id,
+                    external_id="external-orphan",
+                    display_name="孤儿账号",
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
+                    sync_status="syncing",
                 ),
             ]
         )
         await s.commit()
         s.add(
             SyncRun(
-                id=run_id, workspace_id=workspace_id, target_type="account",
-                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-orphan",
+                id=run_id,
+                workspace_id=workspace_id,
+                target_type="account",
+                target_id=account_id,
+                adapter_key=ADAPTER_KEY,
+                request_id="req-orphan",
                 queued_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
                 started_at=datetime(2026, 7, 25, 12, 5, tzinfo=UTC),
-                status="running", lock_key=None, metadata_json={},
+                status="running",
+                lock_key=None,
+                metadata_json={},
             )
         )
         await s.commit()
@@ -372,39 +392,65 @@ async def test_recover_stale_orphan_keeps_newer_completed_status() -> None:
         s.add_all(
             [
                 Workspace(
-                    id=workspace_id, name="ws", slug="ws", status="active",
-                    default_timezone="UTC", row_version=1,
+                    id=workspace_id,
+                    name="ws",
+                    slug="ws",
+                    status="active",
+                    default_timezone="UTC",
+                    row_version=1,
                 ),
                 Platform(
-                    id=platform_id, key="test_platform", name="Test", category="video",
-                    enabled=True, adapter_key=ADAPTER_KEY, capabilities={},
+                    id=platform_id,
+                    key="test_platform",
+                    name="Test",
+                    category="video",
+                    enabled=True,
+                    adapter_key=ADAPTER_KEY,
+                    capabilities={},
                 ),
                 Account(
-                    id=account_id, workspace_id=workspace_id, platform_id=platform_id,
-                    external_id="external-guard", display_name="守护账号",
-                    source_kind="imported", source_provider="manual",
-                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC), sync_status="success",
+                    id=account_id,
+                    workspace_id=workspace_id,
+                    platform_id=platform_id,
+                    external_id="external-guard",
+                    display_name="守护账号",
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=datetime(2026, 7, 1, tzinfo=UTC),
+                    sync_status="success",
                 ),
             ]
         )
         await s.commit()
         s.add(
             SyncRun(
-                id=orphan_id, workspace_id=workspace_id, target_type="account",
-                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-orphan2",
+                id=orphan_id,
+                workspace_id=workspace_id,
+                target_type="account",
+                target_id=account_id,
+                adapter_key=ADAPTER_KEY,
+                request_id="req-orphan2",
                 queued_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
                 started_at=datetime(2026, 7, 25, 12, 5, tzinfo=UTC),
-                status="running", lock_key=None, metadata_json={},
+                status="running",
+                lock_key=None,
+                metadata_json={},
             )
         )
         s.add(
             SyncRun(
-                id=newer_id, workspace_id=workspace_id, target_type="account",
-                target_id=account_id, adapter_key=ADAPTER_KEY, request_id="req-newer",
+                id=newer_id,
+                workspace_id=workspace_id,
+                target_type="account",
+                target_id=account_id,
+                adapter_key=ADAPTER_KEY,
+                request_id="req-newer",
                 queued_at=datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
                 started_at=datetime(2026, 8, 2, 12, 5, tzinfo=UTC),
-                status="success", finished_at=datetime(2026, 8, 2, 12, 30, tzinfo=UTC),
-                lock_key=None, metadata_json={},
+                status="success",
+                finished_at=datetime(2026, 8, 2, 12, 30, tzinfo=UTC),
+                lock_key=None,
+                metadata_json={},
             )
         )
         await s.commit()

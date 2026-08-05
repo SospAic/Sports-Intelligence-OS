@@ -65,11 +65,13 @@ export function MetricCard({
 }) {
   return (
     <Panel className="p-5">
-      <div className="flex items-start justify-between">
-        <p className="text-sm text-slate-400">{label}</p>
-        <span className="text-cyan-400">{icon}</span>
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <p className="min-w-0 truncate whitespace-nowrap text-xs text-slate-400 sm:text-sm" title={label}>
+          {label}
+        </p>
+        <span className="shrink-0 text-cyan-400">{icon}</span>
       </div>
-      <p className="mt-4 text-2xl font-semibold text-white">{value}</p>
+      <p className="mt-4 truncate text-2xl font-semibold tabular-nums text-white">{value}</p>
       {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
     </Panel>
   );

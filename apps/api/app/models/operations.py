@@ -187,6 +187,10 @@ class AuditEntry(Base):
     __table_args__ = (
         UniqueConstraint("id", "created_at"),
         Index("ix_audit_workspace_created", "workspace_id", "created_at"),
+        CheckConstraint(
+            "status IN ('success', 'failed')",
+            name="ck_audit_entries_status",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -205,12 +209,7 @@ class AuditEntry(Base):
     ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     trace_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(32),
-        CheckConstraint("status IN ('success', 'failed')", name="ck_audit_entries_status"),
-        nullable=False,
-        default="success",
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)

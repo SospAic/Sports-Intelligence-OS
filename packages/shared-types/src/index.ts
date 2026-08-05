@@ -386,6 +386,19 @@ export interface LLMProviderTestResult {
   tested_at: string;
 }
 
+export interface LLMModelOption {
+  id: string;
+  name: string;
+  owned_by: string | null;
+}
+
+export interface LLMModelsResult {
+  provider_key: string;
+  source: "live" | "catalog" | "unavailable";
+  items: LLMModelOption[];
+  detail: string | null;
+}
+
 export interface GenerationStep {
   id: string;
   step_key: string;
@@ -711,6 +724,7 @@ export interface NewsSourceRecord {
   priority: number;
   enabled: boolean;
   provider_key: string;
+  last_attempt_at: string | null;
   last_synced_at: string | null;
   next_sync_at: string | null;
   last_error_code: string | null;

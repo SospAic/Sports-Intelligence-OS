@@ -5,11 +5,12 @@ request and serves the permanent local copy afterwards; a miss returns 404 so
 the frontend can fall back to the remote URL and then initials.
 """
 
-import pytest
-from fastapi.testclient import TestClient
 from uuid import uuid4
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID
+import pytest
+from fastapi.testclient import TestClient
+
+from .conftest import TEST_PLATFORM_ID
 from .test_monitoring_api import authenticate
 
 # Minimal 1x1 PNG — enough to assert the bytes round-trip through the route.
@@ -104,7 +105,5 @@ def test_account_avatar_404_when_fetch_fails(
 
 
 def test_account_avatar_requires_auth(client: TestClient) -> None:
-    response = client.get(
-        "/api/v1/accounts/00000000-0000-0000-0000-000000000000/avatar"
-    )
+    response = client.get("/api/v1/accounts/00000000-0000-0000-0000-000000000000/avatar")
     assert response.status_code == 401

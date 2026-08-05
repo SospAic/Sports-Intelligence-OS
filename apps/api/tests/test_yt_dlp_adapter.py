@@ -81,9 +81,7 @@ TIKTOK_VIDEO = {
 
 
 def make_ctx() -> SimpleNamespace:
-    return SimpleNamespace(
-        observed_at=datetime(2026, 1, 1, tzinfo=UTC), config={}, request_id="r1"
-    )
+    return SimpleNamespace(observed_at=datetime(2026, 1, 1, tzinfo=UTC), config={}, request_id="r1")
 
 
 def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
@@ -109,6 +107,7 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
     # at the top level of that object (not in the per-video entries).
     single = dict(channel_entries[0]) if channel_entries else {}
     single.setdefault("playlist_count", 500)
+
     async def _fake_single(url, *, playlist_end=1, **kwargs):
         return single, ""
 
@@ -117,13 +116,8 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
 
 def test_extract_thumbnail_variants():
     adapter = YouTubeYtDlpAdapter()
-    assert (
-        adapter._extract_thumbnail({"thumbnail": "http://x/a.jpg"}) == "http://x/a.jpg"
-    )
-    assert (
-        adapter._extract_thumbnail({"thumbnail": {"url": "http://x/b.jpg"}})
-        == "http://x/b.jpg"
-    )
+    assert adapter._extract_thumbnail({"thumbnail": "http://x/a.jpg"}) == "http://x/a.jpg"
+    assert adapter._extract_thumbnail({"thumbnail": {"url": "http://x/b.jpg"}}) == "http://x/b.jpg"
     assert (
         adapter._extract_thumbnail(
             {
@@ -505,6 +499,7 @@ class _StubFallback:
 @pytest.mark.asyncio
 async def test_fallback_used_when_yt_dlp_empty():
     adapter = DouyinYtDlpAdapter()
+
     # yt-dlp yields nothing → must delegate to the browser adapter.
     async def _empty(
         url,
@@ -543,9 +538,18 @@ async def test_empty_trailing_page_does_not_fallback():
 
     adapter._fb = _StubFallback()  # type: ignore[assignment]
 
-    async def _empty(url, *, playlist_start=None, playlist_end=None, dateafter=None,
-                    datebefore=None, extra_args=None, structured=None,
-                    download=None, media_dir=None):
+    async def _empty(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+    ):
         return [], ""
 
     adapter._run_yt_dlp = _empty  # type: ignore[assignment]
@@ -599,9 +603,7 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
 async def test_list_contents_paginates_past_default_ceiling():
     adapter = YouTubeYtDlpAdapter()
     # 120-video playlist; previously capped at ~50 in a single call.
-    all_entries = [
-        {**YOUTUBE_VIDEO, "id": f"vid{i}", "title": f"Video {i}"} for i in range(120)
-    ]
+    all_entries = [{**YOUTUBE_VIDEO, "id": f"vid{i}", "title": f"Video {i}"} for i in range(120)]
     _make_windowed_adapter(adapter, all_entries)
 
     ctx = make_ctx()
@@ -663,9 +665,7 @@ async def test_extra_args_passthrough_to_yt_dlp():
 
     ctx = make_ctx()
     ctx.config = {"yt_dlp": {"extra_args": {"match_filter": "test", "geo_bypass": True}}}
-    await adapter.list_contents(
-        ctx, "olympics", published_after=None, cursor=None, page_size=10
-    )
+    await adapter.list_contents(ctx, "olympics", published_after=None, cursor=None, page_size=10)
     assert captured["extra_args"] == {"match_filter": "test", "geo_bypass": True}
 
 
@@ -686,9 +686,7 @@ async def test_structured_yt_dlp_params_reach_adapter():
             "playlist_reverse": False,  # falsy bool → must NOT emit a flag
         }
     }
-    await adapter.list_contents(
-        ctx, "olympics", published_after=None, cursor=None, page_size=10
-    )
+    await adapter.list_contents(ctx, "olympics", published_after=None, cursor=None, page_size=10)
     # The structured policy is forwarded wholesale to the command builder.
     assert captured["structured"] == {
         "proxy": "http://proxy:8080",
@@ -724,9 +722,7 @@ def test_render_structured_translates_fields_to_flags():
 
 
 def test_render_structured_skips_empty_and_none():
-    args = YtDlpAdapter._render_structured(
-        {"proxy": "", "age_limit": None, "geo_bypass": False}
-    )
+    args = YtDlpAdapter._render_structured({"proxy": "", "age_limit": None, "geo_bypass": False})
     assert args == []
 
 
@@ -755,9 +751,7 @@ def test_collect_media_classifies_files(tmp_path):
     (d / f"{video_id}.info.json").write_text("{}")
     (d / f"{video_id}.mp4").write_bytes(b"x")
 
-    result = YouTubeYtDlpAdapter._collect_media(
-        str(media_root), str(media_dir), video_id
-    )
+    result = YouTubeYtDlpAdapter._collect_media(str(media_root), str(media_dir), video_id)
     assert result is not None
     assert result["base"] == os.path.join("handle", video_id)
     assert result["thumbnail"] == f"{video_id}.webp"
@@ -767,10 +761,7 @@ def test_collect_media_classifies_files(tmp_path):
 
 
 def test_collect_media_none_when_absent(tmp_path):
-    assert (
-        YouTubeYtDlpAdapter._collect_media(str(tmp_path), str(tmp_path / "h"), "nope")
-        is None
-    )
+    assert YouTubeYtDlpAdapter._collect_media(str(tmp_path), str(tmp_path / "h"), "nope") is None
 
 
 def test_media_route_blocks_path_traversal(tmp_path):
@@ -780,10 +771,7 @@ def test_media_route_blocks_path_traversal(tmp_path):
     media_mod.MEDIA_ROOT = str(tmp_path)
     try:
         # Enough ".." to climb above MEDIA_ROOT entirely → must be rejected.
-        assert (
-            media_mod._safe_media_path("ws/h/abc", "../../../../../../../etc/passwd")
-            is None
-        )
+        assert media_mod._safe_media_path("ws/h/abc", "../../../../../../../etc/passwd") is None
         ok = media_mod._safe_media_path("ws/h/abc", "abc.mp4")
         assert ok == str(tmp_path / "ws" / "h" / "abc" / "abc.mp4")
     finally:
@@ -822,9 +810,7 @@ def _capture_cmd(adapter, *, single=True, retries=None):
                 loop.run_until_complete(adapter._run_yt_dlp("https://example.com/x"))
             else:
                 loop.run_until_complete(
-                    adapter._run_yt_dlp(
-                        "https://example.com/x", structured={"retries": retries}
-                    )
+                    adapter._run_yt_dlp("https://example.com/x", structured={"retries": retries})
                 )
     finally:
         asyncio.create_subprocess_exec = real
@@ -877,4 +863,3 @@ def test_resolve_retries_reads_sync_settings_override():
         config = {"yt_dlp": {"retries": "not-a-number"}}
 
     assert adapter._resolve_retries(_CtxBad()) == 10
-

@@ -16,6 +16,7 @@ from enum import StrEnum
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 class EntityType(StrEnum):
     SPORT = "sport"
     LEAGUE = "league"
@@ -175,27 +176,135 @@ LEAGUE_TERMS: dict[str, str] = {
 # frequently appearing in sports news.
 LOCATION_TERMS: set[str] = {
     # Countries (Chinese + English)
-    "中国", "美国", "英国", "法国", "德国", "西班牙", "意大利", "葡萄牙",
-    "荷兰", "比利时", "巴西", "阿根廷", "墨西哥", "日本", "韩国", "澳大利亚",
-    "加拿大", "俄罗斯", "乌克兰", "波兰", "瑞典", "丹麦", "挪威", "瑞士",
-    "奥地利", "克罗地亚", "塞尔维亚", "土耳其", "埃及", "摩洛哥", "尼日利亚",
-    "喀麦隆", "塞内加尔", "哥伦比亚", "智利", "乌拉圭", "巴拉圭",
-    "china", "usa", "united states", "uk", "united kingdom", "england",
-    "france", "germany", "spain", "italy", "portugal", "netherlands",
-    "belgium", "brazil", "argentina", "mexico", "japan", "south korea",
-    "australia", "canada", "russia", "ukraine", "poland", "sweden",
-    "denmark", "norway", "switzerland", "austria", "croatia", "serbia",
-    "turkey", "egypt", "morocco", "nigeria", "cameroon", "senegal",
-    "colombia", "chile", "uruguay",
+    "中国",
+    "美国",
+    "英国",
+    "法国",
+    "德国",
+    "西班牙",
+    "意大利",
+    "葡萄牙",
+    "荷兰",
+    "比利时",
+    "巴西",
+    "阿根廷",
+    "墨西哥",
+    "日本",
+    "韩国",
+    "澳大利亚",
+    "加拿大",
+    "俄罗斯",
+    "乌克兰",
+    "波兰",
+    "瑞典",
+    "丹麦",
+    "挪威",
+    "瑞士",
+    "奥地利",
+    "克罗地亚",
+    "塞尔维亚",
+    "土耳其",
+    "埃及",
+    "摩洛哥",
+    "尼日利亚",
+    "喀麦隆",
+    "塞内加尔",
+    "哥伦比亚",
+    "智利",
+    "乌拉圭",
+    "巴拉圭",
+    "china",
+    "usa",
+    "united states",
+    "uk",
+    "united kingdom",
+    "england",
+    "france",
+    "germany",
+    "spain",
+    "italy",
+    "portugal",
+    "netherlands",
+    "belgium",
+    "brazil",
+    "argentina",
+    "mexico",
+    "japan",
+    "south korea",
+    "australia",
+    "canada",
+    "russia",
+    "ukraine",
+    "poland",
+    "sweden",
+    "denmark",
+    "norway",
+    "switzerland",
+    "austria",
+    "croatia",
+    "serbia",
+    "turkey",
+    "egypt",
+    "morocco",
+    "nigeria",
+    "cameroon",
+    "senegal",
+    "colombia",
+    "chile",
+    "uruguay",
     # Major cities (Chinese + English)
-    "北京", "上海", "广州", "深圳", "成都", "伦敦", "巴黎", "马德里",
-    "巴塞罗那", "慕尼黑", "米兰", "罗马", "东京", "大阪", "首尔", "纽约",
-    "洛杉矶", "芝加哥", "迈阿密", "多伦多", "悉尼", "墨尔本", "莫斯科",
-    "beijing", "shanghai", "guangzhou", "shenzhen", "chengdu",
-    "london", "paris", "madrid", "barcelona", "munich", "milan", "rome",
-    "tokyo", "osaka", "seoul", "new york", "los angeles", "chicago",
-    "miami", "toronto", "sydney", "melbourne", "moscow", "manchester",
-    "liverpool", "dortmund", "berlin", "amsterdam", "lisbon",
+    "北京",
+    "上海",
+    "广州",
+    "深圳",
+    "成都",
+    "伦敦",
+    "巴黎",
+    "马德里",
+    "巴塞罗那",
+    "慕尼黑",
+    "米兰",
+    "罗马",
+    "东京",
+    "大阪",
+    "首尔",
+    "纽约",
+    "洛杉矶",
+    "芝加哥",
+    "迈阿密",
+    "多伦多",
+    "悉尼",
+    "墨尔本",
+    "莫斯科",
+    "beijing",
+    "shanghai",
+    "guangzhou",
+    "shenzhen",
+    "chengdu",
+    "london",
+    "paris",
+    "madrid",
+    "barcelona",
+    "munich",
+    "milan",
+    "rome",
+    "tokyo",
+    "osaka",
+    "seoul",
+    "new york",
+    "los angeles",
+    "chicago",
+    "miami",
+    "toronto",
+    "sydney",
+    "melbourne",
+    "moscow",
+    "manchester",
+    "liverpool",
+    "dortmund",
+    "berlin",
+    "amsterdam",
+    "lisbon",
 }
 
 
@@ -204,30 +313,23 @@ LOCATION_TERMS: set[str] = {
 # ---------------------------------------------------------------------------
 
 # Score pattern: "3-2", "108-102", "3:2" (common in some sports contexts)
-_SCORE_RE = re.compile(
-    r"\b(\d{1,3})\s*[-:]\s*(\d{1,3})\b"
-)
+_SCORE_RE = re.compile(r"\b(\d{1,3})\s*[-:]\s*(\d{1,3})\b")
 
 # Capitalised English words / sequences (for person name detection)
-_CAPITALISED_WORD_RE = re.compile(
-    r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b"
-)
+_CAPITALISED_WORD_RE = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b")
 
 # Chinese name heuristic: 2-4 character sequences of CJK Unified
 # Ideographs that are NOT in the sports/league/location dictionaries.
-_CHINESE_NAME_RE = re.compile(
-    r"([\u4e00-\u9fff]{2,4})"
-)
+_CHINESE_NAME_RE = re.compile(r"([\u4e00-\u9fff]{2,4})")
 
 # Match multi-word English terms (up to 4 words) for dictionary lookup
-_MULTI_WORD_RE = re.compile(
-    r"\b([A-Za-z][A-Za-z ]{1,30}?)\b"
-)
+_MULTI_WORD_RE = re.compile(r"\b([A-Za-z][A-Za-z ]{1,30}?)\b")
 
 
 # ---------------------------------------------------------------------------
 # Core extraction functions
 # ---------------------------------------------------------------------------
+
 
 def extract_entities(text: str) -> list[ExtractedEntity]:
     """Extract entities from a single text string.
@@ -246,9 +348,7 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
         if key not in seen:
             seen.add(key)
             entities.append(
-                ExtractedEntity(
-                    text=raw_text.strip(), entity_type=etype, confidence=confidence
-                )
+                ExtractedEntity(text=raw_text.strip(), entity_type=etype, confidence=confidence)
             )
 
     text_lower = text.lower()
@@ -258,21 +358,21 @@ def extract_entities(text: str) -> list[ExtractedEntity]:
         if term in text_lower:
             # Prefer the original-case substring from the input text
             idx = text_lower.find(term)
-            original = text[idx: idx + len(term)]
+            original = text[idx : idx + len(term)]
             _add(original, EntityType.SPORT, confidence=0.95)
 
     # 2. Leagues ----------------------------------------------------------
     for term in LEAGUE_TERMS:
         if term in text_lower:
             idx = text_lower.find(term)
-            original = text[idx: idx + len(term)]
+            original = text[idx : idx + len(term)]
             _add(original, EntityType.LEAGUE, confidence=0.95)
 
     # 3. Locations --------------------------------------------------------
     for loc in LOCATION_TERMS:
         if loc in text_lower:
             idx = text_lower.find(loc)
-            original = text[idx: idx + len(loc)]
+            original = text[idx : idx + len(loc)]
             _add(original, EntityType.LOCATION, confidence=0.90)
 
     # 4. Scores -----------------------------------------------------------
@@ -376,6 +476,7 @@ def extract_article_entities(
 # Entity similarity
 # ---------------------------------------------------------------------------
 
+
 def compute_entity_similarity(
     entities_a: list[ExtractedEntity],
     entities_b: list[ExtractedEntity],
@@ -455,36 +556,235 @@ def compute_entity_similarity(
 # ---------------------------------------------------------------------------
 
 _STOP_WORDS: set[str] = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "dare", "ought",
-    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-    "as", "into", "through", "during", "before", "after", "above",
-    "below", "between", "out", "off", "over", "under", "again",
-    "further", "then", "once", "here", "there", "when", "where", "why",
-    "how", "all", "each", "every", "both", "few", "more", "most",
-    "other", "some", "such", "no", "nor", "not", "only", "own", "same",
-    "so", "than", "too", "very", "just", "because", "but", "and", "or",
-    "if", "while", "that", "this", "these", "those", "what", "which",
-    "who", "whom", "whose", "it", "its", "he", "she", "they", "them",
-    "his", "her", "their", "we", "us", "our", "you", "your", "i", "me",
-    "my", "about", "up", "down", "new", "first", "last", "long",
-    "high", "old", "big", "small", "large", "next", "early", "late",
-    "win", "wins", "won", "loss", "losses", "lost", "draw", "match",
-    "game", "games", "team", "teams", "player", "players", "season",
-    "round", "stage", "final", "semi", "quarter", "group", "cup",
-    "championship", "championships", "league", "division", "conference",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
-    "sunday", "january", "february", "march", "april", "june",
-    "july", "august", "september", "october", "november", "december",
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "shall",
+    "can",
+    "need",
+    "dare",
+    "ought",
+    "used",
+    "to",
+    "of",
+    "in",
+    "for",
+    "on",
+    "with",
+    "at",
+    "by",
+    "from",
+    "as",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "between",
+    "out",
+    "off",
+    "over",
+    "under",
+    "again",
+    "further",
+    "then",
+    "once",
+    "here",
+    "there",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "each",
+    "every",
+    "both",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "just",
+    "because",
+    "but",
+    "and",
+    "or",
+    "if",
+    "while",
+    "that",
+    "this",
+    "these",
+    "those",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "it",
+    "its",
+    "he",
+    "she",
+    "they",
+    "them",
+    "his",
+    "her",
+    "their",
+    "we",
+    "us",
+    "our",
+    "you",
+    "your",
+    "i",
+    "me",
+    "my",
+    "about",
+    "up",
+    "down",
+    "new",
+    "first",
+    "last",
+    "long",
+    "high",
+    "old",
+    "big",
+    "small",
+    "large",
+    "next",
+    "early",
+    "late",
+    "win",
+    "wins",
+    "won",
+    "loss",
+    "losses",
+    "lost",
+    "draw",
+    "match",
+    "game",
+    "games",
+    "team",
+    "teams",
+    "player",
+    "players",
+    "season",
+    "round",
+    "stage",
+    "final",
+    "semi",
+    "quarter",
+    "group",
+    "cup",
+    "championship",
+    "championships",
+    "league",
+    "division",
+    "conference",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "january",
+    "february",
+    "march",
+    "april",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
 }
 
 _CHINESE_STOP_WORDS: set[str] = {
-    "的是", "不是", "没有", "可以", "已经", "还是", "或者", "而且",
-    "但是", "因为", "所以", "如果", "虽然", "然后", "这个", "那个",
-    "我们", "他们", "你们", "自己", "什么", "怎么", "一个", "两个",
-    "比赛", "赛季", "球队", "球员", "教练", "冠军", "决赛", "联赛",
-    "第一", "第二", "第三", "最后", "今天", "昨天", "明天", "目前",
-    "现在", "今年", "去年", "明年", "本场", "全场", "上半场", "下半场",
-    "进球", "得分", "失利", "获胜", "战胜", "击败", "战平",
+    "的是",
+    "不是",
+    "没有",
+    "可以",
+    "已经",
+    "还是",
+    "或者",
+    "而且",
+    "但是",
+    "因为",
+    "所以",
+    "如果",
+    "虽然",
+    "然后",
+    "这个",
+    "那个",
+    "我们",
+    "他们",
+    "你们",
+    "自己",
+    "什么",
+    "怎么",
+    "一个",
+    "两个",
+    "比赛",
+    "赛季",
+    "球队",
+    "球员",
+    "教练",
+    "冠军",
+    "决赛",
+    "联赛",
+    "第一",
+    "第二",
+    "第三",
+    "最后",
+    "今天",
+    "昨天",
+    "明天",
+    "目前",
+    "现在",
+    "今年",
+    "去年",
+    "明年",
+    "本场",
+    "全场",
+    "上半场",
+    "下半场",
+    "进球",
+    "得分",
+    "失利",
+    "获胜",
+    "战胜",
+    "击败",
+    "战平",
 }

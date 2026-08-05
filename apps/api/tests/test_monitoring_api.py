@@ -21,7 +21,14 @@ from app.models.monitoring import (
 )
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID, RealShapedTestAdapter, TEST_REDIS_URL, PG_SYNC_URL, PG_ASYNC_URL
+from .conftest import (
+    PG_ASYNC_URL,
+    PG_SYNC_URL,
+    TEST_PASSWORD,
+    TEST_PLATFORM_ID,
+    TEST_REDIS_URL,
+    RealShapedTestAdapter,
+)
 
 
 def authenticate(client: TestClient) -> str:
@@ -750,9 +757,7 @@ async def test_sync_run_detail_endpoint_returns_ordered_tracklog(
     registry.replace(RealShapedTestAdapter(key="youtube_browser", content_count=8))
     try:
         async with session_factory() as session:
-            await FailingItemExecutor(session, registry, settings).execute_account_run(
-                UUID(run_id)
-            )
+            await FailingItemExecutor(session, registry, settings).execute_account_run(UUID(run_id))
     finally:
         for adapter in registry.values():
             close = getattr(adapter, "aclose", None)

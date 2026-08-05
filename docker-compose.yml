@@ -2,7 +2,7 @@ name: sports-intelligence-os
 
 x-backend-environment: &backend-environment
   SIO_ENVIRONMENT: ${SIO_ENVIRONMENT:-development}
-  SIO_APP_NAME: ${SIO_APP_NAME:-Sports Intelligence OS}
+  SIO_APP_NAME: ${SIO_APP_NAME:-Content Intelligence OS}
   SIO_LOG_LEVEL: ${SIO_LOG_LEVEL:-INFO}
   SIO_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-sio}:${POSTGRES_PASSWORD:-sio-local-development-only}@postgres:5432/${POSTGRES_DB:-sports_intelligence}
   SIO_REDIS_URL: redis://redis:6379/0
@@ -29,7 +29,7 @@ x-backend-environment: &backend-environment
   SIO_CORS_ORIGINS: '${SIO_CORS_ORIGINS:-["http://localhost:8080","http://localhost:3000","http://127.0.0.1:3000"]}'
   SIO_BOOTSTRAP_ADMIN_EMAIL: ${SIO_BOOTSTRAP_ADMIN_EMAIL:-}
   SIO_BOOTSTRAP_ADMIN_PASSWORD: ${SIO_BOOTSTRAP_ADMIN_PASSWORD:-}
-  SIO_BOOTSTRAP_WORKSPACE_NAME: ${SIO_BOOTSTRAP_WORKSPACE_NAME:-Sports Intelligence OS}
+  SIO_BOOTSTRAP_WORKSPACE_NAME: ${SIO_BOOTSTRAP_WORKSPACE_NAME:-Content Intelligence OS}
   SIO_YOUTUBE_API_KEY: ${SIO_YOUTUBE_API_KEY:-}
   SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS: ${SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS:-10}
   SIO_PLATFORM_REQUEST_MAX_ATTEMPTS: ${SIO_PLATFORM_REQUEST_MAX_ATTEMPTS:-3}
@@ -167,7 +167,7 @@ services:
       dockerfile: deploy/web.Dockerfile
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Sports Intelligence OS}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-Content Intelligence OS}
       API_INTERNAL_URL: http://api:8000
     depends_on:
       api:

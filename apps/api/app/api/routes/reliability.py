@@ -65,9 +65,7 @@ async def outbox_exception_handler(request: Request, exc: Exception) -> Response
     )
 
 
-async def notification_template_exception_handler(
-    request: Request, exc: Exception
-) -> Response:
+async def notification_template_exception_handler(request: Request, exc: Exception) -> Response:
     if not isinstance(exc, NotificationTemplateError):
         raise exc
     return problem_response(
@@ -112,9 +110,7 @@ async def replay_dead_letter(
 ) -> dict[str, Any]:
     """Replay a dead-lettered event by resetting it to pending."""
     require_workspace_role(workspace, {"owner", "admin"})
-    event = await OutboxService(db).replay_dead_letter(
-        workspace.workspace_id, dead_letter_id
-    )
+    event = await OutboxService(db).replay_dead_letter(workspace.workspace_id, dead_letter_id)
     return {
         "ok": True,
         "outbox_event_id": str(event.id),
@@ -208,10 +204,7 @@ async def list_external_call_attempts(
         filters.append(ExternalCallAttempt.status == status)
 
     total = int(
-        await db.scalar(
-            select(func.count()).select_from(ExternalCallAttempt).where(*filters)
-        )
-        or 0
+        await db.scalar(select(func.count()).select_from(ExternalCallAttempt).where(*filters)) or 0
     )
     items = (
         await db.scalars(
@@ -296,9 +289,7 @@ async def get_notification_template(
     db: DatabaseSession,
 ) -> NotificationTemplateDetailRead:
     """Return a single template with all its versions."""
-    result = await _template_service(db).get_template(
-        workspace.workspace_id, template_id
-    )
+    result = await _template_service(db).get_template(workspace.workspace_id, template_id)
     return NotificationTemplateDetailRead.model_validate(result)
 
 
@@ -378,9 +369,7 @@ async def delete_notification_template(
 ) -> Response:
     """Delete a template and all its versions."""
     require_workspace_role(workspace, {"owner", "admin"})
-    await _template_service(db).delete_template(
-        workspace.workspace_id, template_id, auth.user.id
-    )
+    await _template_service(db).delete_template(workspace.workspace_id, template_id, auth.user.id)
     return Response(status_code=204)
 
 
@@ -394,9 +383,7 @@ async def list_template_versions(
     db: DatabaseSession,
 ) -> list[NotificationTemplateVersionRead]:
     """List all versions of a template, newest first."""
-    result = await _template_service(db).list_versions(
-        workspace.workspace_id, template_id
-    )
+    result = await _template_service(db).list_versions(workspace.workspace_id, template_id)
     return [NotificationTemplateVersionRead.model_validate(v) for v in result]
 
 
