@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 
 import { getCurrentUser } from "@/lib/auth";
 import { getRuleSetDetail, getRuleTree } from "@/lib/rules";
+import { BackButton } from "@/components/back-button";
 import { RuleEditor } from "./rule-editor";
 
 export default async function RuleEditPage({
@@ -33,12 +34,7 @@ export default async function RuleEditPage({
       <div className="mx-auto max-w-[1800px]">
         <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-800 pb-5">
           <div>
-            <Link
-              className="text-sm text-cyan-300"
-              href={`/rules/${ruleSetId}`}
-            >
-              ← 返回版本列表
-            </Link>
+            <BackButton label="返回版本列表" />
             <h1 className="mt-3 text-2xl font-semibold text-white">
               规则可视化编辑器
             </h1>

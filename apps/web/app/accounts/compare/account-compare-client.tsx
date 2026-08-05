@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 import { StatePanel, secondaryButtonClass } from "@/components/ui";
 import { useWorkspace } from "@/components/app-shell";
 import { apiRequest } from "@/lib/browser-api";
+import { BackButton } from "@/components/back-button";
 import type { AccountRecord } from "@sio/shared-types";
-import Link from "next/link";
 
 interface ComparisonSnapshot {
   captured_at: string;
@@ -109,13 +109,7 @@ export function AccountCompare() {
 
   return (
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
-      <Link
-        href="/accounts"
-        className="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200"
-      >
-        <ArrowLeft size={15} />
-        返回账号监控
-      </Link>
+      <BackButton label="返回账号监控" />
 
       <div>
         <h1 className="text-2xl font-semibold text-white">账号横向对比</h1>
