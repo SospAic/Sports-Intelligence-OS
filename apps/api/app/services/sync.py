@@ -957,7 +957,11 @@ class PlatformSyncExecutor:
         account.profile_url = data.profile_url
         if data.avatar_url:
             account.avatar_url = data.avatar_url
-        account.description = data.description
+        # Only overwrite the signature when the fresh extraction actually
+        # produced one — a failed re-sync (e.g. bot-walled browser scrape)
+        # must not wipe a previously captured description.
+        if data.description:
+            account.description = data.description
         account.country = data.country
         account.language = data.language
         account.is_verified = data.is_verified

@@ -188,8 +188,25 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
 
             if not avatar_url:
                 try:
-                    img_el = page.locator("[class*='avatar'] img, .user-avatar img").first
+                    img_el = page.locator(
+                        "[class*='avatar'] img, .user-avatar img, img.avatar"
+                    ).first
                     avatar_url = await img_el.get_attribute("src")
+                except Exception:
+                    pass
+
+            # The intercepted API / RENDER_DATA often omit the signature; fall
+            # back to the rendered bio element so the account signature is not
+            # silently lost.
+            if not description:
+                try:
+                    bio_el = page.locator(
+                        "[data-e2e='user-info'] .bio, [class*='bio'], "
+                        ".user-bio, [class*='signature'], [class*='desc']"
+                    ).first
+                    bio_text = (await bio_el.inner_text()).strip()
+                    if bio_text:
+                        description = bio_text
                 except Exception:
                     pass
 
