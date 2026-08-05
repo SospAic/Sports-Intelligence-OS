@@ -12,17 +12,23 @@ import { ExternalImage } from "@/components/external-image";
  */
 export function AccountAvatar({
   url,
+  remoteUrl,
   name,
   className = "size-9 shrink-0 rounded-full object-cover ring-1 ring-slate-700",
   fallbackClassName,
 }: {
+  /** Primary image source — usually the locally-archived avatar route. */
   url?: string | null;
+  /** Fallback remote URL (the platform's CDN link) tried after `url` fails. */
+  remoteUrl?: string | null;
   name?: string | null;
   className?: string;
   fallbackClassName?: string;
 }) {
-  const [errored, setErrored] = useState(false);
-  if (!url || errored) {
+  // 0 = primary (url), 1 = remote fallback, 2 = initials
+  const [stage, setStage] = useState(0);
+  const current = stage === 0 ? url : stage === 1 ? remoteUrl : null;
+  if (!current) {
     return (
       <span
         className={
@@ -36,10 +42,10 @@ export function AccountAvatar({
   }
   return (
     <ExternalImage
-      src={url}
+      src={current}
       alt=""
       className={className}
-      onError={() => setErrored(true)}
+      onError={() => setStage((s) => Math.min(s + 1, 2))}
     />
   );
 }

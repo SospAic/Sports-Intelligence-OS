@@ -593,7 +593,11 @@ export function AccountsClient() {
       header: "账号",
       cell: ({ row }) => (
         <div className="flex items-center gap-3">
-          <AccountAvatar url={row.original.avatar_url} name={row.original.display_name} />
+          <AccountAvatar
+            url={`/accounts/${row.original.id}/avatar`}
+            remoteUrl={row.original.avatar_url}
+            name={row.original.display_name}
+          />
           <div>
             <Link
               className="font-medium text-cyan-300 hover:underline"

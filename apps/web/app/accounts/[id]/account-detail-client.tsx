@@ -745,7 +745,8 @@ export function AccountDetailClient({ id }: { id: string }) {
       <BackButton />
       <div className="flex items-start gap-4">
         <AccountAvatar
-          url={item.avatar_url}
+          url={`/accounts/${item.id}/avatar`}
+          remoteUrl={item.avatar_url}
           name={item.display_name}
           className="size-16 shrink-0 rounded-full object-cover ring-2 ring-slate-700"
           fallbackClassName="grid size-16 shrink-0 place-items-center rounded-full bg-slate-800 text-lg font-bold text-slate-400 ring-2 ring-slate-700"

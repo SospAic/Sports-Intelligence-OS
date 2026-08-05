@@ -8,8 +8,12 @@ traversal before streaming the bytes back to the detail page.
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import Request as _UrlRequest
+from urllib.request import urlopen
 from uuid import UUID
 
 import anyio
@@ -18,7 +22,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentAuth, DatabaseSession
-from app.models.monitoring import ContentItem
+from app.models.monitoring import Account, ContentItem
 
 router = APIRouter(tags=["media"])
 
@@ -119,3 +123,86 @@ async def serve_content_media(
     ext = os.path.splitext(file)[1].lower()
     media_type = _EXT_CONTENT_TYPE.get(ext, "application/octet-stream")
     return FileResponse(candidate, media_type=media_type, filename=file)
+
+
+# --- Account avatar local archive ---------------------------------------
+#
+# Platform avatars (especially TikTok / Douyin) are served through short-lived
+# signed CDN URLs that 404 within hours, so the account list / detail pages
+# render broken images. Instead of hot-linking the remote URL, we lazily cache
+# the avatar on first request under ``MEDIA_ROOT/avatars`` and serve the
+# permanent local copy thereafter. A miss (no avatar, or a failed fetch) returns
+# 404 so the frontend can fall back to the remote URL and finally to initials.
+
+_AVATAR_ALLOWED_EXT: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+)
+_AVATAR_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def _avatar_cache_path(account_id: UUID, avatar_url: str) -> str:
+    parsed = urlparse(avatar_url)
+    ext = os.path.splitext(parsed.path)[1].lower()
+    if ext not in _AVATAR_ALLOWED_EXT:
+        ext = ".jpg"
+    return os.path.join(MEDIA_ROOT, "avatars", f"{account_id}{ext}")
+
+
+def _fetch_remote_bytes(url: str, timeout: int = 10) -> bytes:
+    req = _UrlRequest(url, headers={"User-Agent": _AVATAR_USER_AGENT})
+    with urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https only, operator-trusted
+        return resp.read()
+
+
+def _write_file(path: str, data: bytes) -> None:
+    with open(path, "wb") as fh:
+        fh.write(data)
+
+
+@router.get("/accounts/{account_id}/avatar")
+async def serve_account_avatar(
+    account_id: UUID,
+    auth: CurrentAuth,
+    db: DatabaseSession,
+) -> FileResponse:
+    member_workspace_ids = {
+        membership.workspace_id
+        for membership in auth.user.memberships
+        if membership.status == "active"
+        and getattr(membership.workspace, "status", "active") == "active"
+    }
+    account = await db.scalar(select(Account).where(Account.id == account_id))
+    if account is None or account.workspace_id not in member_workspace_ids:
+        raise HTTPException(status_code=404, detail="avatar not found")
+    avatar_url = account.avatar_url
+    if not avatar_url:
+        raise HTTPException(status_code=404, detail="avatar not found")
+
+    cache_path = _avatar_cache_path(account_id, avatar_url)
+    if await anyio.to_thread.run_sync(os.path.isfile, cache_path):
+        ext = os.path.splitext(cache_path)[1].lower()
+        return FileResponse(
+            cache_path,
+            media_type=_EXT_CONTENT_TYPE.get(ext, "image/jpeg"),
+            filename=os.path.basename(cache_path),
+        )
+    try:
+        data = await anyio.to_thread.run_sync(_fetch_remote_bytes, avatar_url)
+    except Exception:  # noqa: BLE001 - any fetch failure degrades to remote URL
+        raise HTTPException(status_code=404, detail="avatar not found")
+    if not data:
+        raise HTTPException(status_code=404, detail="avatar not found")
+    avatars_dir = os.path.dirname(cache_path)
+    await anyio.to_thread.run_sync(
+        functools.partial(os.makedirs, avatars_dir, 0o755, True)
+    )
+    await anyio.to_thread.run_sync(functools.partial(_write_file, cache_path, data))
+    ext = os.path.splitext(cache_path)[1].lower()
+    return FileResponse(
+        cache_path,
+        media_type=_EXT_CONTENT_TYPE.get(ext, "image/jpeg"),
+        filename=os.path.basename(cache_path),
+    )

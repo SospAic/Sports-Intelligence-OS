@@ -1,0 +1,106 @@
+# 开放诊断项（#9 / #10 / #11）
+
+> 环境约束：本机 Docker Desktop 当前无法启动，无法连库执行。以下为**可执行的诊断 SQL + 根因分析**，
+> 待 Docker 恢复（`docker compose up -d`）后在 `postgres` 容器中执行，或在 api 容器内用
+> `python -c "import sqlalchemy..."` 跑。前置：先 `docker compose up -d postgres redis` 再连。
+
+## #9 — TikTok 账号数据全面核查与修复
+
+TikTok / Douyin 的公开指标有限：yt-dlp 的频道 JSON 经常不返回 follower / view 数，
+适配器已对这两类平台回退到 browser 适配器补齐（见 `yt_dlp.py:fetch_account_analytics`）。
+因此以下为「预期内缺失」与「真实问题」的区分清单。
+
+```sql
+-- 1) TikTok / Douyin 账号及其最新快照的可用指标
+SELECT a.platform_id, p.key AS platform, a.external_id, a.display_name,
+       s.follower_count, s.video_count, s.total_view_count,
+       a.sync_status, a.last_sync_error_message
+FROM accounts a
+JOIN platforms p ON p.id = a.platform_id
+LEFT JOIN LATERAL (
+  SELECT * FROM account_snapshots s2
+  WHERE s2.account_id = a.id ORDER BY s2.captured_at DESC LIMIT 1
+) s ON true
+WHERE p.key IN ('tiktok','tiktok_ytdlp','douyin','douyin_ytdlp')
+ORDER BY a.last_synced_at NULLS LAST;
+
+-- 2) 同步失败 / 降级的 TikTok 账号（真实需要修的）
+SELECT a.external_id, a.sync_status, a.last_sync_error_code, a.last_sync_error_message
+FROM accounts a JOIN platforms p ON p.id = a.platform_id
+WHERE p.key LIKE 'tiktok%' OR p.key LIKE 'douyin%'
+  AND a.sync_status IN ('error','degraded');
+
+-- 3) TikTok 内容条数 vs 其他平台，确认采集是否偏少
+SELECT p.key AS platform, count(*) AS contents
+FROM content_items c JOIN platforms p ON p.id = c.platform_id
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+**判断**：`follower_count / total_view_count` 为 NULL 对 TikTok/Douyin 属**预期**（平台不公开展示），
+不应视为 bug；只有 `sync_status='error'` 或内容条数明显异常偏少才需修复（通常要确认该账号用的是
+`*_ytdlp` 适配器，且 workspace 的 `sync_settings` 未禁用采集）。
+
+## #10 — 修复账号历史趋势总播放量无数据
+
+根因（代码侧已确认）：`YtDlpAdapter.fetch_account_analytics` 对 **TikTok / Douyin** 显式返回
+`total_view_count = None`（这些平台 profile 不暴露累计播放），仅 YouTube 带 lifetime views。
+所以「历史趋势总播放量无数据」若发生在非 YouTube 账号上，是**设计预期**。
+
+```sql
+-- 哪些账号 total_view_count 为 NULL，按平台区分
+SELECT p.key AS platform, count(*) FILTER (WHERE s.total_view_count IS NULL) AS null_total,
+       count(*) AS total
+FROM accounts a
+JOIN platforms p ON p.id = a.platform_id
+LEFT JOIN LATERAL (
+  SELECT total_view_count FROM account_snapshots s2
+  WHERE s2.account_id = a.id ORDER BY s2.captured_at DESC LIMIT 1
+) s ON true
+GROUP BY 1;
+
+-- YouTube 账号却仍无 total_view_count → 真实问题（需重跑同步补快照）
+SELECT a.external_id, a.sync_status
+FROM accounts a JOIN platforms p ON p.id = a.platform_id
+LEFT JOIN LATERAL (
+  SELECT total_view_count FROM account_snapshots s2
+  WHERE s2.account_id = a.id ORDER BY s2.captured_at DESC LIMIT 1
+) s ON true
+WHERE p.key LIKE 'youtube%' AND s.total_view_count IS NULL;
+```
+
+**修复**：仅对「YouTube 且无 total_view_count」的账号重跑一次同步即可回填；TikTok/Douyin 无需处理。
+
+## #11 — 结合 tracklog 自查同步慢的根因
+
+同步慢通常来自：(a) 单账号 playlist 分页窗口大 + yt-dlp 超时（180s）；(b) browser 适配器回退
+（Playwright 启动慢）；(c) 并发同步账号过多（worker 并发）。tracklog 事件（`SyncRunEvent`）记录每阶段耗时。
+
+```sql
+-- 同步运行各阶段耗时（需 sync_run_events / tracklog 表，按阶段聚合）
+SELECT run_id, stage, detail,
+       EXTRACT(EPOCH FROM (ended_at - started_at)) AS secs
+FROM sync_run_events
+WHERE started_at IS NOT NULL AND ended_at IS NOT NULL
+ORDER BY run_id, started_at;
+
+-- 单次同步运行总时长 Top 10
+SELECT run_id, EXTRACT(EPOCH FROM (max(ended_at) - min(started_at))) AS total_secs
+FROM sync_run_events
+GROUP BY run_id ORDER BY total_secs DESC LIMIT 10;
+
+-- 是否大量触发了 browser 回退（adapter 字段含 browser 即回退路径）
+SELECT run_id, count(*) FILTER (WHERE detail ILIKE '%browser%') AS browser_fallbacks
+FROM sync_run_events GROUP BY run_id ORDER BY browser_fallbacks DESC LIMIT 10;
+```
+
+**判断**：若 `browser_fallbacks` 高，说明大量账号 yt-dlp 拿不到数据而回退到 Playwright —— 这是慢的主因，
+应通过 `sync_settings.yt_dlp` 调参（加大 `retries`、缩小 `max_items` 窗口）或核查这些账号是否更适合 `*_ytdlp` 适配器。
+若单阶段 `secs` 接近 180，则是 yt-dlp 超时，需检查网络 / 代理（`sync_settings.yt_dlp.proxy`）。
+
+## #53 历史字幕/媒体回填（补充说明）
+
+字幕/缩略图归档的**实现已在代码中就位**：`DEFAULT_SYNC_SETTINGS_CONFIG["download"]` 默认
+`write_subtitles=True / write_thumbnail=True`，`_config_for` 透传给 yt-dlp，`_collect_media` 写入
+`content.media` 并由 `/media/{content_id}/{file}` 提供。因此**后续同步会自动归档字幕**。
+历史 0 字幕行（DB 统计 8974 条内容中 `media->subtitles` 非空为 0）是旧同步遗留，回填 = 对 YouTube 账号
+重新同步一次（注意 8000+ 视频较慢，建议分批 / 限 `max_items`）。无需新增代码。
