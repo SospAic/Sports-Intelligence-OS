@@ -28,6 +28,7 @@ import { useMemo, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
+import { AccountAvatar } from "@/components/account-avatar";
 import { ExternalImage } from "@/components/external-image";
 import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import {
@@ -743,17 +744,12 @@ export function AccountDetailClient({ id }: { id: string }) {
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
       <BackButton />
       <div className="flex items-start gap-4">
-        {item.avatar_url ? (
-          <ExternalImage
-            src={item.avatar_url}
-            alt={item.display_name}
-            className="size-16 shrink-0 rounded-full object-cover ring-2 ring-slate-700"
-          />
-        ) : (
-          <span className="grid size-16 shrink-0 place-items-center rounded-full bg-slate-800 text-lg font-bold text-slate-400 ring-2 ring-slate-700">
-            {(item.display_name || "?").slice(0, 2)}
-          </span>
-        )}
+        <AccountAvatar
+          url={item.avatar_url}
+          name={item.display_name}
+          className="size-16 shrink-0 rounded-full object-cover ring-2 ring-slate-700"
+          fallbackClassName="grid size-16 shrink-0 place-items-center rounded-full bg-slate-800 text-lg font-bold text-slate-400 ring-2 ring-slate-700"
+        />
         <div className="min-w-0 flex-1">
           <PageHeader
             eyebrow={`${item.platform.name} · ${sourceKindLabel(item.source_kind)}`}

@@ -27,7 +27,11 @@ class DownloadService:
             status="pending",
             options={
                 "download_video": payload.download_video,
+                "video_quality": payload.video_quality,
                 "video_format": payload.video_format,
+                "audio_format": payload.audio_format,
+                "bitrate": payload.bitrate,
+                "naming_rule": payload.naming_rule,
                 "write_subtitles": payload.write_subtitles,
                 "write_auto_subtitles": payload.write_auto_subtitles,
                 "subtitle_langs": payload.subtitle_langs,

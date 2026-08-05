@@ -147,7 +147,11 @@ async def _run_download(download_id: UUID) -> None:
                 download.url,
                 download={
                     "download_video": options.get("download_video", True),
+                    "video_quality": options.get("video_quality", "best"),
                     "video_format": options.get("video_format", "best"),
+                    "audio_format": options.get("audio_format", "best"),
+                    "bitrate": options.get("bitrate", ""),
+                    "naming_rule": options.get("naming_rule", "id"),
                     "write_subtitles": options.get("write_subtitles", True),
                     "write_auto_subtitles": options.get("write_auto_subtitles", False),
                     "subtitle_langs": options.get("subtitle_langs", "zh.*,en.*"),

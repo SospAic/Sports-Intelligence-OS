@@ -187,6 +187,52 @@ class YtDlpAdapter(PlatformAdapter):
         )
 
     @staticmethod
+    def _video_format_selector(download: Mapping[str, Any] | None) -> str | None:
+        """Build the yt-dlp ``-f`` format selector from the user-facing
+        quality (resolution tier) and video_format (container) picks.
+
+        Returns ``None`` when no constraint applies (yt-dlp then picks its own
+        best combined format). ``audio`` quality is handled separately by the
+        caller (audio-only extraction), so it is ignored here.
+        """
+        if not isinstance(download, dict):
+            return None
+        quality = str(download.get("video_quality") or "best").strip().lower()
+        vfmt = str(download.get("video_format") or "best").strip().lower()
+        if quality == "audio":
+            return None
+        constraints: list[str] = []
+        if quality not in ("best", ""):
+            digits = "".join(ch for ch in quality if ch.isdigit())
+            if digits:
+                constraints.append(f"[height<={digits}]")
+        if vfmt not in ("best", "any", ""):
+            constraints.append(f"[ext={vfmt}]")
+        if not constraints:
+            return None
+        return f"bestvideo{''.join(constraints)}+bestaudio/best"
+
+    @staticmethod
+    def _output_template(media_dir: str, naming_rule: Any) -> str:
+        """Resolve the yt-dlp ``-o`` output template.
+
+        The directory is always ``%(id)s`` (one folder per video, also used by
+        ``_collect_media``). The filename base follows ``naming_rule`` so the
+        operator can choose a readable file name without breaking media
+        discovery.
+        """
+        rule = str(naming_rule or "id").strip().lower()
+        if rule == "title":
+            fname = "%(title)s.%(ext)s"
+        elif rule == "uploader":
+            fname = "%(uploader)s_%(id)s.%(ext)s"
+        elif rule == "date_title":
+            fname = "%(upload_date)s_%(title)s.%(ext)s"
+        else:  # "id" (default) — keeps subtitle discovery trivial
+            fname = "%(id)s.%(ext)s"
+        return os.path.join(media_dir, "%(id)s", fname)
+
+    @staticmethod
     def _collect_media(
         media_root: str, media_dir: str, video_id: str
     ) -> dict[str, Any] | None:
@@ -194,7 +240,9 @@ class YtDlpAdapter(PlatformAdapter):
 
         Returns ``None`` when nothing was written. ``base`` is the
         workspace-relative path under ``media_root`` used by the ``/media``
-        route to resolve files safely.
+        route to resolve files safely. Audio-only extractions set ``audio``
+        instead of ``video``; subtitle languages are resolved against the
+        primary media base name so custom ``naming_rule`` values still match.
         """
         d = os.path.join(media_dir, video_id)
         if not os.path.isdir(d):
@@ -203,31 +251,53 @@ class YtDlpAdapter(PlatformAdapter):
             base = os.path.relpath(d, media_root)
         except ValueError:
             base = video_id
-        thumbnail = video = info_json = None
-        subtitles: list[dict[str, str]] = []
+        thumbnail = video = audio = info_json = None
+        primary_base: str | None = None
+        raw_subs: list[str] = []
         for fn in os.listdir(d):
             low = fn.lower()
             if low.endswith(".info.json"):
                 info_json = fn
             elif low.endswith((".vtt", ".srt", ".ass", ".sbv", ".lrc")):
-                lang = ""
-                if fn.startswith(video_id + "."):
-                    lang = fn[len(video_id) + 1 : -len(os.path.splitext(fn)[1])]
-                subtitles.append({"lang": lang, "file": fn})
+                raw_subs.append(fn)
             elif low.endswith((".mp4", ".webm", ".mkv", ".mov", ".flv", ".m4v", ".avi")):
                 video = fn
+                if primary_base is None:
+                    primary_base = os.path.splitext(fn)[0]
+            elif low.endswith((".mp3", ".m4a", ".aac", ".opus", ".wav", ".flac")):
+                audio = fn
+                if primary_base is None:
+                    primary_base = os.path.splitext(fn)[0]
             elif low.endswith((".webp", ".jpg", ".jpeg", ".png")):
                 thumbnail = fn
+        subtitles: list[dict[str, str]] = []
+        # Prefer the primary media base name for matching; fall back to the raw
+        # video id (the ``%(id)s`` template base) so subtitle detection still works
+        # when only subtitles are downloaded (no video/audio file present).
+        match_base = primary_base or video_id
+        for fn in raw_subs:
+            lang = ""
+            if match_base and fn.startswith(match_base + "."):
+                ext = os.path.splitext(fn)[1]
+                mid = fn[len(match_base) + 1 : -len(ext)]
+                lang = mid
+            subtitles.append({"lang": lang, "file": fn})
         result: dict[str, Any] = {"base": base}
         if thumbnail:
             result["thumbnail"] = thumbnail
         if video:
             result["video"] = video
+        if audio:
+            result["audio"] = audio
         if info_json:
             result["info_json"] = info_json
         if subtitles:
             result["subtitles"] = subtitles
-        return result if (thumbnail or video or info_json or subtitles) else None
+        return (
+            result
+            if (thumbnail or video or audio or info_json or subtitles)
+            else None
+        )
 
     def _account_url(self, handle: str) -> str:
         if self.platform == "youtube":
@@ -354,9 +424,14 @@ class YtDlpAdapter(PlatformAdapter):
             "--no-progress",
         ]
         download_enabled = self._any_download_enabled(download)
-        if not (download_enabled and download.get("download_video")):
-            # Default: scrape metadata only. Only drop this when the operator
-            # explicitly wants the actual video file downloaded.
+        quality = str((download or {}).get("video_quality") or "best").strip().lower()
+        # Default: scrape metadata only. Drop --skip-download when the operator
+        # explicitly wants the video file, OR when an audio-only extraction was
+        # requested (both produce a media artifact, not just metadata).
+        want_media = download_enabled and (
+            download.get("download_video") or quality == "audio"
+        )
+        if not want_media:
             cmd.append("--skip-download")
         if playlist_start is not None:
             cmd += ["--playlist-start", str(playlist_start)]
@@ -377,7 +452,7 @@ class YtDlpAdapter(PlatformAdapter):
             effective_structured["retries"] = YTDLP_DEFAULT_RETRIES
         cmd += self._render_structured(effective_structured)
         if download_enabled and media_dir:
-            cmd += ["-o", os.path.join(media_dir, "%(id)s", "%(id)s.%(ext)s")]
+            cmd += ["-o", self._output_template(media_dir, download.get("naming_rule"))]
             if download.get("write_thumbnail"):
                 cmd.append("--write-thumbnail")
             if download.get("write_subtitles"):
@@ -389,8 +464,21 @@ class YtDlpAdapter(PlatformAdapter):
                 cmd += ["--sub-langs", str(sub_langs).strip()]
             if download.get("write_info_json"):
                 cmd.append("--write-info-json")
-            if download.get("download_video") and download.get("video_format"):
-                cmd += ["-f", str(download["video_format"]).strip()]
+            quality = str(download.get("video_quality") or "best").strip().lower()
+            if quality == "audio":
+                # Audio-only extraction: pull the best audio stream and remux
+                # into the requested container at the requested bitrate.
+                cmd += ["-f", "bestaudio/best", "-x"]
+                audio_fmt = str(download.get("audio_format") or "best").strip().lower()
+                if audio_fmt not in ("best", ""):
+                    cmd += ["--audio-format", audio_fmt]
+                bitrate = str(download.get("bitrate") or "").strip()
+                if bitrate:
+                    cmd += ["--audio-quality", bitrate]
+            else:
+                fmt = self._video_format_selector(download)
+                if fmt:
+                    cmd += ["-f", fmt]
         if extra_args:
             for key, value in extra_args.items():
                 if key in YTDLP_SPEC_KEYS:

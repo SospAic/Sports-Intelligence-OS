@@ -248,12 +248,25 @@ class YtDlpDownloadSettings(BaseModel):
     subtitle_langs: str = Field(default="zh.*,en.*", max_length=256)
     download_video: bool = False
     video_format: str = Field(default="best", max_length=256)
+    # --- user-facing quality knobs surfaced in Sync Settings ---------------
+    # Resolution tier: best / 2160p / 1440p / 1080p / 720p / 480p / audio.
+    # "audio" triggers audio-only extraction (no video file).
+    video_quality: str = Field(default="best", max_length=256)
+    # Container for audio-only extraction: best / mp3 / m4a / aac / opus / wav / flac.
+    audio_format: str = Field(default="best", max_length=256)
+    # Audio extraction bitrate (only when video_quality == "audio"): "" / 320K / 256K / 192K / 128K.
+    bitrate: str = Field(default="", max_length=16)
+    # Output file-name rule: id / title / uploader / date_title.
+    naming_rule: str = Field(default="id", max_length=256)
     write_info_json: bool = False
 
     @model_validator(mode="after")
     def _validate_video_prereq(self) -> YtDlpDownloadSettings:
-        if self.download_video and not self.video_format.strip():
-            raise ValueError("video_format is required when download_video is enabled")
+        # video_quality defaults to "best", so this only trips when the operator
+        # explicitly turns on video download yet clears the quality (which would
+        # leave yt-dlp with no -f constraint and no video selected).
+        if self.download_video and not self.video_quality.strip():
+            raise ValueError("video_quality is required when download_video is enabled")
         return self
 
 
@@ -337,7 +350,11 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "write_auto_subtitles": False,
         "subtitle_langs": "zh.*,en.*",
         "download_video": False,
+        "video_quality": "best",
         "video_format": "best",
+        "audio_format": "best",
+        "bitrate": "",
+        "naming_rule": "id",
         "write_info_json": False,
     },
 }

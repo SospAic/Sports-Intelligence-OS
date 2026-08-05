@@ -14,7 +14,16 @@ from app.models.download import Download
 class DownloadCreate(BaseModel):
     url: str
     download_video: bool = True
+    # 视频清晰度: best / 2160p / 1440p / 1080p / 720p / 480p / audio(仅音频)
+    video_quality: str = "best"
+    # 视频格式(容器): best / mp4 / webm / mkv
     video_format: str = "best"
+    # 音频格式(仅 audio 清晰度时生效): best / mp3 / m4a / aac / opus / wav / flac
+    audio_format: str = "best"
+    # 码率(仅音频提取时生效): 空 / 320K / 256K / 192K / 128K
+    bitrate: str = ""
+    # 命名规则(输出文件名): id / title / uploader / date_title
+    naming_rule: str = "id"
     write_subtitles: bool = True
     write_auto_subtitles: bool = False
     subtitle_langs: str = "zh.*,en.*"

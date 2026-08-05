@@ -21,7 +21,7 @@ function dateInputToYmd(value?: string): string {
 }
 
 type YtFieldValue = string | boolean | null;
-type FieldType = "text" | "int" | "bool";
+type FieldType = "text" | "int" | "bool" | "select";
 
 interface FieldDef {
   key: keyof YtDlpSettings;
@@ -196,7 +196,16 @@ const DEFAULT_YT: Record<string, YtFieldValue> = {
 
 // yt-dlp *download* toggles — what media to archive locally during a sync.
 // Defaults: cover thumbnail + subtitles on, auto subs / video / info-json off.
-const DOWNLOAD_FIELDS: { key: string; label: string; type: FieldType; help?: string; placeholder?: string }[] = [
+type DownloadFieldDef = {
+  key: string;
+  label: string;
+  type: FieldType;
+  help?: string;
+  placeholder?: string;
+  options?: { value: string; label: string }[];
+};
+
+const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
   { key: "write_thumbnail", label: "下载封面缩略图 (write_thumbnail)", type: "bool" },
   { key: "write_subtitles", label: "下载字幕 (write_subtitles)", type: "bool" },
   {
@@ -219,11 +228,71 @@ const DOWNLOAD_FIELDS: { key: string; label: string; type: FieldType; help?: str
     help: "⚠️ 体积大，会显著消耗磁盘与带宽；按需开启",
   },
   {
+    key: "video_quality",
+    label: "视频清晰度 (video_quality)",
+    type: "select",
+    options: [
+      { value: "best", label: "最佳（原始）" },
+      { value: "2160p", label: "4K (2160p)" },
+      { value: "1440p", label: "2K (1440p)" },
+      { value: "1080p", label: "1080p" },
+      { value: "720p", label: "720p" },
+      { value: "480p", label: "480p" },
+      { value: "audio", label: "仅音频 (audio)" },
+    ],
+    help: "下载分辨率；选「仅音频」会提取音轨、忽略视频画面",
+  },
+  {
     key: "video_format",
     label: "视频格式 (video_format)",
-    type: "text",
-    placeholder: "best",
-    help: "yt-dlp 格式选择表达式，如 best[height<=720]",
+    type: "select",
+    options: [
+      { value: "best", label: "最佳（自动）" },
+      { value: "mp4", label: "MP4" },
+      { value: "webm", label: "WebM" },
+      { value: "mkv", label: "MKV" },
+    ],
+    help: "视频容器格式；「最佳（自动）」交给 yt-dlp 自动选择",
+  },
+  {
+    key: "audio_format",
+    label: "音频格式 (audio_format)",
+    type: "select",
+    options: [
+      { value: "best", label: "最佳（自动）" },
+      { value: "mp3", label: "MP3" },
+      { value: "m4a", label: "M4A" },
+      { value: "aac", label: "AAC" },
+      { value: "opus", label: "Opus" },
+      { value: "wav", label: "WAV" },
+      { value: "flac", label: "FLAC" },
+    ],
+    help: "仅当清晰度为「仅音频」时生效",
+  },
+  {
+    key: "bitrate",
+    label: "音频码率 (bitrate)",
+    type: "select",
+    options: [
+      { value: "", label: "默认（不限制）" },
+      { value: "320K", label: "320K" },
+      { value: "256K", label: "256K" },
+      { value: "192K", label: "192K" },
+      { value: "128K", label: "128K" },
+    ],
+    help: "仅音频提取时生效；空表示不限制码率",
+  },
+  {
+    key: "naming_rule",
+    label: "文件命名规则 (naming_rule)",
+    type: "select",
+    options: [
+      { value: "id", label: "视频 ID" },
+      { value: "title", label: "标题" },
+      { value: "uploader", label: "上传者 + ID" },
+      { value: "date_title", label: "日期 + 标题" },
+    ],
+    help: "归档到本地的文件名规则",
   },
   { key: "write_info_json", label: "下载原始信息 (write_info_json)", type: "bool" },
 ];
@@ -234,7 +303,11 @@ const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
   write_auto_subtitles: false,
   subtitle_langs: "zh.*,en.*",
   download_video: false,
+  video_quality: "best",
   video_format: "best",
+  audio_format: "best",
+  bitrate: "",
+  naming_rule: "id",
   write_info_json: false,
 };
 
@@ -595,6 +668,32 @@ export function SyncSettingsPanel() {
                             <span className="block text-xs text-slate-500">{f.help}</span>
                           )}
                         </span>
+                      </label>
+                    );
+                  }
+                  if (f.type === "select") {
+                    return (
+                      <label key={f.key} className="grid gap-2 text-sm">
+                        <span>
+                          {f.label}
+                          {f.help && (
+                            <span className="ml-1 text-xs text-slate-500">— {f.help}</span>
+                          )}
+                        </span>
+                        <select
+                          className={inputClass}
+                          value={value == null ? "" : String(value)}
+                          onChange={(e) =>
+                            setDownload((prev) => ({ ...prev, [f.key]: e.target.value }))
+                          }
+                          disabled={!canEdit}
+                        >
+                          {(f.options ?? []).map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                     );
                   }

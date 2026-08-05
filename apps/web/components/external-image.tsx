@@ -13,6 +13,7 @@ type ExternalImageProps = {
   containerClassName?: string;
   children?: ReactNode;
   loading?: "eager" | "lazy";
+  onError?: () => void;
 };
 
 export function ExternalImage({
@@ -22,11 +23,15 @@ export function ExternalImage({
   containerClassName,
   children,
   loading = "lazy",
+  onError,
 }: ExternalImageProps) {
   const normalized = normalizeExternalImageUrl(src);
   const [failedSource, setFailedSource] = useState<string | null>(null);
 
-  if (!normalized || failedSource === normalized) return null;
+  if (!normalized || failedSource === normalized) {
+    if (failedSource === normalized) onError?.();
+    return null;
+  }
 
   const image = (
     <img
@@ -36,7 +41,10 @@ export function ExternalImage({
       loading={loading}
       decoding="async"
       referrerPolicy="no-referrer"
-      onError={() => setFailedSource(normalized)}
+      onError={() => {
+        setFailedSource(normalized);
+        onError?.();
+      }}
     />
   );
 

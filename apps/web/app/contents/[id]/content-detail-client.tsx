@@ -5,6 +5,7 @@ import type {
   ContentSnapshotPage,
   DerivedMetricPage,
 } from "@sio/shared-types";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Captions, ExternalLink, FileJson, Film, Sparkles } from "lucide-react";
 import Link from "next/link";
@@ -27,7 +28,7 @@ import {
   TrafficSourceBreakdown,
   metricCardNode,
 } from "@/components/metric-availability";
-import { apiRequest } from "@/lib/browser-api";
+import { apiRequest, downloadApiFile } from "@/lib/browser-api";
 import {
   DERIVED_METRIC_LABELS,
   formatDerivedMetricValue,
@@ -55,12 +56,14 @@ function MediaCard({
   icon,
   present,
   notDownloadedHint,
+  action,
   children,
 }: {
   title: string;
   icon: React.ReactNode;
   present: boolean;
   notDownloadedHint: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   if (!present) {
@@ -71,6 +74,7 @@ function MediaCard({
           <span className="text-sm">{title}</span>
         </div>
         <p className="mt-2 text-xs text-slate-500">{notDownloadedHint}</p>
+        {action && <div className="mt-3">{action}</div>}
       </div>
     );
   }
@@ -79,9 +83,455 @@ function MediaCard({
       <div className="flex items-center gap-2 border-b border-slate-800 px-4 py-2 text-sm font-medium text-white">
         {icon}
         <span>{title}</span>
+        {action && <span className="ml-auto">{action}</span>}
       </div>
       <div className="p-3">{children}</div>
     </div>
+  );
+}
+
+// ---- per-item on-demand download (yt-dlp) -------------------------------
+
+interface DownloadRead {
+  id: string;
+  status: string;
+  error: string | null;
+  media: {
+    base: string;
+    thumbnail?: string | null;
+    video?: string | null;
+    audio?: string | null;
+    info_json?: string | null;
+    subtitles?: { lang: string; file: string }[] | null;
+  } | null;
+}
+
+interface DownloadForm {
+  download_video: boolean;
+  video_quality: string;
+  video_format: string;
+  audio_format: string;
+  bitrate: string;
+  naming_rule: string;
+  write_subtitles: boolean;
+  write_auto_subtitles: boolean;
+  subtitle_langs: string;
+  write_thumbnail: boolean;
+  write_info_json: boolean;
+}
+
+const QUALITY_OPTIONS = ["best", "2160p", "1440p", "1080p", "720p", "480p", "audio"];
+const VIDEO_FORMAT_OPTIONS = ["best", "mp4", "webm", "mkv"];
+const AUDIO_FORMAT_OPTIONS = ["best", "mp3", "m4a", "aac", "opus", "wav", "flac"];
+const BITRATE_OPTIONS = ["", "320K", "256K", "192K", "128K"];
+const NAMING_OPTIONS = ["id", "title", "uploader", "date_title"];
+
+// Default form factory per media type — each modal is focused on one asset.
+function baseForm(): DownloadForm {
+  return {
+    download_video: true,
+    video_quality: "best",
+    video_format: "best",
+    audio_format: "best",
+    bitrate: "",
+    naming_rule: "id",
+    write_subtitles: true,
+    write_auto_subtitles: false,
+    subtitle_langs: "zh.*,en.*",
+    write_thumbnail: false,
+    write_info_json: false,
+  };
+}
+function videoDefaultForm(): DownloadForm {
+  return { ...baseForm(), download_video: true };
+}
+function subtitleDefaultForm(): DownloadForm {
+  return { ...baseForm(), download_video: false, write_subtitles: true };
+}
+function metadataDefaultForm(): DownloadForm {
+  return {
+    ...baseForm(),
+    download_video: false,
+    write_subtitles: false,
+    write_info_json: true,
+  };
+}
+
+interface ModalProps {
+  open: boolean;
+  onClose: () => void;
+  content: ContentRecord;
+  workspaceId: string;
+}
+
+/** Shared submit + poll + file-save lifecycle for the focused download modals. */
+function useDownloadModal(content: ContentRecord, workspaceId: string) {
+  const [download, setDownload] = useState<DownloadRead | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = useCallback(
+    async (form: DownloadForm) => {
+      setSubmitting(true);
+      setError(null);
+      try {
+        const rec = await apiRequest<DownloadRead>("/downloads", {
+          method: "POST",
+          workspaceId,
+          body: JSON.stringify({ url: content.canonical_url, ...form }),
+        });
+        setDownload(rec);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "提交下载失败");
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [content, workspaceId],
+  );
+
+  useEffect(() => {
+    if (!download || ["done", "empty", "failed"].includes(download.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const rec = await apiRequest<DownloadRead>(`/downloads/${download.id}`, {
+          workspaceId,
+        });
+        setDownload(rec);
+        if (["done", "empty", "failed"].includes(rec.status)) clearInterval(timer);
+      } catch {
+        /* transient polling errors are non-fatal */
+      }
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [download, workspaceId]);
+
+  const saveFile = useCallback(
+    (file: string) => {
+      if (!download) return;
+      downloadApiFile(
+        `/downloads/${download.id}/file/${encodeURIComponent(file)}`,
+        workspaceId,
+        file,
+      );
+    },
+    [download, workspaceId],
+  );
+
+  const busy =
+    download != null && !["done", "empty", "failed"].includes(download.status);
+  const mediaFiles = useMemo(() => {
+    const media = download?.media;
+    if (!media) return [] as { label: string; file: string }[];
+    const files: { label: string; file: string }[] = [];
+    if (media.video) files.push({ label: `视频 · ${media.video}`, file: media.video });
+    if (media.audio) files.push({ label: `音频 · ${media.audio}`, file: media.audio });
+    if (media.thumbnail)
+      files.push({ label: `封面 · ${media.thumbnail}`, file: media.thumbnail });
+    if (media.info_json)
+      files.push({ label: `信息 · ${media.info_json}`, file: media.info_json });
+    for (const s of media.subtitles ?? []) {
+      files.push({ label: `字幕 · ${s.lang || "未知"}`, file: s.file });
+    }
+    return files;
+  }, [download]);
+
+  return { download, submitting, error, submit, saveFile, busy, mediaFiles };
+}
+
+/** Shared overlay chrome + status / result rendering for the focused modals. */
+function DownloadModalFrame({
+  open,
+  onClose,
+  title,
+  subtitle,
+  error,
+  download,
+  mediaFiles,
+  saveFile,
+  submitDisabled,
+  onSubmit,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  subtitle: string;
+  error: string | null;
+  download: DownloadRead | null;
+  mediaFiles: { label: string; file: string }[];
+  saveFile: (file: string) => void;
+  submitDisabled: boolean;
+  onSubmit: () => void;
+  children: React.ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-white">{title}</h3>
+            <p className="mt-1 text-xs text-slate-500">{subtitle}</p>
+          </div>
+          <button
+            className="text-slate-500 hover:text-white"
+            onClick={onClose}
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-4 space-y-3">{children}</div>
+
+        {error && (
+          <p className="mt-3 rounded-md border border-red-900/60 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+            {error}
+          </p>
+        )}
+
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+            onClick={onSubmit}
+            disabled={submitDisabled}
+          >
+            开始下载
+          </button>
+          {download && (
+            <span className="text-xs text-slate-400">
+              状态：{download.status}
+              {(download.status === "running" || download.status === "pending") &&
+                "（拉取中…）"}
+            </span>
+          )}
+        </div>
+
+        {download && mediaFiles.length > 0 && (
+          <div className="mt-4">
+            <p className="mb-2 text-xs text-slate-400">下载完成，点击保存到本地：</p>
+            <ul className="flex flex-wrap gap-2">
+              {mediaFiles.map((m) => (
+                <li key={m.file}>
+                  <button
+                    className="rounded-md border border-slate-700 px-2 py-1 text-xs text-sky-400 hover:text-sky-300"
+                    onClick={() => saveFile(m.file)}
+                  >
+                    {m.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {download && download.status === "failed" && (
+          <p className="mt-3 text-xs text-red-400">
+            下载失败：{download.error || "未知错误"}
+          </p>
+        )}
+        {download && download.status === "empty" && (
+          <p className="mt-3 text-xs text-slate-400">
+            已拉取，但未生成任何媒体文件（请检查清晰度 / 开关设置）。
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const selectClass =
+  "rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-white";
+const labelClass = "text-xs text-slate-400";
+const fieldClass = "flex flex-col gap-1";
+
+function VideoDownloadModal({ open, onClose, content, workspaceId }: ModalProps) {
+  const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
+    useDownloadModal(content, workspaceId);
+  const [form, setForm] = useState<DownloadForm>(() => videoDefaultForm());
+  useEffect(() => {
+    if (open) setForm(videoDefaultForm());
+  }, [open]);
+  const isAudio = form.video_quality === "audio";
+  return (
+    <DownloadModalFrame
+      open={open}
+      onClose={onClose}
+      title="下载视频"
+      subtitle={`仅对当前作品（${content.title.slice(0, 28) || "该作品"}）生效，使用 yt-dlp 从源站重新拉取。`}
+      error={error}
+      download={download}
+      mediaFiles={mediaFiles}
+      saveFile={saveFile}
+      submitDisabled={submitting || busy}
+      onSubmit={() => submit(form)}
+    >
+      <div className={fieldClass}>
+        <span className={labelClass}>视频清晰度</span>
+        <select
+          className={selectClass}
+          value={form.video_quality}
+          onChange={(e) => setForm({ ...form, video_quality: e.target.value })}
+        >
+          {QUALITY_OPTIONS.map((o) => (
+            <option key={o} value={o}>
+              {o === "audio" ? "仅音频" : o}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className={fieldClass}>
+        <span className={labelClass}>视频格式（容器）</span>
+        <select
+          className={selectClass}
+          value={form.video_format}
+          onChange={(e) => setForm({ ...form, video_format: e.target.value })}
+        >
+          {VIDEO_FORMAT_OPTIONS.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      </div>
+      {isAudio && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className={fieldClass}>
+            <span className={labelClass}>音频格式</span>
+            <select
+              className={selectClass}
+              value={form.audio_format}
+              onChange={(e) => setForm({ ...form, audio_format: e.target.value })}
+            >
+              {AUDIO_FORMAT_OPTIONS.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className={fieldClass}>
+            <span className={labelClass}>码率（仅音频提取）</span>
+            <select
+              className={selectClass}
+              value={form.bitrate}
+              onChange={(e) => setForm({ ...form, bitrate: e.target.value })}
+            >
+              {BITRATE_OPTIONS.map((o) => (
+                <option key={o} value={o}>
+                  {o || "默认"}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+      <div className={fieldClass}>
+        <span className={labelClass}>命名规则</span>
+        <select
+          className={selectClass}
+          value={form.naming_rule}
+          onChange={(e) => setForm({ ...form, naming_rule: e.target.value })}
+        >
+          {NAMING_OPTIONS.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      </div>
+    </DownloadModalFrame>
+  );
+}
+
+function SubtitleDownloadModal({ open, onClose, content, workspaceId }: ModalProps) {
+  const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
+    useDownloadModal(content, workspaceId);
+  const [form, setForm] = useState<DownloadForm>(() => subtitleDefaultForm());
+  useEffect(() => {
+    if (open) setForm(subtitleDefaultForm());
+  }, [open]);
+  return (
+    <DownloadModalFrame
+      open={open}
+      onClose={onClose}
+      title="下载字幕"
+      subtitle={`仅对当前作品（${content.title.slice(0, 28) || "该作品"}）生效，使用 yt-dlp 从源站重新拉取字幕。`}
+      error={error}
+      download={download}
+      mediaFiles={mediaFiles}
+      saveFile={saveFile}
+      submitDisabled={submitting || busy}
+      onSubmit={() => submit(form)}
+    >
+      <label className="flex items-center gap-2 text-sm text-slate-300">
+        <input
+          type="checkbox"
+          className="rounded border-slate-600 bg-slate-800"
+          checked={form.write_subtitles}
+          onChange={(e) => setForm({ ...form, write_subtitles: e.target.checked })}
+        />
+        下载字幕（人工字幕）
+      </label>
+      <label className="flex items-center gap-2 text-sm text-slate-300">
+        <input
+          type="checkbox"
+          className="rounded border-slate-600 bg-slate-800"
+          checked={form.write_auto_subtitles}
+          onChange={(e) =>
+            setForm({ ...form, write_auto_subtitles: e.target.checked })
+          }
+        />
+        下载自动生成字幕（语音识别，质量较低）
+      </label>
+      <div className={fieldClass}>
+        <span className={labelClass}>字幕语言（如 zh.*,en.*）</span>
+        <input
+          className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-sm text-white"
+          value={form.subtitle_langs}
+          onChange={(e) => setForm({ ...form, subtitle_langs: e.target.value })}
+        />
+      </div>
+    </DownloadModalFrame>
+  );
+}
+
+function MetadataDownloadModal({ open, onClose, content, workspaceId }: ModalProps) {
+  const { download, submitting, error, submit, saveFile, busy, mediaFiles } =
+    useDownloadModal(content, workspaceId);
+  const [form, setForm] = useState<DownloadForm>(() => metadataDefaultForm());
+  useEffect(() => {
+    if (open) setForm(metadataDefaultForm());
+  }, [open]);
+  return (
+    <DownloadModalFrame
+      open={open}
+      onClose={onClose}
+      title="下载原始信息 (info.json)"
+      subtitle={`仅对当前作品（${content.title.slice(0, 28) || "该作品"}）生效，使用 yt-dlp 抓取原始元数据。`}
+      error={error}
+      download={download}
+      mediaFiles={mediaFiles}
+      saveFile={saveFile}
+      submitDisabled={submitting || busy}
+      onSubmit={() => submit(form)}
+    >
+      <label className="flex items-center gap-2 text-sm text-slate-300">
+        <input
+          type="checkbox"
+          className="rounded border-slate-600 bg-slate-800"
+          checked={form.write_info_json}
+          onChange={(e) => setForm({ ...form, write_info_json: e.target.checked })}
+        />
+        下载 info.json（原始抓取元数据）
+      </label>
+    </DownloadModalFrame>
   );
 }
 
@@ -113,6 +563,9 @@ export function ContentDetailClient({ id }: { id: string }) {
       ),
     enabled: Boolean(workspaceId),
   });
+  const [dlVideo, setDlVideo] = useState(false);
+  const [dlSubtitle, setDlSubtitle] = useState(false);
+  const [dlMetadata, setDlMetadata] = useState(false);
   if (workspaceLoading || !workspaceId || item.isLoading)
     return (
       <main className="p-8">
@@ -148,6 +601,19 @@ export function ContentDetailClient({ id }: { id: string }) {
   const hasSubtitles = subs.length > 0;
   const assetLinkClass =
     "inline-flex items-center gap-1 text-sm text-sky-400 hover:text-sky-300";
+  const dlBtn = (kind: "video" | "subtitle" | "metadata") => (
+    <button
+      type="button"
+      onClick={() => {
+        if (kind === "video") setDlVideo(true);
+        else if (kind === "subtitle") setDlSubtitle(true);
+        else setDlMetadata(true);
+      }}
+      className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-slate-500 hover:text-white"
+    >
+      下载
+    </button>
+  );
   return (
     <main className="mx-auto max-w-[1400px] space-y-6 px-4 py-7 lg:px-8">
       <BackButton />
@@ -193,7 +659,8 @@ export function ContentDetailClient({ id }: { id: string }) {
             title="视频"
             icon={<Film size={15} />}
             present={Boolean(media?.video)}
-            notDownloadedHint="未下载 · 在设置中开启「下载视频」（体积较大）"
+            notDownloadedHint="未下载 · 点击「下载」用 yt-dlp 从源站重新拉取"
+            action={dlBtn("video")}
           >
             <SubtitleVideoPlayer
               contentId={id}
@@ -201,13 +668,14 @@ export function ContentDetailClient({ id }: { id: string }) {
               subtitles={subs}
             />
           </MediaCard>
-          {hasSubtitles && (
-            <MediaCard
-              title="字幕文件"
-              icon={<Captions size={15} />}
-              present={subs.length > 0}
-              notDownloadedHint="未下载 · 在设置中开启「下载字幕」"
-            >
+          <MediaCard
+            title="字幕文件"
+            icon={<Captions size={15} />}
+            present={hasSubtitles}
+            notDownloadedHint="未下载 · 点击「下载」用 yt-dlp 从源站重新拉取"
+            action={dlBtn("subtitle")}
+          >
+            {hasSubtitles ? (
               <ul className="flex flex-wrap gap-2">
                 {subs.map((s) => (
                   <li key={s.file}>
@@ -223,13 +691,18 @@ export function ContentDetailClient({ id }: { id: string }) {
                   </li>
                 ))}
               </ul>
-            </MediaCard>
-          )}
+            ) : (
+              <p className="text-xs text-slate-500">
+                该作品尚未归档任何字幕文件。
+              </p>
+            )}
+          </MediaCard>
           <MediaCard
             title="原始信息 (info.json)"
             icon={<FileJson size={15} />}
             present={Boolean(media?.info_json)}
-            notDownloadedHint="未下载 · 在设置中开启「下载 info.json」"
+            notDownloadedHint="未下载 · 点击「下载」用 yt-dlp 从源站重新拉取"
+            action={dlBtn("metadata")}
           >
             {media?.info_json && (
               <a
@@ -245,6 +718,24 @@ export function ContentDetailClient({ id }: { id: string }) {
           </MediaCard>
         </div>
       </Panel>
+      <VideoDownloadModal
+        open={dlVideo}
+        onClose={() => setDlVideo(false)}
+        content={data}
+        workspaceId={workspaceId!}
+      />
+      <SubtitleDownloadModal
+        open={dlSubtitle}
+        onClose={() => setDlSubtitle(false)}
+        content={data}
+        workspaceId={workspaceId!}
+      />
+      <MetadataDownloadModal
+        open={dlMetadata}
+        onClose={() => setDlMetadata(false)}
+        content={data}
+        workspaceId={workspaceId!}
+      />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="播放量"

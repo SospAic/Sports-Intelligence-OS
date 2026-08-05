@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import Link from "next/link";
@@ -27,7 +28,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
-import { ExternalImage } from "@/components/external-image";
+import { AccountAvatar } from "@/components/account-avatar";
 import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import { AddAccountModal } from "@/components/add-account-modal";
 import { useToast } from "@/components/toast";
@@ -526,6 +527,7 @@ export function AccountsClient() {
   }, [syncingAccounts, syncRunQueries]);
 
   const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
+  const canDelete = ["owner", "admin"].includes(role ?? "");
 
   async function saveView() {
     const prefs: AccountViewPrefs = {
@@ -557,23 +559,41 @@ export function AccountsClient() {
     if (!canEdit || !account.is_active) return;
     setSyncTarget(account);
   }
+  async function deleteAccount(account: AccountRecord) {
+    if (!workspaceId) return;
+    if (!canDelete) {
+      notify("无删除账号权限（需 owner 或 admin 角色）", "error");
+      return;
+    }
+    if (["queued", "syncing"].includes(account.sync_status)) {
+      notify("账号正在同步，请稍后再删除", "error");
+      return;
+    }
+    if (
+      !window.confirm(
+        `确定删除账号「${account.display_name || account.username}」？\n该操作会将账号停用并移出监控，不可撤销。`,
+      )
+    )
+      return;
+    try {
+      await apiRequest<void>(`/accounts/${encodeURIComponent(account.id)}`, {
+        method: "DELETE",
+        workspaceId,
+        csrf: true,
+      });
+      notify("账号已删除");
+      await client.invalidateQueries({ queryKey: ["accounts"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除失败", "error");
+    }
+  }
   const columns: ColumnDef<AccountRecord, unknown>[] = [
     {
       accessorKey: "display_name",
       header: "账号",
       cell: ({ row }) => (
         <div className="flex items-center gap-3">
-          {row.original.avatar_url ? (
-            <ExternalImage
-              src={row.original.avatar_url}
-              alt=""
-              className="size-9 shrink-0 rounded-full object-cover ring-1 ring-slate-700"
-            />
-          ) : (
-            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-slate-800 text-xs font-medium text-slate-400 ring-1 ring-slate-700">
-              {(row.original.display_name || "?").slice(0, 2)}
-            </span>
-          )}
+          <AccountAvatar url={row.original.avatar_url} name={row.original.display_name} />
           <div>
             <Link
               className="font-medium text-cyan-300 hover:underline"
@@ -706,6 +726,21 @@ export function AccountsClient() {
               <Info size={13} />
               详情
             </button>
+            {canDelete && (
+              <button
+                disabled={isSyncing}
+                onClick={() => deleteAccount(row.original)}
+                title={
+                  isSyncing
+                    ? "同步进行中，暂不可删除"
+                    : "删除该账号（停用并移出监控）"
+                }
+                className="inline-flex items-center gap-1 text-xs text-rose-400 hover:text-rose-300 disabled:text-slate-600 disabled:cursor-not-allowed"
+              >
+                <Trash2 size={13} />
+                删除
+              </button>
+            )}
           </div>
         );
       },
