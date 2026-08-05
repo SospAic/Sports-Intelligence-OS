@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { getRuleSetDetail } from "@/lib/rules";
 import { VersionActions } from "./version-actions";
 import { RuleExportButtons } from "./rule-export-buttons";
+import { BackButton } from "@/components/back-button";
 
 export default async function RuleSetPage({
   params,
@@ -22,9 +23,7 @@ export default async function RuleSetPage({
   return (
     <main className="min-h-screen px-5 py-8 lg:px-10">
       <div className="mx-auto max-w-6xl">
-        <Link className="text-sm text-cyan-300" href="/rules">
-          ← 返回规则中心
-        </Link>
+        <BackButton label="返回规则中心" />
         <header className="mt-6 flex flex-col gap-5 border-b border-slate-800 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs text-cyan-300">{ruleSet.key}</p>

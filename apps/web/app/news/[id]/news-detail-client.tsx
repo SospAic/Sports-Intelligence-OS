@@ -16,6 +16,7 @@ import {
   inputClass,
   secondaryButtonClass,
 } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import { useToast } from "@/components/toast";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate, sportLabel } from "@/lib/format";
@@ -137,6 +138,7 @@ export function NewsDetailClient({ id }: { id: string }) {
   const item = query.data;
   return (
     <main className="mx-auto max-w-5xl space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
         eyebrow={`${item.source.name} · ${item.source_kind === "live" ? "实时来源" : "用户录入"}`}
         title={item.title}

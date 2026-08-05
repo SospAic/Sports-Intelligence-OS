@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Captions, ExternalLink, FileJson, Film, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useWorkspace } from "@/components/app-shell";
+import { BackButton } from "@/components/back-button";
 import { ExternalImage } from "@/components/external-image";
 import { SubtitleVideoPlayer } from "@/components/subtitle-video-player";
 import { contentCoverUrl } from "@/lib/media";
@@ -149,6 +150,7 @@ export function ContentDetailClient({ id }: { id: string }) {
     "inline-flex items-center gap-1 text-sm text-sky-400 hover:text-sky-300";
   return (
     <main className="mx-auto max-w-[1400px] space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
         eyebrow={`${data.platform.name} · ${sourceKindLabel(data.source_kind)}`}
         title={data.title}

@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Badge, buttonClass, secondaryButtonClass } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import {
   generationInputTypeLabel,
   generationProgress,
@@ -126,6 +127,7 @@ export function GenerationDetail({
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
+      <BackButton />
       <header className="flex flex-col gap-4 border-b border-slate-800/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold tracking-[.22em] text-cyan-400 uppercase">

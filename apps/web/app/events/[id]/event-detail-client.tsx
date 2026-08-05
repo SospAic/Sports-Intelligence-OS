@@ -15,6 +15,7 @@ import {
   buttonClass,
   secondaryButtonClass,
 } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate, sportLabel } from "@/lib/format";
 import {
@@ -69,6 +70,7 @@ export function EventDetailClient({ id }: { id: string }) {
   const recommendationScore = eventRecommendationScore(item.metadata);
   return (
     <main className="mx-auto max-w-6xl space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
         eyebrow={`${sportLabel(item.sport)} · ${
           { active: "活跃", developing: "发展中", closed: "已结束" }[

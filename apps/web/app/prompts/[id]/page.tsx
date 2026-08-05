@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { getPromptDetail, getPromptVersion } from "@/lib/generation";
 import { PromptEditor } from "./prompt-editor";
+import { BackButton } from "@/components/back-button";
 
 export default async function PromptDetailPage({
   params,
@@ -30,6 +31,7 @@ export default async function PromptDetailPage({
   return (
     <main className="min-h-screen px-5 py-8 lg:px-10">
       <div className="mx-auto max-w-7xl">
+        <BackButton />
         <p className="font-mono text-xs text-cyan-300">{collection.key}</p>
         <h1 className="mt-3 text-3xl font-semibold text-white">
           {collection.name}

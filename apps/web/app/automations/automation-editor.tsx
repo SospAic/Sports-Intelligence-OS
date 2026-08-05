@@ -22,6 +22,7 @@ import {
   inputClass,
   secondaryButtonClass,
 } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
 export type EntityType = "content" | "account" | "news" | "topic_event";
@@ -439,6 +440,7 @@ function AutomationEditorForm({
   }
   return (
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
         eyebrow="Visual Rule Builder"
         title={id ? "编辑自动化" : "新建自动化"}

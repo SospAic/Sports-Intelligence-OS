@@ -38,6 +38,7 @@ import {
 import { TimeRangePicker } from "@/components/time-range-picker";
 import { TerminateButton } from "@/components/terminate-button";
 import { useToast } from "@/components/toast";
+import { BackButton } from "@/components/back-button";
 import { TrendChart } from "@/components/trend-chart";
 import {
   Badge,
@@ -740,6 +741,7 @@ export function AccountDetailClient({ id }: { id: string }) {
   );
   return (
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <div className="flex items-start gap-4">
         {item.avatar_url ? (
           <ExternalImage

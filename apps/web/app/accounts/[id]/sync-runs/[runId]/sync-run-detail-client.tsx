@@ -3,16 +3,14 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowLeft,
   CheckCircle2,
   ChevronRight,
   Clock,
   Loader2,
   XCircle,
 } from "lucide-react";
-import Link from "next/link";
-
 import { useWorkspace } from "@/components/app-shell";
+import { BackButton } from "@/components/back-button";
 import { Badge, PageHeader, Panel, StatePanel } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { buildAccountDetailPaths } from "@/lib/admin-queries";
@@ -85,13 +83,7 @@ export function SyncRunDetailClient({
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link
-          href={`/accounts/${encodeURIComponent(accountId)}`}
-          className="inline-flex items-center gap-1 text-sm text-slate-400 hover:text-slate-200"
-        >
-          <ArrowLeft size={16} />
-          返回账号
-        </Link>
+        <BackButton label="返回账号" />
       </div>
 
       <PageHeader
