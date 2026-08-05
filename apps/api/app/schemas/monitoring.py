@@ -87,6 +87,15 @@ class AccountCreate(StrictModel):
     def normalize_country(cls, value: str | None) -> str | None:
         return value.upper() if value else None
 
+    @field_validator("avatar_url", "profile_url", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        # Frontends may send "" when a field is cleared; treat it as absent so
+        # the ``HttpUrl | None`` field accepts it instead of raising 422.
+        if value == "":
+            return None
+        return value
+
 
 class AccountUpdate(StrictModel):
     username: str | None = Field(default=None, max_length=255)
@@ -114,6 +123,13 @@ class AccountUpdate(StrictModel):
     @classmethod
     def normalize_country(cls, value: str | None) -> str | None:
         return value.upper() if value else None
+
+    @field_validator("avatar_url", "profile_url", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
 
 class AccountSnapshotRead(BaseModel):

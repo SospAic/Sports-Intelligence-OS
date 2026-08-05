@@ -80,7 +80,9 @@ def test_account_avatar_404_without_url(
         lambda url, timeout=10: FAKE_PNG,
     )
     csrf_token = authenticate(client)
-    account = _create_with_avatar(client, csrf_token, "")
+    # Account created without an avatar_url (None) -> route must 404 so the
+    # frontend falls back to the remote URL and then initials.
+    account = _create_with_avatar(client, csrf_token, None)
     response = client.get(f"/api/v1/accounts/{account['id']}/avatar")
     assert response.status_code == 404
 
