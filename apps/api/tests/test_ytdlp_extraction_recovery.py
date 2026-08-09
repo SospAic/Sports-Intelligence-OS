@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from app.adapters.platforms.base import TransientAdapterError
+from app.adapters.platforms.base import LoginRequiredError, TransientAdapterError
 from app.adapters.platforms.yt_dlp import (
     TIKTOK_RECOVERY_APP_INFO,
     YtDlpAdapter,
@@ -135,9 +135,14 @@ async def test_permanent_error_fails_fast_without_retry(monkeypatch) -> None:
         calls,
     )
 
-    with pytest.raises(TransientAdapterError):
+    # A login wall is permanent: it must surface as a *non-retryable* error so
+    # neither the in-adapter loop nor the Celery retry ladder burns wall clock
+    # on an attempt that can never succeed without credentials.
+    with pytest.raises(LoginRequiredError) as excinfo:
         await YtDlpAdapter()._run_yt_dlp(TIKTOK_URL, download={}, playlist_end=1)
 
+    assert excinfo.value.retryable is False
+    assert excinfo.value.code == "login_required"
     assert len(calls) == 1, "permanent failures must not burn extra platform requests"
 
 
