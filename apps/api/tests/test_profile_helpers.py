@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.adapters.platforms.profile_helpers import (
+    is_anti_bot_shell_profile,
     is_error_page_title,
     is_invalid_display_name,
     should_update_display_name,
@@ -95,3 +96,43 @@ class TestShouldUpdateDisplayName:
 
     def test_genuine_rename_is_applied(self) -> None:
         assert should_update_display_name("NBA", "NBA Official") is True
+
+
+class TestIsAntiBotShellProfile:
+    """One rule for all four platforms: no payload + no real name = a wall."""
+
+    @pytest.mark.parametrize(
+        ("display_name", "synthetic"),
+        [
+            ("@nba", "@nba"),  # TikTok / YouTube handle fallback
+            ("用户 MS4wLjABAAAA", "用户 MS4wLjABAAAA"),  # Douyin sec_uid fallback
+            ("UID 123456", "UID 123456"),  # Bilibili mid fallback
+            ("  @NBA  ", "@nba"),  # normalization: case + whitespace
+        ],
+    )
+    def test_synthetic_locator_name_without_payload_is_a_shell(
+        self, display_name: str, synthetic: str
+    ) -> None:
+        assert is_anti_bot_shell_profile(None, display_name, synthetic_names=(synthetic,)) is True
+
+    @pytest.mark.parametrize("display_name", ["的抖音", "抖音", "404 Not Found", "", None])
+    def test_degenerate_title_remnant_without_payload_is_a_shell(
+        self, display_name: str | None
+    ) -> None:
+        # No synthetic name needed — is_invalid_display_name already rejects these.
+        assert is_anti_bot_shell_profile(None, display_name) is True
+
+    def test_real_name_without_payload_is_kept(self) -> None:
+        """A DOM-only scrape that found a genuine name is still a valid profile."""
+        assert is_anti_bot_shell_profile(None, "NBA", synthetic_names=("@nba",)) is False
+        assert is_anti_bot_shell_profile(None, "老王的抖音", synthetic_names=()) is False
+
+    @pytest.mark.parametrize("payload", [{"nickname": "NBA"}, {}, [], 0, False, ""])
+    def test_present_payload_is_never_a_shell(self, payload: object) -> None:
+        """The authoritative XHR answered, so even a placeholder name is real data.
+
+        Falsy-but-present payloads ({} / [] / 0) must not be mistaken for a
+        missing payload — callers pass ``x or None`` when they mean "empty
+        counts as absent".
+        """
+        assert is_anti_bot_shell_profile(payload, "@nba", synthetic_names=("@nba",)) is False

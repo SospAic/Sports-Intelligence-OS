@@ -38,6 +38,7 @@ from app.adapters.platforms.browser_base import (
     LoginRequiredError,
     reraise_if_terminal,
 )
+from app.adapters.platforms.profile_helpers import is_anti_bot_shell_profile
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,21 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                 display_name = raw_title.replace(" - 抖音", "").strip()
             if not display_name:
                 display_name = f"用户 {sec_uid[:12]}"
+
+            # An anti-bot Douyin page returns HTTP 200 with an unhydrated shell:
+            # no user XHR, no RENDER_DATA, no DOM name — so the ladder above ends
+            # at the bare page title ("的抖音") or the synthetic locator name.
+            # Returning that record made the run "degraded" *and* retryable, so
+            # every sync spent the full browser budget (page load + 30s metrics
+            # timeout + content pagination ≈ 2 minutes) to rediscover the wall.
+            # Fail fast and permanently instead — same contract as TikTok.
+            if is_anti_bot_shell_profile(
+                user_data, display_name, synthetic_names=(f"用户 {sec_uid[:12]}",)
+            ):
+                raise LoginRequiredError(
+                    "抖音",
+                    "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie",
+                )
 
             # B: only attempt a DOM avatar fallback when the authoritative XHR
             # returned data. On a walled page (user_data is None) we must NOT

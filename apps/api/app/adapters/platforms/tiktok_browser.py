@@ -38,6 +38,7 @@ from app.adapters.platforms.browser_base import (
     LoginRequiredError,
     reraise_if_terminal,
 )
+from app.adapters.platforms.profile_helpers import is_anti_bot_shell_profile
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,9 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             # budget (3 attempts x ~41s = ~2m53s per account, every scheduled
             # sync) to arrive at the same wall, and reports a useless
             # "retry_exhausted" instead of the actionable "configure a cookie".
-            if not profile_data and display_name == f"@{username}":
+            if is_anti_bot_shell_profile(
+                profile_data or None, display_name, synthetic_names=(f"@{username}",)
+            ):
                 raise LoginRequiredError(
                     "TikTok",
                     "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie",

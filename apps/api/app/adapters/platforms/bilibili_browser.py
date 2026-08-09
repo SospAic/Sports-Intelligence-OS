@@ -33,6 +33,7 @@ from app.adapters.platforms.browser_base import (
     LoginRequiredError,
     reraise_if_terminal,
 )
+from app.adapters.platforms.profile_helpers import is_anti_bot_shell_profile
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,15 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                     display_name = raw_title.split("-")[0].strip()
             if not display_name:
                 display_name = f"UID {mid}"
+
+            # Same shell-page contract as TikTok/Douyin: no acc/info XHR *and* no
+            # real name means the space page never hydrated (bot wall), so the
+            # record would only mislabel the account and be retried forever.
+            if is_anti_bot_shell_profile(acc_info, display_name, synthetic_names=(f"UID {mid}",)):
+                raise LoginRequiredError(
+                    "Bilibili",
+                    "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie",
+                )
 
             # B: this branch only runs when the authoritative acc/info XHR was
             # missed. On a genuinely walled page display_name collapses to the

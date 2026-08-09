@@ -28,6 +28,8 @@ account. The guard below rejects them before they are written.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 # Exact (case/whitespace-normalized) strings that mean "the page we scraped was
 # an error page", not an account name.
 _ERROR_PAGE_TITLES: frozenset[str] = frozenset(
@@ -118,6 +120,43 @@ def is_invalid_display_name(value: str | None) -> bool:
     if unprefixed.startswith("www.") and " " not in unprefixed:
         return True
     return False
+
+
+def is_anti_bot_shell_profile(
+    payload: object | None,
+    display_name: str | None,
+    *,
+    synthetic_names: Iterable[str] = (),
+) -> bool:
+    """Return ``True`` when a scrape returned a *shell* page, not a profile.
+
+    All four browser adapters share one shape: they intercept an authoritative
+    XHR payload (TikTok ``webapp.user-detail``, Douyin user API, Bilibili
+    ``acc/info``, YouTube ``youtubei/browse``) and, when that is missing, walk a
+    ladder of DOM / page-title fallbacks that always ends in a *synthetic* name
+    built from the locator (``@handle``, ``UID 123``, ``用户 MS4wLjAB``).
+
+    An anti-bot wall serves HTTP 200 with an empty skeleton, so nothing raises:
+    the adapter happily returns a record whose name is either that synthetic
+    placeholder or a headless page-title remnant (``的抖音``). Persisting it
+    mislabels the account, and — worse — the run is reported as ``degraded``
+    with a retryable error, so every scheduled sync pays the full browser cost
+    (page load + metrics timeout + content pagination) to rediscover the same
+    wall.
+
+    Callers use this to fail *fast* and *permanently* with
+    ``LoginRequiredError`` instead, which tells the operator the one thing that
+    actually fixes it: configure a login cookie for that platform.
+
+    Returns ``False`` whenever the authoritative payload is present, so a page
+    that really did render is never rejected.
+    """
+    if payload is not None:
+        return False
+    if is_invalid_display_name(display_name):
+        return True
+    normalized = _normalize_text(display_name)
+    return any(normalized == _normalize_text(name) for name in synthetic_names)
 
 
 def should_update_display_name(old_name: str | None, new_name: str | None) -> bool:

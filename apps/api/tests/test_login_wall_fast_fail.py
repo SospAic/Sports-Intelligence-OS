@@ -297,3 +297,25 @@ def test_tiktok_anti_scrape_raises_login_required() -> None:
     ]
     # 登录流程 1 处 + 资料/指标反爬拦截各 1 处。
     assert len(login_raises) >= 3, "TikTok 反爬拦截应抛 LoginRequiredError 而非可重试异常"
+
+
+# ---------------------------------------------------------------------------
+# 4) 四平台 resolve_account 必须识别「反爬空壳页」（AST 契约）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("module_name", _BROWSER_MODULES)
+def test_resolve_account_detects_anti_bot_shell(module_name: str) -> None:
+    """空壳页（HTTP 200 但无权威 payload、无真实名字）必须快速失败。
+
+    这类页面不抛异常，`_check_login_required` 也探测不到（没有登录跳转、
+    没有登录弹窗），适配器会带着占位名（``的抖音`` / ``UID 123`` / ``@handle``）
+    正常返回 —— 同步被记为 degraded 且可重试，于是每次调度都要重新付出
+    「页面加载 + 指标超时 + 作品分页」的完整浏览器开销（抖音实测 126s）。
+    """
+    path = _ADAPTERS_DIR / module_name
+    guarded = _methods_calling(path, "is_anti_bot_shell_profile")
+    assert "resolve_account" in guarded, (
+        f"{module_name}::resolve_account 未调用 is_anti_bot_shell_profile —— "
+        "反爬空壳页会被当作成功抓取并写入占位账号名"
+    )

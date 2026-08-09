@@ -37,6 +37,7 @@ from app.adapters.platforms.browser_base import (
     LoginRequiredError,
     reraise_if_terminal,
 )
+from app.adapters.platforms.profile_helpers import is_anti_bot_shell_profile
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,17 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
                 display_name = raw_title.replace(" - YouTube", "").strip()
             if not display_name:
                 display_name = f"@{handle}"
+
+            # Same shell-page contract as the other three platforms: a consent /
+            # bot interstitial serves HTTP 200 with no youtubei payload and no
+            # channel identity, leaving only the synthetic "@handle".
+            if is_anti_bot_shell_profile(
+                channel_data, display_name, synthetic_names=(f"@{handle}",)
+            ):
+                raise LoginRequiredError(
+                    "YouTube",
+                    "公开页未返回频道资料（反爬/未登录拦截），需配置登录态 cookie",
+                )
 
             # B: only attempt a DOM avatar fallback when the authoritative
             # youtubei/browse XHR returned the channel header. On a walled page
