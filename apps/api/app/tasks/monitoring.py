@@ -14,7 +14,10 @@ from app.db.session import create_engine_and_session
 from app.models.download import Download
 from app.models.monitoring import Account, ContentItem, Platform
 from app.models.settings import RuntimeSettingOverride
+from app.repositories.sync import SyncRepository
 from app.services.monitoring import MonitoringService
+from app.services.platform_credentials import PlatformCredentialService
+from app.services.platform_detect import detect_platform_key_from_url
 from app.services.sync import (
     PlatformSyncExecutor,
     RetryableSyncError,
@@ -58,6 +61,29 @@ async def _mark_exhausted(run_id: UUID, message: str) -> None:
         await engine.dispose()
 
 
+async def _mark_crashed(run_id: UUID, message: str) -> None:
+    """Close a run whose task raised something the engine did not expect.
+
+    Uses its own engine/session so it still works when the run's original
+    session was left unusable by the failure.
+    """
+
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    registry = build_platform_adapter_registry(settings)
+    try:
+        async with session_factory() as session:
+            await PlatformSyncExecutor(session, registry, settings).mark_unexpected_failure(
+                run_id, message
+            )
+    finally:
+        for adapter in registry.values():
+            close = getattr(adapter, "aclose", None)
+            if close is not None:
+                await close()
+        await engine.dispose()
+
+
 def _run_with_retry(task: Task, run_id: UUID) -> None:
     settings = get_settings()
     # Effective retry cap: a runtime override (if set) wins over the frozen
@@ -76,6 +102,18 @@ def _run_with_retry(task: Task, run_id: UUID) -> None:
             countdown=min(2**retries, 60),
             max_retries=effective,
         ) from exc
+    except Exception as exc:  # noqa: BLE001 - last-resort lock release
+        # Anything the engine did not classify (a DB constraint violation, a
+        # driver error, an adapter bug) must still close the run and release the
+        # account lock. Leaving the row in ``running`` would make the account
+        # look permanently "syncing" and reject every later sync request until
+        # the periodic stale sweep fires minutes later.
+        logger.exception("sync run %s crashed with an unhandled error", run_id)
+        try:
+            asyncio.run(_mark_crashed(run_id, f"{type(exc).__name__}: {exc}"))
+        except Exception:  # noqa: BLE001 - never mask the original failure
+            logger.exception("failed to release sync run %s after a crash", run_id)
+        raise
 
 
 async def _effective_sync_task_max_retries(settings: Settings) -> int:
@@ -128,7 +166,7 @@ def download_url_task(self: Task, download_id: str) -> None:
 
 async def _run_download(download_id: UUID) -> None:
     from app.adapters.platforms.yt_dlp import YtDlpAdapter
-    from app.services.download import DownloadService
+    from app.services.download import DownloadService, explain_empty_download
 
     settings = get_settings()
     engine, session_factory = create_engine_and_session(settings)
@@ -140,6 +178,19 @@ async def _run_download(download_id: UUID) -> None:
             if download is None:
                 return
             await service.mark_running(download_id)
+            sync_config = await SyncRepository(session).get_sync_settings_config(
+                download.workspace_id
+            )
+            yt_config = sync_config.get("yt_dlp")
+            detected_platform = detect_platform_key_from_url(download.url)
+            if detected_platform:
+                _, platform_config = await PlatformCredentialService(session, settings).resolve(
+                    download.workspace_id, detected_platform
+                )
+                yt_config = {
+                    **platform_config,
+                    **(yt_config if isinstance(yt_config, dict) else {}),
+                }
             options = download.options or {}
             media_dir = os.path.join(
                 media_root, str(download.workspace_id), "downloads", str(download_id)
@@ -161,6 +212,7 @@ async def _run_download(download_id: UUID) -> None:
                     "write_thumbnail": options.get("write_thumbnail", True),
                     "write_info_json": options.get("write_info_json", False),
                 },
+                structured=yt_config if isinstance(yt_config, dict) else None,
                 media_dir=media_dir,
                 playlist_end=1,
             )
@@ -177,13 +229,42 @@ async def _run_download(download_id: UUID) -> None:
                     break
             if media and options.get("save_to_works") and entries:
                 await _save_download_as_work(session, download, entries[0], media)
-            await service.mark_done(download_id, media, platform)
+            empty_reason = None if media else explain_empty_download(dict(options), entries)
+            await service.mark_done(download_id, media, platform, empty_reason)
     except Exception as exc:  # noqa: BLE001 - record failure, don't crash worker
         logger.warning("download %s failed: %s", download_id, exc)
         async with session_factory() as session:
             await DownloadService(session).mark_failed(download_id, str(exc))
     finally:
         await engine.dispose()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    bind=True, name="app.tasks.monitoring.preview_download"
+)
+def preview_download_task(self: Task, url: str, workspace_id: str) -> dict:
+    """Parse a video URL with yt-dlp for the download preview card.
+
+    Mirrors ``download_url_task`` but only extracts metadata (no media save),
+    and returns a JSON-serializable result dict the API polls for.
+    """
+
+    return asyncio.run(_run_preview(url, UUID(workspace_id)))
+
+
+async def _run_preview(url: str, workspace_id: UUID) -> dict:
+    from app.services.download import UNRESOLVABLE_URL_DETAIL, build_download_preview
+
+    settings = get_settings()
+    try:
+        return await build_download_preview(url, workspace_id, settings)
+    except Exception as exc:  # noqa: BLE001 - surface a safe error to the poll
+        logger.warning("preview_download_task failed for %s: %s", url, exc)
+        return {
+            "status": "error",
+            "error_code": 422,
+            "error_detail": UNRESOLVABLE_URL_DETAIL,
+        }
 
 
 async def _save_download_as_work(
@@ -308,7 +389,7 @@ async def _schedule_due() -> int:
         async with session_factory() as session:
             service = SyncService(session, registry, settings)
             await service.recover_stale_runs(
-                datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds),
+                datetime.now(UTC) - timedelta(seconds=settings.sync_stale_after_seconds),
                 datetime.now(UTC) - timedelta(seconds=settings.task_dispatch_timeout_seconds),
             )
             accounts = await service.repository.due_accounts(service.settings_now(), limit=500)
@@ -357,8 +438,11 @@ async def _recover_stale() -> int:
     try:
         async with session_factory() as session:
             service = SyncService(session, build_platform_adapter_registry(settings), settings)
+            # Use the sync-specific threshold (run budget + grace), not the
+            # generic 35-minute task lease: a crashed account sync must free its
+            # lock in minutes, otherwise the account is unsyncable until then.
             return await service.recover_stale_runs(
-                datetime.now(UTC) - timedelta(seconds=settings.task_stale_after_seconds),
+                datetime.now(UTC) - timedelta(seconds=settings.sync_stale_after_seconds),
                 datetime.now(UTC) - timedelta(seconds=settings.task_dispatch_timeout_seconds),
             )
     finally:

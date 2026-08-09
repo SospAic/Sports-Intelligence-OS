@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import logging
 import os
 from collections.abc import Mapping, Sequence
@@ -8,10 +9,12 @@ from statistics import median
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
+import anyio
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.platforms.avatar_helpers import should_update_avatar
 from app.adapters.platforms.base import (
     AdapterCallContext,
     AdapterConfigurationError,
@@ -20,8 +23,14 @@ from app.adapters.platforms.base import (
     PlatformAdapterError,
     PlatformContentData,
     PlatformMetricsData,
+    TransientAdapterError,
     parse_compact_count,
 )
+from app.adapters.platforms.profile_helpers import (
+    is_invalid_display_name,
+    should_update_display_name,
+)
+from app.api.routes.media import cache_avatar_for_account
 from app.core.config import Settings
 from app.models.monitoring import (
     Account,
@@ -59,6 +68,47 @@ logger = logging.getLogger(__name__)
 
 SnapshotT = TypeVar("SnapshotT", AccountSnapshot, ContentSnapshot)
 
+# Mirrors the ``ck_sync_run_events_sync_run_event_type`` CHECK constraint.
+# The tracklog is *diagnostic* data: it must never be able to abort a sync.
+# A value outside this set raises a CheckViolationError on flush, which poisons
+# the whole session (PendingRollbackError) and leaves the run stuck in
+# ``running`` with its account lock held — the exact stall this guard prevents.
+# Unknown values are therefore normalized instead of persisted verbatim.
+_SYNC_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "stage",
+        "page",
+        "item",
+        "analytics",
+        "external_call",
+        "warning",
+        "error",
+        "info",
+        "summary",
+    }
+)
+
+# Levels the tracklog UI understands; same "diagnostics must not break the run"
+# rule applies.
+_SYNC_EVENT_LEVELS: frozenset[str] = frozenset({"debug", "info", "warn", "error"})
+
+
+def _normalize_event_type(event_type: str, level: str) -> str:
+    """Coerce ``event_type`` into the DB-allowed set.
+
+    Falls back to the level-appropriate generic bucket so an unrecognized value
+    still lands in the tracklog (never silently dropped) without violating the
+    CHECK constraint.
+    """
+
+    if event_type in _SYNC_EVENT_TYPES:
+        return event_type
+    if level == "error":
+        return "error"
+    if level == "warn":
+        return "warning"
+    return "info"
+
 
 class SyncError(Exception):
     code = "sync_error"
@@ -82,6 +132,15 @@ class SyncDispatchError(SyncError):
 
 class RetryableSyncError(Exception):
     pass
+
+
+# Smallest wall-clock budget worth starting an attempt with. A retry that is
+# dispatched after the run's deadline (queue backlog, a crashed attempt, a
+# stale sweep re-queue) would otherwise compute a *negative* budget, make every
+# asyncio.wait_for fire instantly, re-raise a retryable error and loop —
+# burning worker slots while the account stays locked. The run deadline is
+# absolute: below this floor we close the run instead of pretending to work.
+_MIN_ATTEMPT_BUDGET_SECONDS = 5.0
 
 
 def _as_int(value: int | float | None) -> int | None:
@@ -430,6 +489,11 @@ class PlatformSyncExecutor:
         # Set when a run hits its wall-clock budget mid-pagination so the success
         # path can label the result as truncated rather than a full sync.
         self._budget_exceeded = False
+        # Live scrolling log for the run currently being executed (set in
+        # execute_account_run). ``None`` for code paths that have no run yet.
+        # The annotation is never evaluated at runtime (it sits in a function
+        # body), so naming a class defined further down this module is fine.
+        self._log_sink: _SyncLogSink | None = None
         # Monotonic counter for append-only tracklog events emitted during this
         # run's execution (reset per executor instance / per run).
         self._event_seq = 0
@@ -485,14 +549,25 @@ class PlatformSyncExecutor:
             "elapsed_ms": elapsed_ms,
         }
         self._last_track_at = now
+        safe_level = level if level in _SYNC_EVENT_LEVELS else "info"
+        safe_type = _normalize_event_type(event_type, safe_level)
+        if safe_type != event_type:
+            # Keep the caller's intent visible for debugging without letting it
+            # reach the constrained column.
+            enriched["requested_event_type"] = event_type
+            logger.warning(
+                "sync tracklog received unsupported event_type %r; stored as %r",
+                event_type,
+                safe_type,
+            )
         self.session.add(
             SyncRunEvent(
                 id=uuid4(),
                 workspace_id=run.workspace_id,
                 sync_run_id=run.id,
                 sequence=self._event_seq,
-                event_type=event_type,
-                level=level,
+                event_type=safe_type,
+                level=safe_level,
                 message=message,
                 payload=enriched,
             )
@@ -518,7 +593,12 @@ class PlatformSyncExecutor:
         # config. The global ``sync_settings`` wins on conflict so operators tune
         # behaviour once, centrally, instead of per account.
         sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
-        yt_cfg = dict(sync_cfg.get("yt_dlp") or {})
+        # A manually captured browser session is stored as a platform
+        # credential, while the yt-dlp adapter reads its CLI inputs from the
+        # nested ``yt_dlp`` block. Keep the secret in memory only and bridge
+        # the Netscape cookie text into that block for the current run.
+        yt_cfg = {key: config[key] for key in ("cookies_netscape",) if config.get(key)}
+        yt_cfg.update(dict(sync_cfg.get("yt_dlp") or {}))
         if sync_cfg.get("max_contents") is not None:
             yt_cfg["max_items"] = sync_cfg["max_contents"]
         merged = dict(config)
@@ -604,9 +684,32 @@ class PlatformSyncExecutor:
         run.error_code = None
         run.error_message = None
         account.sync_status = "syncing"
+        # Attach the live log before the first stage transition so the very first
+        # line ("正在验证采集方式与凭证") already lands in the scrolling panel.
+        sink = _SyncLogSink(run)
+        self._log_sink = sink
+        sink.push(f"▸ 开始同步 {account.display_name or account.external_id}（{run.adapter_key}）")
         self._set_progress(run, 5, "validating", "正在验证采集方式与凭证")
         await self.session.commit()
         if await self._aborted(run):
+            return
+        # The run deadline is absolute and spans every attempt: ``started_at`` is
+        # kept across retries on purpose. A retry that reaches the worker after
+        # the deadline (queue backlog, retry backoff, a re-queued stale run) has
+        # nothing left to spend — starting it would drive every wait_for with a
+        # negative timeout, fail instantly, and be re-queued again. Close it
+        # cleanly so the lock is released and the UI shows a real reason.
+        attempt_budget = self._remaining_budget_seconds(run)
+        if attempt_budget < _MIN_ATTEMPT_BUDGET_SECONDS:
+            await self._terminal_error(
+                run,
+                account,
+                "sync_budget_exhausted",
+                (
+                    f"同步时间预算已耗尽（上限 {self.settings.sync_run_timeout_seconds}s，"
+                    f"本次尝试开始时剩余 {attempt_budget:.0f}s），已终止并释放账号锁"
+                ),
+            )
             return
         attempt_started = datetime.now(UTC)
         attempt_number = int(run.metadata_json.get("retry_count", 0)) + 1
@@ -616,13 +719,14 @@ class PlatformSyncExecutor:
                 config=await self._config_for(account),
                 observed_at=now,
                 request_id=run.request_id,
+                progress_sink=sink,
             )
             await adapter.validate_config(ctx.config)
             self._set_progress(run, 12, "account_profile", "正在同步账号资料与公开指标")
             await self.session.commit()
             if await self._aborted(run):
                 return
-            created, updated, metrics_degraded = await self._sync_account(
+            created, updated, metrics_degraded, profile_degraded = await self._sync_account(
                 account, adapter, ctx, run
             )
             self._set_progress(run, 25, "content_list", "账号资料已完成，正在获取作品列表")
@@ -715,7 +819,12 @@ class PlatformSyncExecutor:
         finished = datetime.now(UTC)
         final_status = (
             "degraded"
-            if (metrics_degraded or content_analytics_failed or metrics_calc_failed)
+            if (
+                metrics_degraded
+                or content_analytics_failed
+                or metrics_calc_failed
+                or profile_degraded
+            )
             else "success"
         )
         # The external call itself succeeded (the profile was fetched); only the
@@ -777,6 +886,7 @@ class PlatformSyncExecutor:
         run.metadata_json = {
             **run.metadata_json,
             "items_failed": items_failed,
+            "account_metrics_degraded": metrics_degraded,
             "content_analytics_failed": content_analytics_failed,
             "metrics_calc_failed": metrics_calc_failed,
         }
@@ -809,7 +919,7 @@ class PlatformSyncExecutor:
         interval, _ = await compute_adaptive_interval(self.session, account.id)
         account.sync_interval_seconds = interval
         account.next_sync_at = finished + timedelta(seconds=interval)
-        if metrics_degraded:
+        if metrics_degraded or content_analytics_failed or metrics_calc_failed:
             account.last_sync_error_code = "account_metrics_extraction_failed"
             account.last_sync_error_message = "指标提取失败，仅更新了账号资料"
         else:
@@ -823,6 +933,27 @@ class PlatformSyncExecutor:
             return
         account = await self.repository.get_account_unscoped(run.target_id)
         await self._terminal_error(run, account, "retry_exhausted", message)
+
+    async def mark_unexpected_failure(self, run_id: UUID, message: str) -> None:
+        """Close a run that crashed with an error the engine did not anticipate.
+
+        Called from the Celery task's last-resort handler on a *fresh* session,
+        because the crash may have poisoned the run's own session (e.g. a failed
+        flush leaves it in ``PendingRollbackError``). Without this, an unexpected
+        exception leaves the row in ``running`` holding the account's
+        ``lock_key`` forever: the UI shows a permanently "syncing" account and
+        every later sync request is rejected as already-in-flight. Recovering
+        only via the periodic stale sweep would take minutes, so we release the
+        lock immediately here.
+        """
+
+        run = await self.repository.get_run(run_id)
+        if run is None:
+            return
+        if run.status not in ("queued", "running"):
+            return
+        account = await self.repository.get_account_unscoped(run.target_id)
+        await self._terminal_error(run, account, "internal_error", message)
 
     async def calculate_account_metrics(self, account_id: UUID) -> None:
         account = await self.repository.get_account_unscoped(account_id)
@@ -951,25 +1082,85 @@ class PlatformSyncExecutor:
         adapter: PlatformAdapter,
         ctx: AdapterCallContext,
         run: SyncRun,
-    ) -> tuple[int, int, bool]:
-        data = await adapter.resolve_account(ctx, account.external_id)
+    ) -> tuple[int, int, bool, bool]:
+        profile_degraded = False
+        # Cap the account-profile fetch the same way content pages are capped:
+        # below the adapter's own extract timeout, so a slow/unreachable channel
+        # fails this stage via asyncio.wait_for (caught just below as a retryable
+        # outage, bounded by the run budget) instead of hanging inside the
+        # adapter's extract-retry loop for minutes. Directly serves "no stalls".
+        # Clamped to a positive floor: a wait_for driven by a negative timeout
+        # fires before the coroutine runs, which reads as a transient outage and
+        # sends the run straight back into the retry loop without ever calling
+        # the adapter. execute_account_run refuses to start an attempt without
+        # budget, so the floor here is a second line of defence only.
+        profile_fetch_timeout = max(
+            _MIN_ATTEMPT_BUDGET_SECONDS,
+            min(
+                self._remaining_budget_seconds(run),
+                float(self.settings.sync_page_fetch_timeout_seconds),
+            ),
+        )
+        try:
+            data = await asyncio.wait_for(
+                adapter.resolve_account(ctx, account.external_id),
+                timeout=profile_fetch_timeout,
+            )
+        except TimeoutError:
+            raise TransientAdapterError(
+                f"account profile fetch exceeded {profile_fetch_timeout:.0f}s budget"
+            ) from None
         if not data.external_id.strip() or not data.display_name.strip():
             raise AdapterContractError("account response is missing its identity")
-        if self._text_is_error_page(data.display_name):
-            raise AdapterContractError("account response contains an error-page title")
+        # Display-name guard (cross-platform, see
+        # profile_helpers.is_invalid_display_name). Rejects error-page titles,
+        # URLs leaked into the name field, and bare platform suffixes left over
+        # when a nickname failed to render — all three are scrape failures that
+        # would otherwise be persisted as the account's permanent name.
+        # Historically this raised a hard AdapterContractError and failed the
+        # whole sync, but a bad nickname is a non-critical field: the second-layer
+        # guard below (should_update_display_name) already refuses to overwrite a
+        # stored name with an invalid one, so the account keeps its identity. We
+        # therefore skip the name update and degrade the run instead of erroring —
+        # a partially-scraped but usable account beats a hard failure for the
+        # monitoring use case.
+        if is_invalid_display_name(data.display_name):
+            profile_degraded = True
+            self._emit(
+                run,
+                "warning",
+                "warn",
+                f"抓取到的显示名无效（{data.display_name[:40]}），已跳过更新以免污染账号名",
+                {"raw_display_name": data.display_name[:60]},
+            )
+            data = dataclasses.replace(data, display_name="")
         if data.profile_url and not data.profile_url.lower().startswith(("https://", "http://")):
             raise AdapterContractError("account response contains an invalid profile URL")
         self._set_progress(run, 18, "account_profile", "账号资料已获取，正在读取公开指标")
         await self.session.commit()
-        metrics = await adapter.fetch_account_analytics(ctx, data.external_id)
         original_locator = account.external_id
         account.external_id = data.external_id
         account.username = data.username
-        if (account.metadata_json or {}).get("display_name_source") != "manual":
+        # Second layer of the same rule: even if the contract check above is
+        # ever relaxed, a manually-set name is never clobbered and an invalid
+        # scrape can never replace a good stored name.
+        if (account.metadata_json or {}).get(
+            "display_name_source"
+        ) != "manual" and should_update_display_name(account.display_name, data.display_name):
             account.display_name = data.display_name
         account.profile_url = data.profile_url
-        if data.avatar_url:
+        # Avatar guard (cross-platform, see avatar_helpers.should_update_avatar):
+        # never overwrite a previously-cached real avatar with a missing or
+        # platform-default value. A failed re-sync (bot-walled browser scrape)
+        # must not smear one shared default image across accounts the way it
+        # can for the signature field below.
+        if should_update_avatar(account.avatar_url, data.avatar_url):
             account.avatar_url = data.avatar_url
+            # Persist the avatar locally at sync time so it survives CDN URL
+            # expiry (TikTok / Douyin signatures are short-lived). The local
+            # copy is later served by GET /accounts/{id}/avatar, which falls
+            # back to the remote URL, then to initials, if caching failed.
+            await anyio.to_thread.run_sync(cache_avatar_for_account, account.id, data.avatar_url)
         # Only overwrite the signature when the fresh extraction actually
         # produced one — a failed re-sync (e.g. bot-walled browser scrape)
         # must not wipe a previously captured description.
@@ -987,6 +1178,91 @@ class PlatformSyncExecutor:
         account.source_provider = data.provider
         account.fetched_at = data.fetched_at
         account.source_url = data.profile_url
+
+        # Profile resolution and analytics extraction are separate capabilities.
+        # A provider may legitimately expose the public profile while its
+        # metrics endpoint is unavailable, rate-limited, or temporarily broken.
+        # Persist the profile first and bound the metrics call so this optional
+        # step can never abort the whole account sync or consume the run budget.
+        metrics_error: str | None = None
+        remaining_budget = self._remaining_budget_seconds(run)
+        metrics: PlatformMetricsData | None = None
+        if remaining_budget <= 0:
+            metrics_error = "account metrics skipped because the sync time budget was exhausted"
+        else:
+            metrics_timeout = min(
+                max(5.0, float(self.settings.platform_request_timeout_seconds) * 3),
+                remaining_budget,
+            )
+            try:
+                metrics = await asyncio.wait_for(
+                    adapter.fetch_account_analytics(ctx, data.external_id),
+                    timeout=max(0.25, metrics_timeout),
+                )
+                if not isinstance(metrics, PlatformMetricsData):
+                    raise AdapterContractError(
+                        "account analytics response does not match the metrics contract"
+                    )
+            except TimeoutError:
+                metrics_error = "account metrics extraction timed out"
+            except PlatformAdapterError as exc:
+                metrics_error = f"{exc.code}: {exc}"
+            except Exception as exc:  # noqa: BLE001 - metrics are best-effort
+                logger.warning(
+                    "sync_account_metrics_failed",
+                    extra={
+                        "event": "platform.sync.account_metrics_failed",
+                        "sync_run_id": str(run.id),
+                        "adapter_key": adapter.key,
+                    },
+                )
+                metrics_error = f"{type(exc).__name__}: {exc}"
+
+        if metrics is None:
+            previous = await self.session.scalar(
+                select(AccountSnapshot)
+                .where(AccountSnapshot.account_id == account.id)
+                .order_by(AccountSnapshot.captured_at.desc())
+                .limit(1)
+            )
+            metric_keys = (
+                "follower_count",
+                "following_count",
+                "total_like_count",
+                "total_view_count",
+                "video_count",
+                "engagement_rate",
+            )
+            preserved: dict[str, int | float | None] = {}
+            if previous is not None:
+                for key in metric_keys:
+                    value = getattr(previous, key)
+                    preserved[key] = float(value) if isinstance(value, Decimal) else value
+            metrics = PlatformMetricsData(
+                external_id=data.external_id,
+                captured_at=ctx.observed_at,
+                metrics=preserved,
+                source_kind="live",
+                provider=adapter.key,
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=tuple(key for key in metric_keys if preserved.get(key) is None),
+                metadata={
+                    "analytics_fetched": False,
+                    "analytics_error": (metrics_error or "unknown")[:500],
+                    "preserved_previous_metrics": previous is not None,
+                },
+            )
+            self._emit(
+                run,
+                "analytics",
+                "warn",
+                f"账号指标提取失败，已保留账号资料：{metrics_error or 'unknown'}",
+                {
+                    "scope": "account",
+                    "error": (metrics_error or "unknown")[:500],
+                    "preserved_previous_metrics": previous is not None,
+                },
+            )
         # Defer the insert: build the snapshot object but only persist it after
         # content sync so a derived total_view_count (when the platform omits
         # lifetime views) can be applied to this new append-only row.
@@ -1025,7 +1301,7 @@ class PlatformSyncExecutor:
                 and m.get("video_count") is None
                 and m.get("total_view_count") is None
             )
-        return 1, 1, metrics_degraded
+        return 1, 1, metrics_degraded, profile_degraded
 
     def _account_snapshot(self, account: Account, data: PlatformMetricsData) -> AccountSnapshot:
         metrics = data.metrics
@@ -1104,15 +1380,19 @@ class PlatformSyncExecutor:
         # ── Sync decomposition (anti-bot / 风控 posture) ──────────────────────
         # Account data (profile + analytics) lives in ``_sync_account`` and uses
         # the yt-dlp channel JSON with a *browser* fallback for TikTok/Douyin
-        # (platforms yt-dlp cannot read). Content (作品列表 + 详情) lives here and
-        # is fetched **single-threaded**: one yt-dlp subprocess per page
-        # (``list_contents``) and a strictly sequential per-item upsert loop —
-        # ``fetch_content_analytics`` reads the in-memory per-page cache and
-        # launches NO extra yt-dlp subprocesses. We deliberately avoid any
-        # asyncio.gather / fan-out of yt-dlp calls, because concurrent requests
-        # are precisely what trips platform rate-limit / 风控 heuristics. Retry
-        # resilience comes from yt-dlp's built-in ``--retries`` (default 10,
-        # configurable) plus the run-level Celery retry, never a custom loop.
+        # (platforms yt-dlp cannot read). Content (作品列表 + 详情) lives here.
+        #
+        # Fetch strategy: the adapter enumerates the channel window with a cheap
+        # flat catalogue read and then fully extracts only the works that need
+        # it, up to ``sync_fetch_concurrency`` at a time. Each adapter clamps
+        # that number to a per-platform ceiling, so anti-bot-sensitive platforms
+        # (TikTok / Douyin) stay near-sequential while YouTube — which tolerates
+        # parallel metadata reads — finishes several times faster. Setting
+        # ``sync_fetch_concurrency=1`` (or disabling ``sync_fast_list_enabled``)
+        # restores the strictly sequential legacy behaviour.
+        # ``fetch_content_analytics`` still reads the in-memory per-page cache
+        # and launches NO extra subprocesses. Retry resilience comes from
+        # yt-dlp's built-in ``--retries`` plus the run-level Celery retry.
         # Workspace-wide fetch policy (set on the Settings → Sync tab). The cap
         # bounds how many works a single sync ingests; ``skip_existing`` decides
         # whether already-known works are refreshed or left untouched.
@@ -1122,6 +1402,24 @@ class PlatformSyncExecutor:
         latest_published_at = await self.session.scalar(
             select(func.max(ContentItem.published_at)).where(ContentItem.account_id == account.id)
         )
+        # Hand the adapter the works we already store so it can skip their
+        # (expensive) full extraction when the policy leaves them untouched.
+        # This is what makes a routine incremental sync cheap: only genuinely
+        # new works pay the per-video extraction cost.
+        incremental_mode = False
+        if self.settings.sync_fast_list_enabled:
+            known_external_ids = frozenset(
+                await self.session.scalars(
+                    select(ContentItem.external_id).where(ContentItem.account_id == account.id)
+                )
+            )
+            incremental_mode = skip_existing and bool(known_external_ids)
+            ctx = dataclasses.replace(
+                ctx,
+                known_external_ids=known_external_ids,
+                skip_known=incremental_mode,
+                fetch_concurrency=self.settings.sync_fetch_concurrency,
+            )
         incremental_since = latest_published_at - timedelta(days=7) if latest_published_at else None
         self._emit(
             run,
@@ -1165,6 +1463,13 @@ class PlatformSyncExecutor:
                     self._budget_exceeded = True
                     break
             window = 50
+            # An account we already track only needs a small probe at the head
+            # of the catalogue: enumerating a channel window is itself a paid
+            # network operation (~0.7s per work on this deployment), so asking
+            # for 50 when the answer is usually "nothing new" is pure waste. If
+            # the probe comes back entirely new, later pages widen back to 50.
+            if incremental_mode and page_index == 0:
+                window = min(window, self.settings.sync_incremental_probe_size)
             if max_contents is not None:
                 remaining = max_contents - (created + updated + skipped + failed)
                 window = max(1, min(window, remaining))
@@ -1177,6 +1482,16 @@ class PlatformSyncExecutor:
             if remaining_budget <= 0:
                 self._budget_exceeded = True
                 break
+            # Cap each page fetch at sync_page_fetch_timeout_seconds — strictly
+            # below the adapter's own extract timeout. A slow/unreachable channel
+            # then trips asyncio.wait_for (caught just below: the loop breaks and
+            # finalises what was ingested, no retry) rather than the adapter's
+            # longer internal timeout which would raise retryable and burn the
+            # whole run budget on repeated extracts. This is what keeps an
+            # individual flaky account from stalling the worker.
+            page_fetch_timeout = min(
+                remaining_budget, self.settings.sync_page_fetch_timeout_seconds
+            )
             try:
                 page = await asyncio.wait_for(
                     adapter.list_contents(
@@ -1186,7 +1501,7 @@ class PlatformSyncExecutor:
                         cursor=cursor,
                         page_size=window,
                     ),
-                    timeout=remaining_budget,
+                    timeout=page_fetch_timeout,
                 )
             except TimeoutError:
                 self._budget_exceeded = True
@@ -1444,6 +1759,22 @@ class PlatformSyncExecutor:
             await self.session.commit()
             if not page.next_cursor:
                 break
+            # Early stop at the known-works boundary. Platform listings are
+            # reverse-chronological, so once an entire page consists of works we
+            # already store, everything further down is older and equally known.
+            # Paging on would re-enumerate the whole back catalogue on every
+            # routine sync — the single largest source of wasted wall clock.
+            if incremental_mode and batch_total > 0 and page_skipped == batch_total:
+                run.items_total = run.items_processed
+                self._emit(
+                    run,
+                    "page",
+                    "info",
+                    f"第 {page_index + 1} 页全部为已入库作品，已到达增量边界，提前结束翻页",
+                    {"page_index": page_index, "skipped": page_skipped},
+                )
+                await self.session.commit()
+                break
             cursor = page.next_cursor
         self._emit(
             run,
@@ -1546,8 +1877,7 @@ class PlatformSyncExecutor:
             "视频不存在",
         }
 
-    @staticmethod
-    def _set_progress(run: SyncRun, percent: int, stage: str, message: str) -> None:
+    def _set_progress(self, run: SyncRun, percent: int, stage: str, message: str) -> None:
         run.progress_percent = min(100, max(run.progress_percent, percent))
         run.progress_stage = stage
         run.progress_message = message[:500]
@@ -1555,6 +1885,14 @@ class PlatformSyncExecutor:
             **(run.metadata_json or {}),
             "heartbeat_at": datetime.now(UTC).isoformat(),
         }
+        # Mirror every stage transition into the live log. This is what makes the
+        # scrolling detail panel work identically for all four platforms: even an
+        # adapter that emits nothing of its own still produces a readable
+        # timeline. The sink is the single writer of the tail, so stage lines and
+        # adapter lines interleave in true chronological order.
+        sink = self._log_sink
+        if sink is not None:
+            sink.push(f"▸ {message}")
 
     async def _upsert_content(
         self, account: Account, data: PlatformContentData, skip_existing: bool = False
@@ -1612,15 +1950,30 @@ class PlatformSyncExecutor:
                 content.tags = list(dict.fromkeys([*(content.tags or []), *data.tags]))[:30]
             skipped = True
         else:
-            content.title = data.title
-            content.description = data.description
-            content.published_at = data.published_at
-            content.duration_seconds = _as_decimal(data.duration_seconds)
-            content.canonical_url = data.canonical_url
+            # A row the adapter flagged as ``partial`` was built from a cheap
+            # catalogue listing (real title and view count, but no description
+            # or timestamp). Refreshing must not downgrade a work that a full
+            # extraction already enriched, so partial rows only fill blanks.
+            partial = bool(dict(data.metadata).get("partial"))
+            if data.title:
+                content.title = data.title
+            if data.description is not None or not partial:
+                content.description = data.description
+            if data.published_at is not None or not partial:
+                content.published_at = data.published_at
+            if data.duration_seconds is not None or not partial:
+                content.duration_seconds = _as_decimal(data.duration_seconds)
+            if data.canonical_url:
+                content.canonical_url = data.canonical_url
             if data.cover_url:
                 content.cover_url = data.cover_url
-            content.language = data.language
-            content.status = data.status
+            if data.language is not None or not partial:
+                content.language = data.language
+            # ``status`` is NOT NULL: an adapter that cannot determine the
+            # status must leave the stored one alone rather than crash the
+            # whole upsert with a constraint violation.
+            if data.status is not None:
+                content.status = data.status
             content.metadata_json = {**content.metadata_json, **dict(data.metadata)}
             content.last_seen_at = data.fetched_at
             content.source_kind = data.source_kind
@@ -2032,3 +2385,57 @@ async def cancel_sync_run(session: AsyncSession, workspace_id: UUID, run_id: UUI
     except Exception:  # pragma: no cover - broker may be unavailable in dev/test
         logger.warning("could not revoke celery task for cancelled sync run %s", run.id)
     return SyncRunRead.model_validate(run)
+
+
+SYNC_LOG_TAIL_KEY = "sync_log_tail"
+
+
+class _SyncLogSink:
+    """Collects live adapter progress lines into a rolling tail on the sync run.
+
+    Every platform feeds this sink, not just yt-dlp: the yt-dlp path streams raw
+    stderr lines, while the browser adapters push short human-readable stage
+    lines. The tail is stored in ``run.metadata_json[SYNC_LOG_TAIL_KEY]``
+    (bounded to the last ``max_lines`` entries, with consecutive duplicates
+    collapsed) so the frontend can render it as a live, scrolling log beneath
+    the progress message. Each push writes the tail straight into the run's
+    in-memory metadata; the surrounding sync loop's periodic ``session.commit()``
+    calls persist it, so the log grows as the sync progresses.
+
+    The instance is deliberately **callable**: adapters receive it typed as
+    ``Callable[[str], None]`` (``progress_callback``), so ``sink("line")`` must
+    work. ``push`` is kept as an explicit alias for readability at call sites.
+    """
+
+    def __init__(self, run: "SyncRun", max_lines: int = 80) -> None:
+        self._run = run
+        self._max = max_lines
+        self._lines: list[str] = []
+        self._last_text: str | None = None
+
+    def push(self, text: str) -> None:
+        text = (text or "").replace("\r", " ").replace("\n", " ").strip()
+        if not text:
+            return
+        if text == self._last_text:
+            # yt-dlp repeats the same progress bar line; keep the log readable.
+            return
+        self._last_text = text
+        self._lines.append(text)
+        if len(self._lines) > self._max:
+            self._lines = self._lines[-self._max :]
+        meta = dict(self._run.metadata_json or {})
+        meta[SYNC_LOG_TAIL_KEY] = list(self._lines)
+        self._run.metadata_json = meta
+
+    # Adapters call the sink directly (``progress_callback(line)``). Without
+    # this, passing the sink as ``progress_sink`` raises
+    # ``TypeError: '_SyncLogSink' object is not callable`` and aborts the whole
+    # sync run — which is exactly what happened in production.
+    def __call__(self, text: str) -> None:
+        self.push(text)
+
+    def flush(self) -> None:
+        # ``push`` already persists into run.metadata_json on every call; this is
+        # a no-op kept for explicit finalization points.
+        pass

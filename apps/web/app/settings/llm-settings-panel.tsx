@@ -6,7 +6,13 @@ import type {
   LLMProviderTestResult,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FlaskConical, Loader2, Save, ShieldCheck } from "lucide-react";
+import {
+  FlaskConical,
+  Loader2,
+  RefreshCw,
+  Save,
+  ShieldCheck,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { useToast } from "@/components/toast";
@@ -15,6 +21,7 @@ import {
   Panel,
   SkeletonRows,
   StatePanel,
+  SettingsGroup,
   buttonClass,
   inputClass,
   secondaryButtonClass,
@@ -52,11 +59,11 @@ const EMPTY_FORM: LLMForm = {
   organization: "",
   project: "",
   custom_headers: "",
-  default_model: "gpt-4.1-mini",
+  default_model: "gpt-5.6-terra",
   temperature: 0.4,
   top_p: 1,
-  max_tokens: 4096,
-  timeout_seconds: 60,
+  max_tokens: 8192,
+  timeout_seconds: 90,
   max_attempts: 3,
   input_cost_per_million: "",
   output_cost_per_million: "",
@@ -91,10 +98,10 @@ function formFromRecord(value: LLMProviderSettingRecord | undefined): LLMForm {
     default_model: value.default_model,
     temperature: numberValue(value.default_parameters.temperature, 0.4),
     top_p: numberValue(value.default_parameters.top_p, 1),
-    max_tokens: numberValue(value.default_parameters.max_tokens, 4096),
+    max_tokens: numberValue(value.default_parameters.max_tokens, 8192),
     timeout_seconds: numberValue(
       config.timeout_seconds ?? value.default_parameters.timeout_seconds,
-      60,
+      90,
     ),
     max_attempts: numberValue(
       config.max_attempts ?? value.default_parameters.max_attempts,
@@ -124,68 +131,68 @@ const LLM_PRESETS: Array<{
     key: "openai",
     label: "OpenAI",
     base_url: "https://api.openai.com/v1",
-    default_model: "gpt-4.1-mini",
+    default_model: "gpt-5.6-terra",
   },
   {
     key: "anthropic",
     label: "Anthropic (Claude)",
     base_url: "https://api.anthropic.com/v1",
-    default_model: "claude-sonnet-4-20250514",
+    default_model: "claude-sonnet-5",
   },
   {
     key: "gemini",
     label: "Google Gemini",
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-    default_model: "gemini-2.5-flash",
+    default_model: "gemini-3.5-flash",
   },
   {
     key: "mistral",
     label: "Mistral AI",
     base_url: "https://api.mistral.ai/v1",
-    default_model: "mistral-large-latest",
+    default_model: "mistral-medium-3.5",
   },
   {
     key: "grok",
     label: "Grok (xAI)",
     base_url: "https://api.x.ai/v1",
-    default_model: "grok-3",
+    default_model: "grok-4.5",
   },
   {
     key: "groq-lpu",
     label: "Groq (LPU)",
     base_url: "https://api.groq.com/openai/v1",
-    default_model: "llama-3.3-70b-versatile",
+    default_model: "openai/gpt-oss-120b",
   },
   {
     key: "openrouter",
     label: "OpenRouter",
     base_url: "https://openrouter.ai/api/v1",
-    default_model: "openai/gpt-4.1-mini",
+    default_model: "openai/gpt-5.6-terra",
   },
   {
     key: "together",
     label: "Together AI",
     base_url: "https://api.together.xyz/v1",
-    default_model: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    default_model: "thinkingmachines/Inkling",
   },
   {
     key: "perplexity",
     label: "Perplexity",
     base_url: "https://api.perplexity.ai",
-    default_model: "sonar-pro",
+    default_model: "sonar",
   },
   {
     key: "cohere",
     label: "Cohere",
     base_url: "https://api.cohere.ai/compatibility/v1",
-    default_model: "command-r-plus",
+    default_model: "command-a-03-2025",
   },
   {
     key: "bedrock",
     label: "AWS Bedrock (OpenAI 兼容)",
     base_url:
       "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
-    default_model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    default_model: "anthropic.claude-sonnet-5",
   },
   // ─── 国内主流 ───────────────────────────────────────────────────────
   {
@@ -198,25 +205,25 @@ const LLM_PRESETS: Array<{
     key: "moonshot",
     label: "Moonshot (Kimi)",
     base_url: "https://api.moonshot.cn/v1",
-    default_model: "moonshot-v1-128k",
+    default_model: "kimi-k3",
   },
   {
     key: "zhipu",
     label: "智谱 AI (GLM)",
     base_url: "https://open.bigmodel.cn/api/paas/v4",
-    default_model: "glm-4-plus",
+    default_model: "glm-5",
   },
   {
     key: "qwen",
     label: "通义千问 (Qwen)",
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    default_model: "qwen-plus",
+    default_model: "qwen3.8-max",
   },
   {
     key: "doubao",
     label: "豆包 (Doubao)",
     base_url: "https://ark.cn-beijing.volces.com/api/v3",
-    default_model: "doubao-1-5-pro-32k-250115",
+    default_model: "doubao-seed-1-8-251228",
   },
   {
     key: "spark",
@@ -228,61 +235,81 @@ const LLM_PRESETS: Array<{
     key: "hunyuan",
     label: "腾讯混元 (Hunyuan)",
     base_url: "https://api.hunyuan.cloud.tencent.com/v1",
-    default_model: "hunyuan-pro",
+    default_model: "hunyuan-turbos",
   },
   {
     key: "wenxin",
     label: "百度文心 (ERNIE)",
     base_url: "https://qianfan.baidubce.com/v2",
-    default_model: "ernie-4.0-8k-latest",
+    default_model: "ernie-4.5-turbo-32k",
   },
   {
     key: "minimax",
     label: "MiniMax",
     base_url: "https://api.minimax.chat/v1",
-    default_model: "MiniMax-Text-01",
+    default_model: "MiniMax-M2.7",
   },
   {
     key: "step",
     label: "阶跃星辰 (Step)",
     base_url: "https://api.stepfun.com/v1",
-    default_model: "step-2-16k",
+    default_model: "step-3.5-flash",
   },
   {
     key: "360",
     label: "360 智脑",
     base_url: "https://ai.360.cn/v1",
-    default_model: "360gpt-pro",
+    default_model: "360GPT2-Pro",
   },
   // ─── 本地 / 网关 ───────────────────────────────────────────────────
   {
     key: "ollama",
     label: "Ollama（本地）",
     base_url: "http://localhost:11434/v1",
-    default_model: "qwen3:8b",
+    default_model: "qwen3.5:9b",
   },
   {
     key: "new-api",
     label: "New API 网关（本地）",
     base_url: "http://llm-gateway:3000/v1",
-    default_model: "gpt-4o-mini",
+    default_model: "gpt-5.6-terra",
   },
   {
     key: "chat2api",
     label: "Chat2API 实验（本地）",
     base_url: "http://llm-experimental:8080/v1",
-    default_model: "gpt-4o",
+    default_model: "gpt-5.6-terra",
   },
 ];
 
 const MODEL_CATALOGS: Record<string, string[]> = {
-  openai: ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
-  anthropic: ["claude-sonnet-4-20250514", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"],
-  gemini: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+  // 预制项是脱离 API Key 时的安全基线；保存配置后会以 Provider /models
+  // 实时清单覆盖它们。模型 ID 按 2026-08-06 官方目录复核。
+  openai: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-4.1-mini"],
+  anthropic: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
+  gemini: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
+  mistral: ["mistral-medium-3.5", "mistral-small-4", "mistral-large-3"],
+  grok: ["grok-4.5", "grok-4", "grok-3-mini"],
+  "groq-lpu": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "groq/compound", "groq/compound-mini"],
+  openrouter: ["openai/gpt-5.6-terra", "anthropic/claude-opus-5", "google/gemini-3.6-flash", "deepseek/deepseek-chat", "openai/gpt-4.1-mini"],
+  together: ["thinkingmachines/Inkling", "MiniMaxAI/MiniMax-M3", "Qwen/Qwen3.7-Max", "moonshotai/Kimi-K3", "zai-org/GLM-5.2", "openai/gpt-oss-120b"],
+  perplexity: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"],
+  cohere: ["command-a-03-2025", "command-r-plus-08-2024", "command-r7b-12-2024"],
+  bedrock: ["anthropic.claude-fable-5", "anthropic.claude-opus-5", "anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5"],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
-  openrouter: ["openai/gpt-4.1-mini", "anthropic/claude-3.7-sonnet", "google/gemini-2.5-flash"],
-  "groq-lpu": ["llama-3.3-70b-versatile", "meta-llama/llama-4-scout-17b-16e-instruct"],
-  ollama: ["qwen3:8b", "llama3.2", "deepseek-r1:8b"],
+  moonshot: ["kimi-k3", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
+  zhipu: ["glm-5", "glm-4.7", "glm-4.5"],
+  qwen: ["qwen3.8-max", "qwen3.7-plus", "qwen3.7-flash", "qwen3-max", "qwen-plus"],
+  doubao: ["doubao-seed-1-8-251228", "doubao-seed-1-6-251015", "doubao-1-5-pro-32k-250115"],
+  spark: ["generalv3.5", "generalv3.5-16k", "general4v"],
+  hunyuan: ["hunyuan-turbos", "hunyuan-pro", "hunyuan-large"],
+  wenxin: ["ernie-4.5-turbo-32k", "ernie-5.0-thinking-preview", "ernie-4.0-turbo-8k"],
+  minimax: ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-01"],
+  step: ["step-3.5-flash", "step-3.5", "step-2-16k"],
+  360: ["360GPT2-Pro", "360GPT2-Pro-32K"],
+  ollama: ["qwen3.5:9b", "qwen3:8b", "llama3.3", "deepseek-r1:8b"],
+  "new-api": ["gpt-5.6-terra", "claude-sonnet-5", "gemini-3.5-flash", "gpt-4.1-mini"],
+  chat2api: ["gpt-5.6-terra", "claude-sonnet-5", "gemini-3.5-flash"],
 };
 
 /** Detect which preset matches a saved base_url (by hostname). */
@@ -584,6 +611,11 @@ export function LLMSettingsPanel() {
       </Panel>
 
       <Panel className="p-5">
+        <SettingsGroup
+          title="调用方式"
+          description="选择直接调用 Provider，或使用实验性的浏览器代理模式。"
+          tone="violet"
+        >
         <div className="flex flex-col gap-3">
           <label className="text-sm font-medium text-slate-300">调用方式</label>
           <div className="flex flex-wrap items-center gap-4">
@@ -617,10 +649,16 @@ export function LLMSettingsPanel() {
             </p>
           )}
         </div>
+        </SettingsGroup>
       </Panel>
 
       <Panel className="p-5">
-        <div className="grid gap-5 lg:grid-cols-2">
+        <SettingsGroup
+          title="连接、模型与生成参数"
+          description="连接信息、可用模型、采样参数和成本参数统一在此维护。"
+          tone="cyan"
+        >
+        <div className="grid gap-3 lg:grid-cols-2">
           <TextField
             label="配置名称"
             value={form.name}
@@ -637,14 +675,37 @@ export function LLMSettingsPanel() {
             value={form.api_key}
             onChange={(value) => update("api_key", value)}
           />
-          <label className="flex min-w-0 flex-col gap-1.5 text-sm text-slate-300">
-            <span className="flex items-center justify-between gap-2">
-              <span>默认模型</span>
-              <span className="text-[11px] text-slate-500">
-                {modelCatalog.data?.source === "live" ? "当前 Provider 模型" : "推荐模型"}
-              </span>
-            </span>
+          <div className="flex min-w-0 flex-col gap-1.5 text-sm text-slate-300">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="llm-default-model">默认模型</label>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[11px] text-slate-500">
+                  {modelCatalog.data?.source === "live"
+                    ? "当前 Provider 实时清单"
+                    : "官方目录基线"}
+                </span>
+                <button
+                  type="button"
+                  className={`${secondaryButtonClass} h-8 shrink-0 px-2 text-xs`}
+                  disabled={!record?.configured || modelCatalog.isFetching}
+                  onClick={() => void modelCatalog.refetch()}
+                  title={
+                    record?.configured
+                      ? "刷新当前 Provider 的 /models 清单"
+                      : "保存并配置 API Key 后可刷新"
+                  }
+                >
+                  <RefreshCw
+                    size={13}
+                    className={modelCatalog.isFetching ? "animate-spin" : undefined}
+                  />
+                  刷新
+                </button>
+              </div>
+            </div>
             <select
+              id="llm-default-model"
+              aria-label="默认模型"
               className={inputClass}
               value={form.default_model}
               onChange={(event) => update("default_model", event.target.value)}
@@ -658,7 +719,10 @@ export function LLMSettingsPanel() {
                 </option>
               ))}
             </select>
-          </label>
+            <p className="mt-1 text-[11px] leading-4 text-slate-500">
+              保存并配置 API Key 后，系统会从当前 Provider 的 <code>/models</code> 接口刷新可用模型；未配置时显示官方目录基线（2026-08-06）。
+            </p>
+          </div>
           <TextField
             label="Organization（可选）"
             value={form.organization}
@@ -735,6 +799,7 @@ export function LLMSettingsPanel() {
             </span>
           </label>
         </div>
+        </SettingsGroup>
         <div className="mt-5 flex flex-wrap gap-6 border-t border-slate-800 pt-5 text-sm">
           <label className="flex items-center gap-2">
             <input

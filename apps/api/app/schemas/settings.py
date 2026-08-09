@@ -60,11 +60,11 @@ class LLMProviderSettingUpdate(BaseModel):
     organization: str | None = Field(default=None, max_length=255)
     project: str | None = Field(default=None, max_length=255)
     custom_headers: dict[str, str] | None = None
-    default_model: str = Field(default="gpt-4.1-mini", min_length=1, max_length=160)
+    default_model: str = Field(default="gpt-5.6-terra", min_length=1, max_length=160)
     temperature: float = Field(default=0.4, ge=0.0, le=2.0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
-    max_tokens: int = Field(default=4096, ge=1, le=131_072)
-    timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    max_tokens: int = Field(default=8192, ge=1, le=131_072)
+    timeout_seconds: float = Field(default=90.0, ge=5.0, le=300.0)
     max_attempts: int = Field(default=3, ge=1, le=5)
     input_cost_per_million: Decimal | None = Field(default=None, ge=0)
     output_cost_per_million: Decimal | None = Field(default=None, ge=0)
@@ -160,11 +160,33 @@ class PlatformCredentialUpdate(BaseModel):
             normalized_value = item.strip()
             if not normalized_key or len(normalized_key) > 80:
                 raise ValueError("invalid platform credential field")
-            if len(normalized_value) > 16_384:
+            max_value_length = (
+                262_144 if normalized_key in {"storage_state_json", "cookies_netscape"} else 16_384
+            )
+            if len(normalized_value) > max_value_length:
                 raise ValueError("platform credential value is too long")
             if normalized_value:
                 cleaned[normalized_key] = normalized_value
         return cleaned
+
+
+class PlatformSessionCaptureRequest(BaseModel):
+    """Start a user-authorized browser session capture through local CDP."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cdp_endpoint: str | None = Field(default=None, max_length=240)
+    account_authorization_confirmed: bool = False
+    platform_session_allowed: bool = False
+    oauth_unavailable_or_insufficient: bool = False
+
+
+class PlatformSessionCaptureOpenRead(BaseModel):
+    status: Literal["awaiting_manual_login"]
+    platform_key: str
+    login_url: str
+    detail: str
+    browser_view_url: str | None = None
 
 
 class PlatformCredentialRead(BaseModel):
@@ -232,6 +254,24 @@ class YtDlpSettings(BaseModel):
     geo_bypass: bool = False
     geo_bypass_country: str = Field(default="", max_length=8)
     geo_verification_proxy: str = Field(default="", max_length=2048)
+
+    # Authentication is intentionally limited to a browser selector. Cookie
+    # material is never persisted in workspace settings; yt-dlp reads the
+    # selected browser profile at process runtime. In Docker, the profile must
+    # be mounted into the API/Worker containers or this option will fail with
+    # an actionable extraction error.
+    cookies_from_browser: Literal[
+        "",
+        "brave",
+        "chrome",
+        "chromium",
+        "edge",
+        "firefox",
+        "opera",
+        "safari",
+        "vivaldi",
+        "whale",
+    ] = ""
 
     # --- extraction / output behaviour (default on to match prior behaviour) ---
     ignore_errors: bool = True
@@ -354,6 +394,7 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "geo_bypass": False,
         "geo_bypass_country": "",
         "geo_verification_proxy": "",
+        "cookies_from_browser": "",
         "ignore_errors": True,
         "no_warnings": True,
         "extra_args": {},

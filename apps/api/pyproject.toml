@@ -23,7 +23,12 @@ dependencies = [
   "redis>=6.2,<7",
   "sqlalchemy>=2.0.41,<2.1",
   "beautifulsoup4>=4.13,<5",
-  "yt-dlp>=2025.1,<2027",
+  # yt-dlp needs curl_cffi to impersonate a real browser TLS/JA3 fingerprint.
+  # Without it TikTok/Douyin return a stripped page and extraction dies with
+  # "Unable to extract universal data for rehydration". yt-dlp only accepts
+  # curl_cffi 0.5.10 and 0.10.x-0.15.x, so 0.16+ must stay excluded.
+  "curl_cffi>=0.15,<0.16",
+  "yt-dlp[default]>=2025.1,<2027",
   "uvicorn[standard]>=0.35,<1",
 ]
 
@@ -49,13 +54,14 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not net'"
 filterwarnings = [
   "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
   "ignore:Use 'content=<...>' to upload raw bytes text content:DeprecationWarning",
 ]
 markers = [
   "integration: multi-service integration tests that use local deterministic providers",
+  "net: tests that require live network, a browser/CDP endpoint, or external credentials; excluded from the default run",
 ]
 
 [tool.ruff]

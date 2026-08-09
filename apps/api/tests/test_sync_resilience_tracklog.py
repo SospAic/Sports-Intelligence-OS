@@ -28,7 +28,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.adapters.platforms.base import AdapterCallContext
+from app.adapters.platforms.base import AdapterCallContext, PlatformMetricsData
 from app.core.config import Settings
 from app.db.base import Base
 from app.models.monitoring import Account, Platform
@@ -145,6 +145,15 @@ class FailingAnalyticsAdapter(RealShapedTestAdapter):
         raise RuntimeError("simulated content analytics failure")
 
 
+class FailingAccountAnalyticsAdapter(RealShapedTestAdapter):
+    """Profile succeeds while the optional account metrics call fails."""
+
+    async def fetch_account_analytics(
+        self, ctx: AdapterCallContext, external_id: str
+    ) -> PlatformMetricsData:
+        raise RuntimeError("simulated account analytics failure")
+
+
 async def _event_rows(session: object, run_id: object) -> list[SyncRunEvent]:
     s = session  # type: ignore[assignment]
     return list(
@@ -251,6 +260,43 @@ async def test_analytics_failure_degrades_run_and_records_tracklog() -> None:
         assert analytics_events[0].payload.get("requested") == 5, (
             "analytics event must note how many items were requested"
         )
+    await engine.dispose()
+
+
+async def test_account_analytics_failure_keeps_profile_and_continues_contents() -> None:
+    """A failed account-metrics step must not terminate the whole sync."""
+    engine = create_async_engine(PG_ASYNC_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    workspace_id = uuid4()
+    platform_id = uuid4()
+    account_id = uuid4()
+    run_id = uuid4()
+    registry = _build_registry(
+        FailingAccountAnalyticsAdapter(key=ADAPTER_KEY, content_count=3)
+    )
+    async with maker() as session:
+        await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
+
+    async with maker() as session:
+        await PlatformSyncExecutor(session, registry, _build_settings()).execute_account_run(run_id)
+
+    async with maker() as session:
+        run = await session.get(SyncRun, run_id)
+        account = await session.get(Account, account_id)
+        assert run is not None and run.status == "degraded", run.error_message
+        assert account is not None and account.display_name == "测试账号"
+        assert run.metadata_json.get("account_metrics_degraded") is True
+        assert run.items_processed == 3
+        analytics_events = [
+            event
+            for event in await _event_rows(session, run_id)
+            if event.event_type == "analytics" and event.level == "warn"
+        ]
+        assert analytics_events
+        assert analytics_events[0].payload.get("scope") == "account"
     await engine.dispose()
 
 

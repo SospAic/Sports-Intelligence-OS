@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/browser-api";
 import { useWorkspace } from "@/components/app-shell";
+import { BarChart3 } from "lucide-react";
 import {
   ANALYTICS_DAY_OPTIONS,
   ANALYTICS_PLATFORMS,
@@ -154,6 +155,14 @@ export function AnalyticsClient() {
 
   return (
     <div className="w-full px-0 pb-2 text-slate-200">
+      {/* 情报分析 标题与副标题（与前三页区块风格一致） */}
+      <div className="mb-1 flex items-center gap-2">
+        <BarChart3 size={18} className="text-cyan-400" />
+        <h2 className="font-semibold text-white">情报分析</h2>
+      </div>
+      <p className="mb-4 text-sm text-slate-500">
+        多维度热度聚合分析：趋势时间线、排行榜单、指数对比与平台 × 分类热度矩阵，可按平台、分类与时间窗口自由切换。
+      </p>
 
       {/* 过滤器 */}
       <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/50 p-3">

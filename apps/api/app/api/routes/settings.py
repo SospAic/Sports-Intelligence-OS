@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Request, Response
 
 from app.api.dependencies import (
@@ -18,6 +20,8 @@ from app.schemas.settings import (
     LLMProviderTestRead,
     PlatformCredentialRead,
     PlatformCredentialUpdate,
+    PlatformSessionCaptureOpenRead,
+    PlatformSessionCaptureRequest,
     RuntimeSettingsRead,
     SyncSettingsRead,
     SyncSettingsUpdate,
@@ -25,6 +29,11 @@ from app.schemas.settings import (
 from app.services.platform_credentials import (
     PlatformCredentialError,
     PlatformCredentialService,
+)
+from app.services.platform_session_capture import (
+    PLATFORM_LOGIN_URLS,
+    BrowserSessionCaptureError,
+    open_login_page,
 )
 from app.services.settings import SettingsError, SettingsService
 
@@ -150,6 +159,80 @@ async def revoke_platform_login_access(
     require_workspace_role(workspace, {"owner", "admin"})
     return await PlatformCredentialService(db, request.app.state.settings).revoke_login_access(
         workspace.workspace_id, auth.user.id, platform_key
+    )
+
+
+@router.post(
+    "/platform-credentials/{platform_key}/session-capture/open",
+    response_model=PlatformSessionCaptureOpenRead,
+)
+async def open_platform_session_capture(
+    platform_key: str,
+    payload: PlatformSessionCaptureRequest,
+    request: Request,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> PlatformSessionCaptureOpenRead:
+    """Open a platform login page in the Docker or user-provided browser."""
+
+    require_workspace_role(workspace, {"owner", "admin"})
+    key = platform_key.strip().casefold().removesuffix("_browser")
+    if key not in PLATFORM_LOGIN_URLS:
+        raise PlatformCredentialError(
+            "该平台暂不支持人工浏览器授权",
+            code="platform_not_supported",
+            status_code=422,
+        )
+    cdp_endpoint = payload.cdp_endpoint or request.app.state.settings.browser_cdp_endpoint
+    try:
+        login_url = await open_login_page(cdp_endpoint, key)
+    except BrowserSessionCaptureError as exc:
+        raise PlatformCredentialError(str(exc), code=exc.code, status_code=422) from exc
+    browser_view_url = (
+        request.app.state.settings.browser_vnc_url
+        if urlsplit(cdp_endpoint).hostname == "browser"
+        else None
+    )
+    del auth, db
+    return PlatformSessionCaptureOpenRead(
+        status="awaiting_manual_login",
+        platform_key=key,
+        login_url=login_url,
+        detail=(
+            "Docker 内置浏览器登录页已打开，请在浏览器窗口中完成人工登录、验证码或二次验证，"
+            "然后返回系统点击保存会话。"
+            if browser_view_url
+            else "登录页已在浏览器打开；请完成人工登录、验证码或二次验证后返回系统点击保存会话。"
+        ),
+        browser_view_url=browser_view_url,
+    )
+
+
+@router.post(
+    "/platform-credentials/{platform_key}/session-capture/save",
+    response_model=PlatformCredentialRead,
+)
+async def save_platform_session_capture(
+    platform_key: str,
+    payload: PlatformSessionCaptureRequest,
+    request: Request,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> PlatformCredentialRead:
+    """Capture and encrypt cookies after the user completes browser login."""
+
+    require_workspace_role(workspace, {"owner", "admin"})
+    cdp_endpoint = payload.cdp_endpoint or request.app.state.settings.browser_cdp_endpoint
+    return await PlatformCredentialService(db, request.app.state.settings).capture_browser_session(
+        workspace.workspace_id,
+        auth.user.id,
+        platform_key,
+        cdp_endpoint=cdp_endpoint,
+        account_authorization_confirmed=payload.account_authorization_confirmed,
+        platform_session_allowed=payload.platform_session_allowed,
+        oauth_unavailable_or_insufficient=payload.oauth_unavailable_or_insufficient,
     )
 
 

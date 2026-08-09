@@ -7,7 +7,11 @@ from app.providers.news.base import NewsCallContext
 from app.providers.news.browser_news import BrowserNewsProvider
 from app.providers.news.feed import AtomProvider, RSSProvider
 from app.providers.news.json_feed import GenericJSONFeedProvider
-from app.providers.news.utils import ensure_public_endpoint, validate_source_url
+from app.providers.news.utils import (
+    ensure_public_endpoint,
+    ensure_public_media_endpoint,
+    validate_source_url,
+)
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
@@ -149,6 +153,21 @@ async def test_endpoint_resolution_rejects_hostnames_that_resolve_private(
     )
     with pytest.raises(ValueError, match="non-public"):
         await ensure_public_endpoint("https://public-looking.example/feed")
+
+
+@pytest.mark.asyncio
+async def test_known_media_url_allows_docker_synthetic_dns() -> None:
+    assert (
+        await ensure_public_media_endpoint("https://www.youtube.com/shorts/zOtEeA_tJFA")
+        == "https://www.youtube.com/shorts/zOtEeA_tJFA"
+    )
+
+
+def test_media_url_allowlist_does_not_match_lookalike_hosts() -> None:
+    from app.providers.news.utils import is_known_media_source
+
+    assert is_known_media_source("https://www.youtube.com/watch?v=abc")
+    assert not is_known_media_source("https://youtube.com.attacker.example/video")
 
 
 @pytest.mark.asyncio

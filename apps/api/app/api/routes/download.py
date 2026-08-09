@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import sys
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from celery.result import AsyncResult
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import (
@@ -17,55 +22,135 @@ from app.schemas.download import (
     DownloadCreate,
     DownloadPage,
     DownloadPreviewCreate,
+    DownloadPreviewEnqueue,
+    DownloadPreviewPoll,
     DownloadPreviewRead,
     DownloadRead,
+    YtDlpRuntimeRead,
 )
 from app.services.download import DownloadService
+from app.tasks.celery_app import celery_app
+from app.tasks.monitoring import preview_download_task
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/downloads", tags=["downloads"])
 
 
-@router.post("/preview", response_model=DownloadPreviewRead)
+def _runtime_read(status: object) -> YtDlpRuntimeRead:
+    from app.services.ytdlp_runtime import YtDlpRuntimeStatus
+
+    if not isinstance(status, YtDlpRuntimeStatus):
+        raise TypeError("invalid yt-dlp runtime status")
+    ready = status.node_available and bool(status.yt_dlp_version)
+    detail = (
+        "Node.js 与 yt-dlp[default] 已就绪"
+        if ready
+        else "Node.js 未就绪；非 YouTube 解析仍可运行，但 YouTube 可能缺少完整格式"
+    )
+    return YtDlpRuntimeRead(
+        **status.model_dump(),
+        status="ready" if ready else "degraded",
+        detail=detail,
+    )
+
+
+@router.get("/runtime", response_model=YtDlpRuntimeRead)
+async def ytdlp_runtime(request: Request, workspace: CurrentWorkspace) -> YtDlpRuntimeRead:
+    del workspace
+    from app.services.ytdlp_runtime import runtime_status
+
+    settings = request.app.state.settings
+    status = await runtime_status(update_enabled=bool(settings.ytdlp_allow_runtime_update))
+    return _runtime_read(status)
+
+
+@router.post("/runtime/update", response_model=YtDlpRuntimeRead)
+async def update_ytdlp_runtime(
+    request: Request,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+) -> YtDlpRuntimeRead:
+    require_workspace_role(workspace, {"owner", "admin"})
+    settings = request.app.state.settings
+    if not settings.ytdlp_allow_runtime_update:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "运行时更新已关闭；请设置 SIO_YTDLP_ALLOW_RUNTIME_UPDATE=true，"
+                "或重新构建 API/Worker 镜像。"
+            ),
+        )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "-U",
+            "yt-dlp[default]",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=180)
+    except (OSError, TimeoutError) as exc:
+        logger.warning("yt-dlp runtime update failed: %s", exc)
+        raise HTTPException(status_code=503, detail="yt-dlp 更新失败，请检查 API 服务日志后重试。") from exc
+    if proc.returncode != 0:
+        logger.warning("yt-dlp runtime update exited with code %s", proc.returncode)
+        raise HTTPException(status_code=503, detail="yt-dlp 更新失败，请检查 API 服务日志后重试。")
+    from app.services.ytdlp_runtime import runtime_status
+
+    status = await runtime_status(update_enabled=True)
+    return _runtime_read(status)
+
+
+@router.post("/preview", response_model=DownloadPreviewEnqueue)
 async def preview_download(
     payload: DownloadPreviewCreate,
     workspace: CurrentWorkspace,
-) -> DownloadPreviewRead:
-    del workspace
-    from app.adapters.platforms.yt_dlp import YtDlpAdapter
-    from app.providers.news.utils import ensure_public_endpoint
+) -> DownloadPreviewEnqueue:
+    """Enqueue a yt-dlp metadata parse.
 
-    url = payload.url.strip()
-    try:
-        url = await ensure_public_endpoint(url, allow_secret_query=False)
-        entries, _ = await YtDlpAdapter()._run_yt_dlp(
-            url,
-            download={},
-            playlist_end=1,
-        )
-    except Exception as exc:  # noqa: BLE001 - expose a safe, actionable preview error
-        raise HTTPException(status_code=422, detail=f"无法解析地址：{str(exc)[:500]}") from exc
-    if not entries:
-        raise HTTPException(status_code=422, detail="地址未返回可识别的视频信息")
-    item = entries[0]
-    subtitle_languages = sorted(
-        {
-            str(language)
-            for key in ("subtitles", "automatic_captions")
-            for language in (item.get(key) or {})
-            if language
-        }
-    )
-    return DownloadPreviewRead(
-        url=url,
-        platform=str(item.get("extractor") or item.get("ie_key") or "") or None,
-        external_id=str(item.get("id")) if item.get("id") else None,
-        title=str(item.get("title")) if item.get("title") else None,
-        uploader=str(item.get("uploader") or item.get("channel") or "") or None,
-        thumbnail=str(item.get("thumbnail")) if item.get("thumbnail") else None,
-        duration_seconds=float(item["duration"]) if item.get("duration") is not None else None,
-        description=str(item.get("description")) if item.get("description") else None,
-        subtitle_languages=subtitle_languages,
-    )
+    The actual work runs in Celery (``preview_download_task``) so a slow or
+    hung parse never holds the API event loop open.  Poll
+    ``GET /downloads/preview/{task_id}`` for the result — the same async
+    pattern already used by ``POST /downloads`` → ``GET /downloads/{id}``.
+    """
+
+    task = preview_download_task.delay(payload.url.strip(), str(workspace.workspace_id))
+    return DownloadPreviewEnqueue(task_id=task.id)
+
+
+@router.get("/preview/{task_id}", response_model=DownloadPreviewPoll)
+async def preview_download_status(
+    task_id: str, workspace: CurrentWorkspace
+) -> DownloadPreviewPoll:
+    """Poll the Celery result of a ``POST /downloads/preview`` request."""
+
+    del workspace
+    result = AsyncResult(task_id, app=celery_app)
+    if result.state == "SUCCESS":
+        payload = result.result
+        if isinstance(payload, dict) and payload.get("status") == "ok":
+            preview = payload.get("preview")
+            return DownloadPreviewPoll(
+                task_id=task_id,
+                state="SUCCESS",
+                preview=DownloadPreviewRead.model_validate(preview) if preview else None,
+            )
+        if isinstance(payload, dict) and payload.get("status") == "error":
+            return DownloadPreviewPoll(
+                task_id=task_id,
+                state="FAILURE",
+                error_code=payload.get("error_code"),
+                error_detail=payload.get("error_detail"),
+            )
+        return DownloadPreviewPoll(task_id=task_id, state="FAILURE", error_detail="未知的解析结果")
+    if result.state == "FAILURE":
+        detail = str(result.result) if result.result else "解析失败"
+        return DownloadPreviewPoll(task_id=task_id, state="FAILURE", error_detail=detail[:300])
+    return DownloadPreviewPoll(task_id=task_id, state=result.state)
 
 
 @router.post("", response_model=DownloadRead, status_code=201)
@@ -117,13 +202,18 @@ async def download_file(
     """Serve a downloaded file (video / subtitle / thumbnail / info-json)."""
     from fastapi import HTTPException
 
-    from app.api.routes.media import _safe_media_path
+    from app.api.routes.media import _allowed_files, _safe_media_path
 
     record = await DownloadService(db).get(download_id)
     if record is None or record.workspace_id != workspace.workspace_id:
         raise HTTPException(status_code=404, detail="download not found")
     if not record.media or not record.media.get("base"):
         raise HTTPException(status_code=404, detail="no media")
+    # Only serve files we explicitly recorded for this download — the same
+    # defense-in-depth as serve_content_media — to avoid stray file disclosure.
+    allowed = {os.path.basename(value) for value in _allowed_files(record.media)}
+    if allowed and os.path.basename(file) not in allowed:
+        raise HTTPException(status_code=404, detail="invalid file")
     # ``base`` already includes the workspace id (e.g. "<ws>/downloads/<id>/<vid>")
     safe = _safe_media_path(record.media["base"], file)
     if safe is None:

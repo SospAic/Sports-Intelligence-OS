@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.models.settings import LLMProviderSetting, PlatformCredentialSetting
+from app.services.platform_session_capture import CapturedBrowserSession
 
 from .conftest import PG_SYNC_URL, TEST_PASSWORD
 
@@ -36,6 +37,71 @@ def test_runtime_settings_are_detailed_but_do_not_expose_credentials(
     serialized = response.text.casefold()
     assert "test-only-secret-not-used-in-production" not in serialized
     assert "password=" not in serialized
+
+
+def test_manual_browser_session_capture_encrypts_cookie_material(
+    client: TestClient, monkeypatch
+) -> None:
+    csrf = authenticate(client)
+
+    async def fake_capture(endpoint: str, platform_key: str) -> CapturedBrowserSession:
+        assert endpoint == "http://host.docker.internal:9222"
+        assert platform_key == "test_platform"
+        return CapturedBrowserSession(
+            storage_state_json='{"cookies":[{"name":"sid","value":"private"}],"origins":[]}',
+            cookies_netscape=(
+                "# Netscape HTTP Cookie File\n"
+                ".test_platform.example\tTRUE\t/\tTRUE\t0\tsid\tprivate\n"
+            ),
+            session_expires_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            page_url="https://test-platform.example/",
+            cookie_count=1,
+        )
+
+    monkeypatch.setattr("app.services.platform_credentials.capture_session", fake_capture)
+    response = client.post(
+        "/api/v1/settings/platform-credentials/test_platform/session-capture/save",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "cdp_endpoint": "http://host.docker.internal:9222",
+            "account_authorization_confirmed": True,
+            "platform_session_allowed": True,
+            "oauth_unavailable_or_insufficient": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "private" not in response.text
+    assert response.json()["config_masked"]["cookies_netscape"] == "configured"
+
+    sync_engine = create_engine(PG_SYNC_URL)
+    try:
+        with Session(sync_engine) as session:
+            row = session.scalar(select(PlatformCredentialSetting))
+            assert row is not None
+            assert "private" not in row.config_encrypted
+    finally:
+        sync_engine.dispose()
+
+
+def test_manual_browser_login_defaults_to_docker_browser(
+    client: TestClient, monkeypatch
+) -> None:
+    csrf = authenticate(client)
+
+    async def fake_open(endpoint: str, platform_key: str) -> str:
+        assert endpoint == "http://browser:9222"
+        assert platform_key == "youtube"
+        return "https://accounts.google.com/ServiceLogin?service=youtube"
+
+    monkeypatch.setattr("app.api.routes.settings.open_login_page", fake_open)
+    response = client.post(
+        "/api/v1/settings/platform-credentials/youtube/session-capture/open",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["browser_view_url"].startswith("http://localhost:6080/")
 
 
 def test_sync_settings_loads_with_effective_retry_count(

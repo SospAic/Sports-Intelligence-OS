@@ -180,6 +180,42 @@ async def test_executor_config_for_applies_override(monkeypatch) -> None:
     assert config["download"]["write_thumbnail"] is True
 
 
+@pytest.mark.asyncio
+async def test_executor_config_for_bridges_captured_cookie_into_yt_dlp(monkeypatch) -> None:
+    executor = PlatformSyncExecutor.__new__(PlatformSyncExecutor)
+    executor.session = None  # type: ignore[assignment]
+    executor.registry = None  # type: ignore[assignment]
+    executor.settings = SimpleNamespace(browser_first_mode=False)
+
+    async def _fake_resolve(workspace_id, platform_key):  # noqa: ANN001
+        return "authorized_session", {"cookies_netscape": "secret-cookie"}
+
+    async def _fake_get_sync_settings_config(workspace_id):  # noqa: ANN001
+        return {"max_contents": None, "skip_existing": True, "yt_dlp": {"retries": 2}}
+
+    class _FakeCredService:
+        def __init__(self, *args, **kwargs):  # noqa: ANN001
+            pass
+
+        @staticmethod
+        async def resolve(workspace_id, platform_key):  # noqa: ANN001
+            return await _fake_resolve(workspace_id, platform_key)
+
+    monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
+    executor.repository = SimpleNamespace(
+        get_sync_settings_config=_fake_get_sync_settings_config
+    )
+    account = SimpleNamespace(
+        workspace_id=uuid4(),
+        platform=SimpleNamespace(key="youtube"),
+        sync_settings_override=None,
+    )
+
+    config = await executor._config_for(account)
+
+    assert config["yt_dlp"] == {"cookies_netscape": "secret-cookie", "retries": 2}
+
+
 async def test_executor_config_for_no_override_keeps_workspace(monkeypatch) -> None:
     executor = PlatformSyncExecutor.__new__(PlatformSyncExecutor)
     executor.session = None  # type: ignore[assignment]

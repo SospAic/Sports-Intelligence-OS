@@ -21,6 +21,33 @@ async function parseError(response: Response): Promise<ApiError> {
   );
 }
 
+let csrfToken: string | null = null;
+let csrfRequest: Promise<string> | null = null;
+
+async function getCsrfToken(force = false): Promise<string> {
+  if (!force && csrfToken) return csrfToken;
+  if (!csrfRequest) {
+    csrfRequest = fetch("/api/v1/auth/csrf", {
+      credentials: "include",
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw await parseError(response);
+        const csrf = (await response.json()) as CsrfResponse;
+        csrfToken = csrf.csrf_token;
+        return csrf.csrf_token;
+      })
+      .finally(() => {
+        csrfRequest = null;
+      });
+  }
+  return csrfRequest;
+}
+
+function isCsrfFailure(response: Response, body: ApiError): boolean {
+  return response.status === 403 && body.code === "csrf_validation_failed";
+}
+
 export async function apiRequest<T>(
   path: string,
   options: RequestInit & { workspaceId?: string; csrf?: boolean } = {},
@@ -31,20 +58,25 @@ export async function apiRequest<T>(
     headers.set("Content-Type", "application/json");
   }
   if (options.csrf) {
-    const response = await fetch("/api/v1/auth/csrf", {
+    headers.set("X-CSRF-Token", await getCsrfToken());
+  }
+  const send = () =>
+    fetch(`/api/v1${path}`, {
+      ...options,
+      headers: new Headers(headers),
       credentials: "include",
       cache: "no-store",
     });
-    if (!response.ok) throw await parseError(response);
-    const csrf = (await response.json()) as CsrfResponse;
-    headers.set("X-CSRF-Token", csrf.csrf_token);
+  let response = await send();
+  if (!response.ok && options.csrf) {
+    const error = await parseError(response);
+    if (isCsrfFailure(response, error)) {
+      headers.set("X-CSRF-Token", await getCsrfToken(true));
+      response = await send();
+    } else {
+      throw error;
+    }
   }
-  const response = await fetch(`/api/v1${path}`, {
-    ...options,
-    headers,
-    credentials: "include",
-    cache: "no-store",
-  });
   if (!response.ok) throw await parseError(response);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { MessageSquare, Tag } from "lucide-react";
 import type { ContentRecord } from "@sio/shared-types";
@@ -19,6 +19,7 @@ export interface VideoContext {
   name?: string;
   tags?: string[];
   subtitleLangs?: string[];
+  subtitles?: { lang: string; text: string }[];
   comments?: VideoComment[];
 }
 
@@ -65,9 +66,79 @@ export function VideoInfoModule({
   });
 
   const data = content.data;
-  const subtitleLangs =
-    data?.media?.subtitles?.map((s) => s.lang).filter(Boolean) ?? [];
+  const subtitleTracks = useMemo(
+    () =>
+      (data?.media?.subtitles ?? []).filter(
+        (track): track is { lang: string; file: string } =>
+          Boolean(track?.file),
+      ),
+    [data?.media?.subtitles],
+  );
+  const subtitleLangs = subtitleTracks.map((track) => track.lang).filter(Boolean);
+  const subtitleTracksKey = subtitleTracks
+    .map((track) => `${track.lang}:${track.file}`)
+    .join("|");
+  const [subtitleTextByFile, setSubtitleTextByFile] = useState<
+    Record<string, string>
+  >({});
+  const [subtitleLoading, setSubtitleLoading] = useState(false);
+  const [subtitleError, setSubtitleError] = useState<string | null>(null);
   const commentList = comments.data ?? [];
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    const loadSubtitles = async () => {
+      setSubtitleTextByFile({});
+      setSubtitleError(null);
+      if (!includeSubtitles || !workspaceId || !inputId || !subtitleTracks.length) {
+        setSubtitleLoading(false);
+        return;
+      }
+      setSubtitleLoading(true);
+      await Promise.all(
+        subtitleTracks.map(async (track) => {
+          const response = await fetch(
+            `/api/v1/media/${inputId}/${encodeURIComponent(track.file)}`,
+            {
+              signal: controller.signal,
+              credentials: "include",
+              headers: { "X-Workspace-Id": workspaceId },
+            },
+          );
+          if (!response.ok) throw new Error(`subtitle:${track.lang || track.file}`);
+          return [track.file, extractSubtitleText(await response.text())] as const;
+        }),
+      )
+        .then((entries) => {
+          if (active) setSubtitleTextByFile(Object.fromEntries(entries));
+        })
+        .catch((error: unknown) => {
+          if (active && !(error instanceof DOMException && error.name === "AbortError")) {
+            setSubtitleError("字幕文件读取失败，已保留字幕语种信息");
+          }
+        })
+        .finally(() => {
+          if (active) setSubtitleLoading(false);
+        });
+    };
+    void loadSubtitles();
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [includeSubtitles, inputId, subtitleTracks, subtitleTracksKey, workspaceId]);
+
+  const subtitleMaterials = subtitleTracks
+    .map((track) => ({
+      lang: track.lang,
+      text: subtitleTextByFile[track.file] ?? "",
+    }))
+    .filter((track) => track.text);
+  const subtitleMaterialsKey = subtitleMaterials
+    .map((track) => `${track.lang}:${track.text}`)
+    .join("|");
 
   const selectedComments = commentList.filter((c) =>
     selectedCommentIds.includes(c.id),
@@ -86,10 +157,12 @@ export function VideoInfoModule({
     if (includeTags && data?.tags?.length) ctx.tags = data.tags;
     if (includeSubtitles && subtitleLangs.length)
       ctx.subtitleLangs = subtitleLangs;
+    if (includeSubtitles && subtitleMaterials.length)
+      ctx.subtitles = subtitleMaterials;
     if (includeComments && selectedComments.length)
       ctx.comments = selectedComments;
     const empty =
-      !ctx.name && !ctx.tags && !ctx.subtitleLangs && !ctx.comments;
+      !ctx.name && !ctx.tags && !ctx.subtitleLangs && !ctx.subtitles && !ctx.comments;
     onChange(empty ? null : ctx);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -101,6 +174,7 @@ export function VideoInfoModule({
     data?.title,
     tagsKey,
     subtitleLangsKey,
+    subtitleMaterialsKey,
     inputType,
     inputId,
   ]);
@@ -193,6 +267,13 @@ export function VideoInfoModule({
             />
           </div>
 
+          {includeSubtitles && subtitleLoading && (
+            <p className="text-xs text-slate-500">正在读取字幕正文…</p>
+          )}
+          {includeSubtitles && subtitleError && (
+            <p className="text-xs text-amber-300">{subtitleError}</p>
+          )}
+
           {includeComments && (
             <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
               <p className="mb-2 text-xs text-slate-400">
@@ -264,8 +345,14 @@ export function VideoInfoModule({
     if (includeName && data?.title) lines.push(`视频名称：${data.title}`);
     if (includeTags && data?.tags?.length)
       lines.push(`视频标签：${data.tags.join(", ")}`);
-    if (includeSubtitles && subtitleLangs.length)
+    if (includeSubtitles && subtitleMaterials.length) {
+      lines.push("视频字幕：");
+      for (const subtitle of subtitleMaterials) {
+        lines.push(`[${subtitle.lang || "unknown"}] ${subtitle.text}`);
+      }
+    } else if (includeSubtitles && subtitleLangs.length) {
       lines.push(`视频字幕语种：${subtitleLangs.join(", ")}`);
+    }
     if (includeComments && selectedComments.length) {
       lines.push("热门评论：");
       for (const c of selectedComments) {
@@ -276,6 +363,25 @@ export function VideoInfoModule({
     }
     return lines.length ? lines.join("\n") : "（未选择任何素材）";
   }
+}
+
+function extractSubtitleText(raw: string): string {
+  const lines = raw
+    .replace(/^\uFEFF/, "")
+    .replace(/^WEBVTT[^\n]*(?:\r?\n){1,2}/i, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line &&
+        !/^\d+$/.test(line) &&
+        !/-->/.test(line) &&
+        !/^NOTE(?:\s|$)/i.test(line),
+    )
+    .map((line) => line.replace(/<[^>]+>/g, "").trim())
+    .filter(Boolean);
+  const deduped = lines.filter((line, index) => line !== lines[index - 1]);
+  return deduped.join("\n").slice(0, 24000);
 }
 
 function CheckboxPill({

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/browser-api";
 import { useToast } from "@/components/toast";
+import { GitBranch } from "lucide-react";
 
 interface TrendTopicItem {
   id: string;
@@ -107,6 +108,15 @@ export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="space-y-6">
+      {/* 衍生话题 标题与副标题（与情报分析区块风格一致） */}
+      <div className="mb-1 flex items-center gap-2">
+        <GitBranch size={18} className="text-cyan-400" />
+        <h2 className="font-semibold text-white">衍生话题</h2>
+      </div>
+      <p className="mb-4 text-sm text-slate-500">
+        基于选定热点话题，AI 预测尚未饱和的潜在衍生角度，并聚类平台上已存在的真实衍生内容；可直接采纳为内容创作选题。
+      </p>
+
       <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4">
         <div className="flex-1 min-w-[240px]">
           <label className="mb-1 block text-xs font-medium text-slate-400">

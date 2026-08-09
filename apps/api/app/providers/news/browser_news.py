@@ -40,7 +40,13 @@ from app.providers.news.base import (
     NewsProviderHealth,
     NewsProviderTransientError,
 )
-from app.providers.news.utils import canonicalize_url, clean_text, parse_iso_datetime
+from app.providers.news.utils import (
+    canonicalize_url,
+    clean_text,
+    ensure_public_endpoint,
+    parse_iso_datetime,
+    validate_source_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,11 +201,13 @@ class BrowserNewsProvider(NewsProvider):
         page_timeout_ms: int = 30_000,
         min_page_delay_seconds: float = 2.0,
         max_page_delay_seconds: float = 5.0,
+        skip_dns_check: bool = False,
     ) -> None:
         self._headless = headless
         self._page_timeout_ms = page_timeout_ms
         self._min_delay = min_page_delay_seconds
         self._max_delay = max_page_delay_seconds
+        self._skip_dns_check = skip_dns_check
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._last_request_at: float = 0.0
@@ -282,8 +290,13 @@ class BrowserNewsProvider(NewsProvider):
             raise NewsProviderConfigurationError(
                 "browser_news source requires a 'url' config field"
             )
-        if not url.lower().startswith(("https://", "http://")):
-            raise NewsProviderConfigurationError("browser_news source URL must be absolute HTTP(S)")
+        try:
+            normalized = validate_source_url(url)
+            await ensure_public_endpoint(normalized, skip_dns_check=self._skip_dns_check)
+        except ValueError as exc:
+            raise NewsProviderConfigurationError(str(exc)) from exc
+        except OSError as exc:
+            raise NewsProviderTransientError(str(exc)) from exc
 
     async def fetch_latest(
         self,

@@ -21,10 +21,11 @@ import {
   RefreshCw,
   Save,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
@@ -128,20 +129,55 @@ function SyncProgressPanel({
       ["syncing", "running", "queued"].includes(run.status),
     ) ?? runs?.[0];
 
+  // Rolling tail of live sync log lines written by the backend during a run:
+  // stage transitions (all platforms) interleaved with adapter output (yt-dlp
+  // stderr, browser navigation/scroll steps). `yt_dlp_tail` is the legacy key
+  // kept so runs recorded before the rename still render.
+  const syncLogTail =
+    (currentRun?.metadata?.sync_log_tail as string[] | undefined) ??
+    (currentRun?.metadata?.yt_dlp_tail as string[] | undefined) ??
+    [];
+  const syncLogRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    const el = syncLogRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [syncLogTail]);
+
   const currentStageIndex = currentRun
     ? SYNC_STAGE_ORDER.indexOf(
         currentRun.progress_stage as (typeof SYNC_STAGE_ORDER)[number],
       )
     : -1;
 
+  const runStatus = currentRun?.status;
+  const isTerminal =
+    runStatus != null &&
+    ["success", "degraded", "error", "cancelled", "skipped"].includes(runStatus);
+  const headLabel =
+    runStatus === "success" || runStatus === "degraded"
+      ? "同步完成"
+      : runStatus === "error"
+        ? "同步失败"
+        : runStatus === "cancelled"
+          ? "同步已取消"
+          : syncStatus === "queued"
+            ? "同步排队中"
+            : "正在同步";
+
   return (
     <Panel className="border-cyan-900/60 p-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Loader2 size={18} className="animate-spin text-cyan-400" />
-          <h2 className="text-sm font-semibold text-white">
-            {syncStatus === "queued" ? "同步排队中" : "正在同步"}
-          </h2>
+          {isTerminal ? (
+            runStatus === "error" || runStatus === "cancelled" ? (
+              <XCircle size={18} className="text-rose-400" />
+            ) : (
+              <CheckCircle2 size={18} className="text-emerald-400" />
+            )
+          ) : (
+            <Loader2 size={18} className="animate-spin text-cyan-400" />
+          )}
+          <h2 className="text-sm font-semibold text-white">{headLabel}</h2>
         </div>
         <span className="flex items-center gap-3">
           {onTerminate && (
@@ -153,10 +189,12 @@ function SyncProgressPanel({
               title="终止正在进行的同步任务"
             />
           )}
-          <span className="flex items-center gap-2 text-xs text-cyan-300">
-            <RefreshCw size={12} className="animate-spin" />
-            自动刷新中
-          </span>
+          {!isTerminal && (
+            <span className="flex items-center gap-2 text-xs text-cyan-300">
+              <RefreshCw size={12} className="animate-spin" />
+              自动刷新中
+            </span>
+          )}
         </span>
       </div>
 
@@ -187,6 +225,22 @@ function SyncProgressPanel({
               <p className="mt-1.5 text-xs text-slate-500">
                 {currentRun.progress_message}
               </p>
+            )}
+            {syncLogTail.length > 0 && (
+              <div className="mt-2">
+                <div className="mb-1 flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
+                  同步运行日志（实时 · {syncLogTail.length} 行）
+                </div>
+                <pre
+                  ref={syncLogRef}
+                  className="max-h-40 overflow-y-auto rounded-md border border-slate-800 bg-slate-900/50 p-2 font-mono text-[11px] leading-snug text-slate-400 whitespace-pre-wrap break-all"
+                >
+                  {syncLogTail.map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                </pre>
+              </div>
             )}
           </div>
 
@@ -725,6 +779,23 @@ export function AccountDetailClient({ id }: { id: string }) {
       </main>
     );
   const item = account.data;
+  const latestRun = runs.data?.items?.[0];
+  // Keep the live sync panel mounted through a freshly-finished run so the user
+  // sees the outcome (success stepper or failure reason) instead of the box
+  // vanishing the instant the backend flips account.sync_status to a terminal
+  // value (which also happens mid-run on a non-retryable error / cancellation).
+  // The window auto-collapses 90s after the run finished.
+  const terminalFresh =
+    latestRun != null &&
+    ["success", "degraded", "error", "cancelled", "skipped"].includes(
+      latestRun.status,
+    ) &&
+    latestRun.finished_at != null &&
+    Date.now() - new Date(latestRun.finished_at).getTime() < 90_000;
+  const showSyncPanel =
+    activeRun != null ||
+    terminalFresh ||
+    ["queued", "syncing"].includes(item.sync_status);
   const history = snapshots.data?.items ?? [];
   const snapshot = item.latest_snapshot;
   const followerCount = latestObservedValue(
@@ -843,11 +914,11 @@ export function AccountDetailClient({ id }: { id: string }) {
           </p>
         )}
       </section>
-      {["queued", "syncing"].includes(item.sync_status) && (
+      {showSyncPanel && (
         <SyncProgressPanel
           runs={runs.data?.items}
           syncStatus={item.sync_status}
-          onTerminate={() => cancelSync(activeRunId)}
+          onTerminate={activeRunId ? () => cancelSync(activeRunId) : undefined}
           cancelling={cancelling}
         />
       )}

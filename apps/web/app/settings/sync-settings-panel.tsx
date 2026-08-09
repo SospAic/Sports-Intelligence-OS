@@ -1,12 +1,23 @@
 "use client";
 
-import type { SyncSettingsRecord, YtDlpSettings } from "@sio/shared-types";
+import type {
+  SyncSettingsRecord,
+  YtDlpRuntimeRecord,
+  YtDlpSettings,
+} from "@sio/shared-types";
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Save } from "lucide-react";
+import { CheckCircle2, RefreshCw, Save, Wrench } from "lucide-react";
 import { useWorkspace } from "@/components/app-shell";
 import { useToast } from "@/components/toast";
-import { Panel, buttonClass, inputClass } from "@/components/ui";
+import {
+  Badge,
+  Panel,
+  SettingsGroup,
+  buttonClass,
+  inputClass,
+  secondaryButtonClass,
+} from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 
 function ymdToDateInput(ymd?: string): string {
@@ -29,6 +40,7 @@ interface FieldDef {
   type: FieldType;
   placeholder?: string;
   help?: string;
+  options?: { value: string; label: string }[];
 }
 
 interface FieldGroup {
@@ -66,8 +78,16 @@ const YTDLP_FIELD_GROUPS: FieldGroup[] = [
         placeholder: "1,3,5-7",
         help: "只抓取指定编号的条目",
       },
-      { key: "playlist_reverse", label: "倒序抓取 (playlist_reverse)", type: "bool" },
-      { key: "playlist_random", label: "随机顺序 (playlist_random)", type: "bool" },
+      {
+        key: "playlist_reverse",
+        label: "倒序抓取 (playlist_reverse)",
+        type: "bool",
+      },
+      {
+        key: "playlist_random",
+        label: "随机顺序 (playlist_random)",
+        type: "bool",
+      },
       {
         key: "no_playlist",
         label: "仅单视频非列表 (no_playlist)",
@@ -122,29 +142,99 @@ const YTDLP_FIELD_GROUPS: FieldGroup[] = [
       },
       { key: "min_duration", label: "最短时长秒 (min_duration)", type: "int" },
       { key: "max_duration", label: "最长时长秒 (max_duration)", type: "int" },
-      { key: "min_filesize", label: "最小文件大小 (min_filesize)", type: "text", placeholder: "10M" },
-      { key: "max_filesize", label: "最大文件大小 (max_filesize)", type: "text", placeholder: "1G" },
+      {
+        key: "min_filesize",
+        label: "最小文件大小 (min_filesize)",
+        type: "text",
+        placeholder: "10M",
+      },
+      {
+        key: "max_filesize",
+        label: "最大文件大小 (max_filesize)",
+        type: "text",
+        placeholder: "1G",
+      },
     ],
   },
   {
     title: "网络与限流",
     description: "控制请求代理、超时、重试与限速，降低被限流风险。",
     fields: [
-      { key: "proxy", label: "代理 (proxy)", type: "text", placeholder: "http://host:port" },
-      { key: "socket_timeout", label: "套接字超时秒 (socket_timeout)", type: "int" },
+      {
+        key: "proxy",
+        label: "代理 (proxy)",
+        type: "text",
+        placeholder: "http://host:port",
+      },
+      {
+        key: "socket_timeout",
+        label: "套接字超时秒 (socket_timeout)",
+        type: "int",
+      },
       { key: "retries", label: "重试次数 (retries)", type: "int" },
-      { key: "fragment_retries", label: "分片重试 (fragment_retries)", type: "int" },
-      { key: "sleep_interval", label: "请求间隔秒 (sleep_interval)", type: "int" },
-      { key: "max_sleep_interval", label: "最大间隔秒 (max_sleep_interval)", type: "int" },
-      { key: "sleep_requests", label: "每 N 请求休眠 (sleep_requests)", type: "int" },
-      { key: "limit_rate", label: "下载限速 (limit_rate)", type: "text", placeholder: "1M" },
+      {
+        key: "fragment_retries",
+        label: "分片重试 (fragment_retries)",
+        type: "int",
+      },
+      {
+        key: "sleep_interval",
+        label: "请求间隔秒 (sleep_interval)",
+        type: "int",
+      },
+      {
+        key: "max_sleep_interval",
+        label: "最大间隔秒 (max_sleep_interval)",
+        type: "int",
+      },
+      {
+        key: "sleep_requests",
+        label: "每 N 请求休眠 (sleep_requests)",
+        type: "int",
+      },
+      {
+        key: "limit_rate",
+        label: "下载限速 (limit_rate)",
+        type: "text",
+        placeholder: "1M",
+      },
       { key: "geo_bypass", label: "绕过地理限制 (geo_bypass)", type: "bool" },
-      { key: "geo_bypass_country", label: "绕过国家 (geo_bypass_country)", type: "text", placeholder: "US" },
+      {
+        key: "geo_bypass_country",
+        label: "绕过国家 (geo_bypass_country)",
+        type: "text",
+        placeholder: "US",
+      },
       {
         key: "geo_verification_proxy",
         label: "地理验证代理 (geo_verification_proxy)",
         type: "text",
         placeholder: "http://host:port",
+      },
+    ],
+  },
+  {
+    title: "登录与鉴权",
+    description:
+      "YouTube 等平台触发 429 或要求确认身份时，可从运行环境可见的浏览器配置读取已登录会话。",
+    fields: [
+      {
+        key: "cookies_from_browser",
+        label: "浏览器 Cookie 来源 (cookies_from_browser)",
+        type: "select",
+        options: [
+          { value: "", label: "不读取浏览器 Cookie（匿名）" },
+          { value: "chrome", label: "Google Chrome" },
+          { value: "edge", label: "Microsoft Edge" },
+          { value: "firefox", label: "Mozilla Firefox" },
+          { value: "brave", label: "Brave" },
+          { value: "chromium", label: "Chromium" },
+          { value: "opera", label: "Opera" },
+          { value: "vivaldi", label: "Vivaldi" },
+          { value: "safari", label: "Safari（macOS）" },
+          { value: "whale", label: "Whale" },
+        ],
+        help: "只保存浏览器类型，不保存 Cookie；Docker 需要挂载对应浏览器配置目录。",
       },
     ],
   },
@@ -190,6 +280,7 @@ const DEFAULT_YT: Record<string, YtFieldValue> = {
   geo_bypass: false,
   geo_bypass_country: "",
   geo_verification_proxy: "",
+  cookies_from_browser: "",
   ignore_errors: true,
   no_warnings: true,
 };
@@ -206,7 +297,11 @@ type DownloadFieldDef = {
 };
 
 const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
-  { key: "write_thumbnail", label: "下载封面缩略图 (write_thumbnail)", type: "bool" },
+  {
+    key: "write_thumbnail",
+    label: "下载封面缩略图 (write_thumbnail)",
+    type: "bool",
+  },
   { key: "write_subtitles", label: "下载字幕 (write_subtitles)", type: "bool" },
   {
     key: "write_auto_subtitles",
@@ -294,7 +389,11 @@ const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
     ],
     help: "归档到本地的文件名规则",
   },
-  { key: "write_info_json", label: "下载原始信息 (write_info_json)", type: "bool" },
+  {
+    key: "write_info_json",
+    label: "下载原始信息 (write_info_json)",
+    type: "bool",
+  },
 ];
 
 const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
@@ -320,7 +419,17 @@ export function SyncSettingsPanel() {
   const data = useQuery({
     queryKey: ["sync-settings", workspaceId],
     queryFn: () =>
-      apiRequest<SyncSettingsRecord>("/settings/sync", { workspaceId: workspaceId! }),
+      apiRequest<SyncSettingsRecord>("/settings/sync", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+  });
+  const runtime = useQuery({
+    queryKey: ["ytdlp-runtime", workspaceId],
+    queryFn: () =>
+      apiRequest<YtDlpRuntimeRecord>("/downloads/runtime", {
+        workspaceId: workspaceId!,
+      }),
     enabled: Boolean(workspaceId),
   });
 
@@ -331,10 +440,34 @@ export function SyncSettingsPanel() {
   const [dateBefore, setDateBefore] = useState("");
   const [playlistStart, setPlaylistStart] = useState("1");
   const [yt, setYt] = useState<Record<string, YtFieldValue>>(DEFAULT_YT);
-  const [download, setDownload] = useState<Record<string, YtFieldValue>>(DEFAULT_DOWNLOAD);
+  const [download, setDownload] =
+    useState<Record<string, YtFieldValue>>(DEFAULT_DOWNLOAD);
   const [extraArgs, setExtraArgs] = useState("{}");
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [runtimeUpdating, setRuntimeUpdating] = useState(false);
+
+  async function updateRuntime() {
+    if (!workspaceId || !runtime.data?.update_enabled) return;
+    setRuntimeUpdating(true);
+    try {
+      await apiRequest<YtDlpRuntimeRecord>("/downloads/runtime/update", {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({}),
+      });
+      notify("yt-dlp 已更新；生产容器建议随后重建镜像", "success");
+      await runtime.refetch();
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "yt-dlp 更新失败",
+        "error",
+      );
+    } finally {
+      setRuntimeUpdating(false);
+    }
+  }
 
   useEffect(() => {
     if (hydrated || !data.data) return;
@@ -360,14 +493,18 @@ export function SyncSettingsPanel() {
           if (f.type === "bool") {
             nextYt[f.key as string] = Boolean(raw);
           } else if (f.type === "int") {
-            nextYt[f.key as string] = raw == null || raw === "" ? null : String(raw);
+            nextYt[f.key as string] =
+              raw == null || raw === "" ? null : String(raw);
           } else {
             nextYt[f.key as string] = raw == null ? "" : String(raw);
           }
         }
       }
       setYt(nextYt);
-      const dlSource = (cfg.download ?? {}) as unknown as Record<string, unknown>;
+      const dlSource = (cfg.download ?? {}) as unknown as Record<
+        string,
+        unknown
+      >;
       const nextDl: Record<string, YtFieldValue> = { ...DEFAULT_DOWNLOAD };
       for (const f of DOWNLOAD_FIELDS) {
         const raw = dlSource[f.key];
@@ -409,7 +546,8 @@ export function SyncSettingsPanel() {
         for (const f of group.fields) {
           const value = yt[f.key as string];
           if (f.type === "int") {
-            ytBody[f.key as string] = value == null || value === "" ? null : Number(value);
+            ytBody[f.key as string] =
+              value == null || value === "" ? null : Number(value);
           } else if (f.type === "bool") {
             ytBody[f.key as string] = Boolean(value);
           } else {
@@ -426,7 +564,11 @@ export function SyncSettingsPanel() {
       for (const f of DOWNLOAD_FIELDS) {
         const value = download[f.key];
         downloadBody[f.key] =
-          f.type === "bool" ? Boolean(value) : value == null ? "" : String(value);
+          f.type === "bool"
+            ? Boolean(value)
+            : value == null
+              ? ""
+              : String(value);
       }
 
       const body = {
@@ -460,9 +602,90 @@ export function SyncSettingsPanel() {
   return (
     <div className="space-y-5">
       <Panel className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Wrench size={16} className="text-cyan-300" />
+              <h2 className="font-medium text-white">视频解析运行时</h2>
+              {runtime.data && (
+                <Badge
+                  tone={runtime.data.status === "ready" ? "success" : "warning"}
+                >
+                  {runtime.data.status === "ready" ? "已就绪" : "需配置"}
+                </Badge>
+              )}
+            </div>
+            <p className="mt-1 text-xs leading-5 text-slate-500">
+              YouTube 完整解析需要 Node.js 22+ 与 yt-dlp[default] 的 EJS
+              组件。解析失败时先检查这里的版本与路径。
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              className={secondaryButtonClass}
+              disabled={runtime.isFetching}
+              onClick={() => void runtime.refetch()}
+              type="button"
+            >
+              <RefreshCw size={14} />
+              检查运行时
+            </button>
+            <button
+              className={buttonClass}
+              disabled={!runtime.data?.update_enabled || runtimeUpdating}
+              onClick={() => void updateRuntime()}
+              title={
+                runtime.data?.update_enabled
+                  ? "在当前 API 容器中更新 yt-dlp"
+                  : "默认关闭，请通过镜像重建更新"
+              }
+              type="button"
+            >
+              <CheckCircle2 size={14} />
+              {runtimeUpdating ? "更新中" : "更新 yt-dlp"}
+            </button>
+          </div>
+        </div>
+        {runtime.data ? (
+          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <RuntimeValue
+              label="Node.js"
+              value={runtime.data.node_version ?? "未发现"}
+            />
+            <RuntimeValue
+              label="Node 路径"
+              value={runtime.data.node_resolved_path ?? "未发现"}
+            />
+            <RuntimeValue
+              label="yt-dlp"
+              value={runtime.data.yt_dlp_version ?? "未发现"}
+            />
+            <RuntimeValue
+              label="EJS 远程组件"
+              value={
+                runtime.data.remote_components.join(", ") || "使用内置组件"
+              }
+            />
+          </div>
+        ) : runtime.isLoading ? (
+          <p className="mt-4 text-sm text-slate-500">正在检查运行时…</p>
+        ) : runtime.error ? (
+          <p className="mt-4 text-sm text-rose-300">{runtime.error.message}</p>
+        ) : null}
+        {runtime.data && (
+          <p className="mt-3 text-xs leading-5 text-slate-500">
+            {runtime.data.detail} {runtime.data.update_note} 更新命令：
+            <code className="ml-1 text-slate-300">
+              {runtime.data.update_command}
+            </code>
+          </p>
+        )}
+      </Panel>
+      <Panel className="p-5">
         <h2 className="font-medium text-white">同步与抓取策略</h2>
         <p className="mt-1 text-xs text-slate-500">
-          统一控制本工作区所有账号的抓取行为。同步默认拉取账号的<strong>全部历史作品</strong>
+          统一控制本工作区所有账号的抓取行为。同步默认拉取账号的
+          <strong>全部历史作品</strong>
           （全量抓取）；下方参数用于限定范围、量级与重复处理方式。
         </p>
       </Panel>
@@ -483,6 +706,11 @@ export function SyncSettingsPanel() {
             }}
             className="grid gap-5"
           >
+            <SettingsGroup
+              title="同步范围与时间窗口"
+              description="先定义单次任务规模，再设置日期、分页起点与已存在作品的处理方式。"
+              tone="slate"
+            >
             <label className="grid gap-2 text-sm">
               单次同步最多抓取作品数
               <input
@@ -512,7 +740,8 @@ export function SyncSettingsPanel() {
                 disabled={!canEdit}
               />
               <span className="text-xs text-slate-500">
-                Celery 同步任务失败后的重试上限；保存后立即生效，无需重启服务。可在「运行时设置」页查看当前生效值。
+                Celery
+                同步任务失败后的重试上限；保存后立即生效，无需重启服务。可在「运行时设置」页查看当前生效值。
               </span>
             </label>
 
@@ -566,17 +795,19 @@ export function SyncSettingsPanel() {
               </label>
             </div>
 
+            </SettingsGroup>
+
             {YTDLP_FIELD_GROUPS.map((group) => (
-              <fieldset
+              <SettingsGroup
                 key={group.title}
-                className="grid gap-3 rounded-lg border border-slate-700/60 p-4"
+                title={group.title}
+                description={group.description}
+                tone={
+                  group.fields.some((field) => field.key === "cookies_from_browser")
+                    ? "violet"
+                    : "cyan"
+                }
               >
-                <legend className="px-1 text-xs font-medium uppercase tracking-wide text-cyan-300">
-                  {group.title}
-                </legend>
-                {group.description && (
-                  <p className="text-xs text-slate-500">{group.description}</p>
-                )}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {group.fields.map((f) => {
                     const value = yt[f.key as string];
@@ -584,7 +815,7 @@ export function SyncSettingsPanel() {
                       return (
                         <label
                           key={f.key as string}
-                          className="flex items-start gap-2 text-sm"
+                          className="flex min-h-10 items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm transition-colors hover:border-cyan-900/80"
                         >
                           <input
                             type="checkbox"
@@ -609,8 +840,40 @@ export function SyncSettingsPanel() {
                         </label>
                       );
                     }
+                    if (f.type === "select") {
+                      return (
+                        <label key={f.key as string} className="grid min-w-0 gap-2 text-sm">
+                          <span>{f.label}</span>
+                          <select
+                            className={inputClass}
+                            value={value == null ? "" : String(value)}
+                            onChange={(e) =>
+                              setYt((prev) => ({
+                                ...prev,
+                                [f.key as string]: e.target.value,
+                              }))
+                            }
+                            disabled={!canEdit}
+                          >
+                            {(f.options ?? []).map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          {f.help && (
+                            <span className="text-xs leading-5 text-slate-500">
+                              {f.help}
+                            </span>
+                          )}
+                        </label>
+                      );
+                    }
                     return (
-                      <label key={f.key as string} className="grid gap-2 text-sm">
+                      <label
+                        key={f.key as string}
+                        className="grid min-w-0 gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm"
+                      >
                         <span>
                           {f.label}
                           {f.help && (
@@ -637,16 +900,19 @@ export function SyncSettingsPanel() {
                     );
                   })}
                 </div>
-              </fieldset>
+              </SettingsGroup>
             ))}
 
-            <fieldset className="grid gap-3 rounded-lg border border-amber-700/50 p-4">
+            <fieldset className="grid gap-3 rounded-xl border border-amber-900/70 bg-amber-950/10 p-4">
               <legend className="px-1 text-xs font-medium uppercase tracking-wide text-amber-300">
                 媒体下载
               </legend>
               <p className="text-xs text-slate-500">
                 同步时把对应媒体文件归档到本地，供详情页「媒体资源」展示。默认已开启封面与字幕；
-                <strong className="text-amber-300">下载视频会显著消耗磁盘与带宽，请按需开启</strong>。
+                <strong className="text-amber-300">
+                  下载视频会显著消耗磁盘与带宽，请按需开启
+                </strong>
+                。
               </p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {DOWNLOAD_FIELDS.map((f) => {
@@ -655,7 +921,7 @@ export function SyncSettingsPanel() {
                     return (
                       <label
                         key={f.key}
-                        className="flex items-start gap-2 text-sm"
+                        className="flex min-h-10 items-start gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm transition-colors hover:border-amber-900/80"
                       >
                         <input
                           type="checkbox"
@@ -672,7 +938,9 @@ export function SyncSettingsPanel() {
                         <span>
                           <span className="block">{f.label}</span>
                           {f.help && (
-                            <span className="block text-xs text-slate-500">{f.help}</span>
+                            <span className="block text-xs text-slate-500">
+                              {f.help}
+                            </span>
                           )}
                         </span>
                       </label>
@@ -680,18 +948,23 @@ export function SyncSettingsPanel() {
                   }
                   if (f.type === "select") {
                     return (
-                      <label key={f.key} className="grid gap-2 text-sm">
+                      <label key={f.key} className="grid min-w-0 gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
                         <span>
                           {f.label}
                           {f.help && (
-                            <span className="ml-1 text-xs text-slate-500">— {f.help}</span>
+                            <span className="ml-1 text-xs text-slate-500">
+                              — {f.help}
+                            </span>
                           )}
                         </span>
                         <select
                           className={inputClass}
                           value={value == null ? "" : String(value)}
                           onChange={(e) =>
-                            setDownload((prev) => ({ ...prev, [f.key]: e.target.value }))
+                            setDownload((prev) => ({
+                              ...prev,
+                              [f.key]: e.target.value,
+                            }))
                           }
                           disabled={!canEdit}
                         >
@@ -705,11 +978,13 @@ export function SyncSettingsPanel() {
                     );
                   }
                   return (
-                    <label key={f.key} className="grid gap-2 text-sm">
+                      <label key={f.key} className="grid min-w-0 gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm">
                       <span>
                         {f.label}
                         {f.help && (
-                          <span className="ml-1 text-xs text-slate-500">— {f.help}</span>
+                          <span className="ml-1 text-xs text-slate-500">
+                            — {f.help}
+                          </span>
                         )}
                       </span>
                       <input
@@ -718,7 +993,10 @@ export function SyncSettingsPanel() {
                         value={value == null ? "" : String(value)}
                         placeholder={f.placeholder}
                         onChange={(e) =>
-                          setDownload((prev) => ({ ...prev, [f.key]: e.target.value }))
+                          setDownload((prev) => ({
+                            ...prev,
+                            [f.key]: e.target.value,
+                          }))
                         }
                         disabled={!canEdit}
                       />
@@ -735,14 +1013,17 @@ export function SyncSettingsPanel() {
                 className={`${inputClass} min-h-24 font-mono text-xs`}
                 value={extraArgs}
                 onChange={(e) => setExtraArgs(e.target.value)}
-                placeholder={'{\n  "match_filter": "...",\n  "geo_bypass": true\n}'}
+                placeholder={
+                  '{\n  "match_filter": "...",\n  "geo_bypass": true\n}'
+                }
                 disabled={!canEdit}
               />
             </label>
             <p className="text-xs text-slate-500">
               行业实践：用日期区间缩小范围、控制单次量级、设置请求间隔与限速可显著降低被限流与超时风险；
-              同步间隔请在账号的「同步周期」中设置。上方结构化字段已覆盖常用 yt-dlp 参数；
-              若仍需其他参数，可在 extra_args 中按 <code>{"{ \"参数名\": 值 }"}</code> 形式自由追加。
+              同步间隔请在账号的「同步周期」中设置。上方结构化字段已覆盖常用
+              yt-dlp 参数； 若仍需其他参数，可在 extra_args 中按{" "}
+              <code>{'{ "参数名": 值 }'}</code> 形式自由追加。
             </p>
             {canEdit && (
               <button
@@ -763,13 +1044,37 @@ export function SyncSettingsPanel() {
           抓取逻辑说明
         </h3>
         <ul className="mt-3 list-disc space-y-2 pl-5 text-xs leading-5 text-slate-400">
-          <li>默认对每个账号执行<strong>全量抓取</strong>，不再区分增量与全量；历史作品会被一并拉取回填。</li>
-          <li>「单次同步最多抓取作品数」为空时，抓取受平台分页上限约束；设置数值可硬性限制单次量级。</li>
-          <li>遇到已存在的作品时，由「已存在的作品跳过更新」决定是跳过还是覆盖可编辑字段（指标始终刷新）。</li>
-          <li>日期区间（dateafter / datebefore / daterange）以 YYYYMMDD 形式传给 yt-dlp，用于限定作品时间范围。</li>
-          <li>其余 yt-dlp 参数（排序、筛选、代理、限速、地理绕过等）仅在填写时生效，留空表示不施加该限制。</li>
+          <li>
+            默认对每个账号执行<strong>全量抓取</strong>
+            ，不再区分增量与全量；历史作品会被一并拉取回填。
+          </li>
+          <li>
+            「单次同步最多抓取作品数」为空时，抓取受平台分页上限约束；设置数值可硬性限制单次量级。
+          </li>
+          <li>
+            遇到已存在的作品时，由「已存在的作品跳过更新」决定是跳过还是覆盖可编辑字段（指标始终刷新）。
+          </li>
+          <li>
+            日期区间（dateafter / datebefore / daterange）以 YYYYMMDD 形式传给
+            yt-dlp，用于限定作品时间范围。
+          </li>
+          <li>
+            其余 yt-dlp
+            参数（排序、筛选、代理、限速、地理绕过等）仅在填写时生效，留空表示不施加该限制。
+          </li>
         </ul>
       </Panel>
+    </div>
+  );
+}
+
+function RuntimeValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="mt-1 truncate text-slate-200" title={value}>
+        {value}
+      </div>
     </div>
   );
 }

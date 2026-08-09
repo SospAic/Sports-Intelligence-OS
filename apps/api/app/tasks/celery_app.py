@@ -16,6 +16,8 @@ celery_app = Celery(
         "app.tasks.automation",
         "app.tasks.reliability",
         "app.tasks.trends",
+        "app.tasks.video_search",
+        "app.tasks.embedding",
     ],
 )
 celery_app.conf.update(
@@ -44,6 +46,9 @@ celery_app.conf.update(
         "app.tasks.automation.scan_recent_entities": {"queue": "automation"},
         "app.tasks.reliability.*": {"queue": "maintenance"},
         "app.tasks.trends.*": {"queue": "monitoring"},
+        "app.tasks.video_search.*": {"queue": "video-search"},
+        # 复用既有队列，避免为一个新特性改 compose 的 worker -Q 列表。
+        "app.tasks.embedding.*": {"queue": "video-search"},
     },
     beat_schedule={
         "system-heartbeat": {
@@ -93,6 +98,10 @@ celery_app.conf.update(
         "collect-platform-trends": {
             "task": "app.tasks.trends.collect_platform_trends",
             "schedule": 3600.0,  # 每小时采集一次各平台趋势数据
+        },
+        "schedule-due-video-search-plans": {
+            "task": "app.tasks.video_search.schedule_due_video_search_plans",
+            "schedule": 60.0,
         },
     },
 )

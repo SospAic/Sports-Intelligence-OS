@@ -14,6 +14,8 @@ import json
 import sys
 from typing import Any
 
+from app.services.ytdlp_runtime import runtime_args
+
 YTDLP_TIMEOUT_SECONDS = 45.0
 
 # Platforms yt-dlp can actually search. Extend as extractors improve.
@@ -61,6 +63,7 @@ async def yt_search(
             "--flat-playlist",
             "--playlist-end",
             str(limit),
+            *runtime_args(),
             url,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -89,9 +92,11 @@ async def yt_search(
             continue
         results.append(
             {
+                "external_id": entry.get("id"),
                 "title": entry.get("title"),
                 "url": entry.get("url") or entry.get("webpage_url"),
                 "author": entry.get("uploader") or entry.get("channel"),
+                "cover_url": entry.get("thumbnail"),
                 "view_count": entry.get("view_count"),
                 "like_count": entry.get("like_count"),
                 "published": entry.get("upload_date") or entry.get("timestamp"),

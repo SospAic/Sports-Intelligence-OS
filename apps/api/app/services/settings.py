@@ -94,7 +94,7 @@ LLM_FIELDS = [
         label="默认模型",
         value_type="text",
         required=True,
-        default="gpt-4.1-mini",
+        default="gpt-5.6-terra",
     ),
     ConfigFieldDescriptor(
         key="temperature",
@@ -118,7 +118,7 @@ LLM_FIELDS = [
         key="max_tokens",
         label="默认最大 Token",
         value_type="number",
-        default=4096,
+        default=8192,
         minimum=1,
         maximum=131072,
         step=1,
@@ -127,7 +127,7 @@ LLM_FIELDS = [
         key="timeout_seconds",
         label="请求超时（秒）",
         value_type="number",
-        default=60,
+        default=90,
         minimum=5,
         maximum=300,
         step=1,
@@ -665,6 +665,40 @@ class SettingsService:
                             "SIO_NOTIFICATION_ENCRYPTION_KEY",
                             "绝不返回密钥内容。",
                             secret=True,
+                        ),
+                    ],
+                ),
+                RuntimeSettingSection(
+                    key="media_runtime",
+                    title="媒体解析运行时",
+                    description=(
+                        "YouTube 完整解析需要 Node.js 22+；EJS 默认随 yt-dlp[default] 安装。"
+                        "路径修改后需重启 API、Worker 与 Beat。"
+                    ),
+                    fields=[
+                        self._field(
+                            "ytdlp_node_path",
+                            "Node.js 可执行文件路径",
+                            self.settings.ytdlp_node_path,
+                            "text",
+                            "SIO_YTDLP_NODE_PATH",
+                            "留空时从 PATH 自动查找；Docker 默认使用 /usr/local/bin/node。",
+                        ),
+                        self._field(
+                            "ytdlp_remote_components",
+                            "EJS 远程组件",
+                            self.settings.ytdlp_remote_components,
+                            "text",
+                            "SIO_YTDLP_REMOTE_COMPONENTS",
+                            "可选 ejs:github；只有镜像未包含 yt-dlp-ejs 时才需要。",
+                        ),
+                        self._field(
+                            "ytdlp_allow_runtime_update",
+                            "允许运行时更新 yt-dlp",
+                            self.settings.ytdlp_allow_runtime_update,
+                            "boolean",
+                            "SIO_YTDLP_ALLOW_RUNTIME_UPDATE",
+                            "默认关闭；生产环境建议通过重新构建镜像更新，避免容器重启后丢失。",
                         ),
                     ],
                 ),

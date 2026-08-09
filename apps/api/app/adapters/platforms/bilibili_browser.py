@@ -22,14 +22,17 @@ from app.adapters.platforms.base import (
     AdapterCapability,
     AdapterContractError,
     AdapterDescriptor,
-    AdapterNotFoundError,
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
     PlatformMetricsData,
     TransientAdapterError,
 )
-from app.adapters.platforms.browser_base import BrowserPlatformAdapter, LoginRequiredError
+from app.adapters.platforms.browser_base import (
+    BrowserPlatformAdapter,
+    LoginRequiredError,
+    reraise_if_terminal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,16 +180,22 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             if not display_name:
                 display_name = f"UID {mid}"
 
+            # B: this branch only runs when the authoritative acc/info XHR was
+            # missed. On a genuinely walled page display_name collapses to the
+            # synthetic "UID {mid}" fallback, so we skip the DOM avatar grab and
+            # return None rather than caching the platform's default face. If the
+            # page did render a real identity, a precise selector (C) is used.
             avatar_url = None
-            try:
-                avatar_el = page.locator(
-                    ".h-avatar img, .bili-avatar img, .b-avatar img, [class*='avatar'] img"
-                ).first
-                avatar_url = await avatar_el.get_attribute("src")
-                if avatar_url and avatar_url.startswith("//"):
-                    avatar_url = "https:" + avatar_url
-            except Exception as exc:
-                logger.debug("bilibili avatar extraction failed: %s", exc)
+            if display_name != f"UID {mid}":
+                try:
+                    avatar_el = page.locator(
+                        ".h-avatar img, .bili-avatar img, .b-avatar img"
+                    ).first
+                    avatar_url = await avatar_el.get_attribute("src")
+                    if avatar_url and avatar_url.startswith("//"):
+                        avatar_url = "https:" + avatar_url
+                except Exception as exc:
+                    logger.debug("bilibili avatar extraction failed: %s", exc)
 
             description = None
             try:
@@ -213,8 +222,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                 metadata={"method": "browser_dom_scrape", "locator": locator},
             )
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser scrape failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -234,6 +242,8 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             url = BILIBILI_SPACE_URL.format(mid=mid)
             await page.goto(url, wait_until="domcontentloaded")
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "Bilibili")
 
             follower_count = None
             try:
@@ -322,6 +332,8 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             # Give the SPA time to fire its XHR calls.
             await self._polite_delay(2.0)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "Bilibili")
 
             # If interception missed it, wait a bit more.
             if api_data is None:
@@ -376,8 +388,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             next_cursor = str(page_num + 1) if page_num * page_size < total else None
             return AdapterPage(items=tuple(items), next_cursor=next_cursor)
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser list_contents failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -394,7 +405,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
         fallback_url: str,
     ) -> AdapterPage:
         """Fallback: scrape video cards from the rendered DOM."""
-        await self._scroll_page(page, times=2)
+        await self._scroll_page(page, times=2, ctx=ctx)
         try:
             await page.wait_for_selector(
                 ".small-item, .video-card, [class*='video-card']",
@@ -472,6 +483,8 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             url = BILIBILI_VIDEO_URL.format(bvid=external_id)
             await page.goto(url, wait_until="domcontentloaded")
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "Bilibili")
 
             title = await page.title()
             title = title.replace("_哔哩哔哩_bilibili", "").strip()

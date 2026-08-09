@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,7 +44,39 @@ class DownloadPreviewRead(BaseModel):
     duration_seconds: float | None = None
     description: str | None = None
     subtitle_languages: list[str] = Field(default_factory=list)
+    notice: str | None = None
     source_kind: str = "live"
+
+
+class DownloadPreviewEnqueue(BaseModel):
+    """Returned by ``POST /downloads/preview``; the real parse runs in Celery."""
+
+    task_id: str
+
+
+class DownloadPreviewPoll(BaseModel):
+    """Returned by ``GET /downloads/preview/{task_id}`` while polling."""
+
+    task_id: str
+    state: Literal["PENDING", "STARTED", "SUCCESS", "FAILURE", "REVOKED"]
+    preview: DownloadPreviewRead | None = None
+    error_code: int | None = None
+    error_detail: str | None = None
+
+
+class YtDlpRuntimeRead(BaseModel):
+    node_configured_path: str | None = None
+    node_resolved_path: str | None = None
+    node_available: bool = False
+    node_version: str | None = None
+    yt_dlp_version: str | None = None
+    ejs_package_expected: bool = True
+    remote_components: list[str] = Field(default_factory=list)
+    update_enabled: bool = False
+    update_command: str
+    update_note: str
+    status: Literal["ready", "degraded"]
+    detail: str
 
 
 class DownloadRead(BaseModel):

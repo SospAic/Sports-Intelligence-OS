@@ -1214,3 +1214,120 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 - **聚合接口实证**：`TrendService.aggregate` 直连真实数据——`trend_topics` 3207 行、`trend_videos` 38511 行；返回 `timeline`(10)/`ranking`(50)/`index`(4 平台归一化)/`matrix`(33 单元)，`platforms=[youtube,tiktok,douyin,bilibili]`、`categories` 21 类、`window_days=30`；`platforms=["youtube"],days=7` 过滤后 timeline 缩至 2，过滤生效。HTTP `GET /api/v1/trends/aggregate` 已注册（401 auth-gated，符合受保护路由预期）；前端 `/trends/analytics` 已在 `next build` 产出（路由列表含 `ƒ /trends/analytics`）。
 - **账号间隔**：`models/monitoring.py` `sync_interval_seconds` 默认 28800、`schemas` `Field(default=28800, ge=3600)`、`adaptive_sync` MIN 3600/DEFAULT 28800/MAX 86400，新账号将默认约 8 小时、最快 1 小时同步。
 - **质量门禁**：后端改动文件 `py_compile` 全过；前端 `tsc --noEmit` 0 错（构建含 `/trends/analytics`）。改动本地、待 commit/push（不推送、排除 .workbuddy/）。
+# 当前交付状态 · 2026-08-06（本轮修复后）
+
+## 2026-08-06 增补：下载 CSRF 与内容创作字幕链路
+
+- 作品详情页的视频、字幕和信息下载弹窗提交任务时已补充 CSRF；公共浏览器 API 增加 Token 并发复用，并在 Token 轮换竞争导致 403 时自动刷新后仅重试一次。
+- 内容创作的“视频信息”模块现在读取已归档的 SRT/VTT/ASS/SBV/LRC 字幕文件，清洗为正文显示在素材预览中，并将受限长度的字幕正文随 `video_context` 冻结到生成任务；后端不再丢弃该上下文。
+- 新增 CSRF 重试、字幕正文加载和生成上下文冻结回归测试；前端门禁为 **16 个测试文件 / 63 passed**，TypeScript 与 ESLint 通过；Python `compileall` 与 `git diff --check` 通过。
+
+## 本轮结论
+
+- 账号同步已改为“资料先落库、指标限时提取、指标失败降级继续作品同步”；失败时保留上一份账号指标快照，并记录账号级 analytics tracklog，不再因指标异常直接退出任务。
+- 新闻源新增启用/停用、同步中停止、状态回显和取消审计；RSS/Atom/JSON/公开网页支持多策略回退，新增 `web` 类型迁移 `20260806_0001`。
+- LLM 预制基线更新为 `gpt-5.6-terra / 8192 / 90s`；模型下拉在保存 Provider 配置后调用 `/models` 获取实时清单，未配置时使用官方目录基线；推理模型自动使用 `max_completion_tokens` 并省略采样参数。
+- 视频详情页标题改为桌面端单行省略，右侧操作按钮保持同一行；全局同步状态、主页搜索框均通过实渲染检查，搜索框中心与内容区中心一致。
+
+## 验证与部署
+
+- Docker 已重建并运行 API、Web、Worker、Beat、Proxy；API `/health/ready=200`、Proxy `/login=200`，数据库迁移为 `20260806_0002 (head)`。
+- 后端全量测试分组执行 **177 passed / 0 failed**；Ruff 全绿；前端 Vitest **14 文件 / 61 passed**、TypeScript、ESLint、Next production build（29 路由）全部通过。
+- 浏览器实渲染：视频详情页标题/按钮无错位或换行；顶栏同步状态不再竖排；主页搜索框 `inputCenter=mainCenter=752px`（1280px 视口）。
+- 本机 `.env` 中仅更新非敏感 LLM 默认参数为 `gpt-5.6-terra / 8192 / 90`；未输出或修改凭证。
+
+## 仍需关注
+
+- TikTok/Douyin、Bilibili 等平台仍受公开页面、反爬和登录墙约束；系统会以 `degraded`/条件提示呈现，不能保证无凭证获得私有指标。
+- 本机 `.env` 含曾使用过的外部服务凭证，必须轮换；凭证未提交 Git。
+- Git 自动维护仍提示损坏引用 `refs/heads/testflat`；不影响当前提交和部署，后续应单独清理 Git 元数据。
+### 2026-08-06 YouTube yt-dlp 运行时修复
+
+- `apps/api/app/services/ytdlp_runtime.py` 统一发现 Node.js、生成 `--js-runtimes node[:PATH]`，并限制 EJS 远程组件白名单。
+- API、Worker、搜索、评论和下载预览共用该运行时；`deploy/api.Dockerfile` 内置 Node 22，Python 依赖改为 `yt-dlp[default]`。
+- 下载设置页显示 Node/yt-dlp/EJS 状态、路径配置说明、更新命令和受环境开关保护的更新按钮。
+- YouTube 429 不再伪装为完整解析：预览允许使用公开 oEmbed 返回标题/封面，字幕与真实媒体仍由异步任务再次验证，并显示限流提示。
+- 本轮前端门禁：TypeScript、ESLint、Vitest 63 tests、Next build 全部通过；后端 `compileall` 通过。当前主机没有 pytest、Docker CLI，未执行本机后端测试和镜像重建。
+## 2026-08-06：yt-dlp 浏览器鉴权与设置参数分组
+
+- 后端新增工作区级 `yt_dlp.cookies_from_browser`，严格限制为 yt-dlp 当前支持的浏览器名称；只保存浏览器类型，不保存 Cookie 内容。
+- `--cookies-from-browser` 已贯通账号同步的 profile/analytics、下载地址预解析和后台下载任务；已有配置仍默认匿名运行。
+- 设置页的同步参数、登录鉴权、媒体下载、高级透传、LLM 连接与运行参数统一采用带说明的框线分组，并为单项参数增加可读卡片边界。
+- Docker 场景在设置说明与部署文档中明确浏览器 profile 挂载条件，以及 Cookie 不能绕过验证码、登录墙或平台限流的边界。
+
+### 验证边界
+
+- 已新增 yt-dlp CLI 参数渲染回归测试；Docker 内新增适配器回归测试 34 passed、Ruff 通过，前一轮后端全量测试 188 passed，Web lint/Vitest 与 Next production build 均通过。
+
+## 2026-08-06：人工登录浏览器会话捕获与 Cookie 复用
+
+- 现有「加密账号登录」和 `storage_state_json` 导入之外，平台管理新增「打开平台登录页」与「保存已登录 Cookie」闭环；用户在普通 Chrome/Edge 中人工完成登录、验证码和二次验证，系统不代填密码、不绕过安全挑战。
+- CDP 连接仅允许 `localhost`、回环地址和 Docker 主机网关；后端只提取当前平台域名 Cookie，并将 Playwright 会话状态与 Netscape Cookie 文本加密保存，接口和日志不回显敏感内容。
+- yt-dlp 任务优先使用加密捕获的 Cookie，会在单次子进程生命周期内生成权限受限的临时 Cookie 文件并在结束后删除；下载预览、后台下载和账号同步均可复用。
+- 新增人工会话捕获、域名过滤、登录 Cookie 检测、临时文件清理和敏感数据不回显回归测试；平台凭证无需新增数据库迁移。
+
+## 2026-08-06：Docker 内置人工登录浏览器
+
+- 新增 `browser` Compose 服务：内置 Chromium、Xvfb、x11vnc 和 noVNC，使用专用持久化 profile；API 通过 Compose 私有网络连接 `http://browser:9222`，由 CDP 代理转发到 Chromium 上游 `9223`。
+- 「打开平台登录页」默认在 Docker 浏览器中打开登录页，并自动将 `http://localhost:6080/vnc.html` 打开给用户；宿主机 CDP 仅作为备用连接方式。
+- 浏览器运行参数、显示分辨率、CDP/VNC 端口、profile volume 和 `shm_size=2gb` 已进入 Compose 与部署文档；CDP 不映射到宿主机，noVNC 只绑定 `127.0.0.1`。
+
+## 2026-08-06：视频下载页选项分组与响应式布局修复
+
+- 将下载选项按「视频资源」「字幕资源」「附加与归档」分为三个带框分组，补充每项用途说明，避免桌面端选项跨列错位。
+- 将提交区域独立为「准备下载」卡片，按钮、异步任务说明和错误提示在同一布局中对齐。
+- 已通过前端 TypeScript、ESLint、Prettier、Vitest（16 个文件 / 63 个测试）和 Docker `web` 镜像构建；浏览器实测桌面三列与 390px 窄屏单列布局。
+
+## 2026-08-06：视频内容搜索引擎垂直切片
+
+### 本轮完成
+
+- 新增 `/video-search` 功能：使用自然语言描述视频画面、动作、声音或口播内容，创建可重复执行的定时搜索计划。
+- 新增 `video_search_plans`、`video_search_runs`、`video_search_candidates` 三张表，保存计划、运行、候选、内容证据、时间戳、分析器、来源和错误。
+- Celery Beat 每 60 秒扫描到期计划；单计划禁止并发重复运行；支持手动运行、协作停止、部分完成、失败隔离、候选去重和运行审计。
+- 严格命中门禁：必须有 `matches_query=true`、达到最低分数、至少一个有效 `start_seconds/end_seconds` 时间段、非空 evidence 和 match_basis；标题、简介、标签、作者、URL 不能单独形成命中。
+- YouTube 使用 Gemini Interactions 的公开 URL 视频输入；公开 Bilibili、TikTok、抖音候选在允许域名内由 yt-dlp + ffmpeg 材料化，再通过 Gemini Files API 分析；临时视频分析文件在任务结束后清理并受上传大小限制。
+- 未配置真实分析器时，只保留真实候选和 `unavailable` 状态，不伪造内容命中；`mock` 仅允许测试/非生产环境。
+- 前端新增平台能力、候选与分析边界提示、计划参数、运行状态和证据结果；浅色主题警告/选中状态对比度已修复，桌面与窄屏无横向溢出。
+
+### 验证
+
+- API 白盒：`ruff check` 全绿；视频搜索单元测试 **7 passed**。
+- Docker：API、worker、beat、web 镜像已重建并启动；迁移 `20260806_0002 (head)`；容器内 `ffmpeg 7.1.5`、Node `22.23.2`、yt-dlp `2026.07.04` 可用。
+- 服务：API `/health/ready=200`、proxy `/login=200`；worker 已注册 `video-search` 队列和任务，beat 已实际执行 `schedule_due_video_search_plans`。
+- 浏览器真实渲染：`/video-search` 标题、能力接口、计划表单和结果区域可见；1280×720 下 `overflow=0`；浅色主题 warning `rgb(146,64,14)`、选中平台 `rgb(14,116,144)`。
+
+### 真实边界与后续
+
+- 四个平台的内容分析路径已建立，但实际覆盖仍受每个平台匿名公开页面、反爬、登录墙、授权和内容版权限制；TikTok/抖音候选发现目前不会伪造成功，失败会进入部分完成/不可用状态。
+- 生产启用前必须配置 Gemini API Key、确认平台条款和限额，并对单次候选数、上传大小、运行频率与成本设置预算；下一阶段可增加官方平台搜索 API、视频片段/关键帧索引、pgvector 语义召回、通知订阅和人工复核队列。
+
+---
+
+# 当前交接基线（2026-08-06，HEAD `dda90a7`）
+
+本节是当前版本的汇总入口，历史章节只作为变更记录保留。完整交接说明见 [`docs/HANDOFF-2026-08-06.md`](HANDOFF-2026-08-06.md)。当前代码分支为 `codex/full-repair-real-data`。
+
+## 当前结论
+
+- Docker Compose 单机垂直切片可运行；账号/作品监控、新闻热点、规则自动化、内容创作、媒体下载、LLM Provider、视频内容搜索和 Docker 内置人工登录浏览器均已接入。
+- 当前完成度应标记为“核心功能已实现，外部平台能力条件可用”，不是“所有平台无条件成功”。登录墙、限流、MFA、验证码、版权和 API 凭证缺失必须如实展示。
+- Docker 浏览器已支持 YouTube、TikTok、抖音、Bilibili 独立登录页，noVNC、持久化 profile、CDP 内网连接和加密 Cookie 捕获已验证。
+
+## 验证基线
+
+- 后端全量：`199 passed, 1 warning`。
+- 会话/设置定向回归：`15 passed`，Ruff 通过。
+- 前端：TypeScript、ESLint、Vitest `63 passed`、Next production build 通过。
+- Docker：配置校验、API/worker/beat/browser/web 构建与启动通过；API ready 和 noVNC 健康检查返回 200。
+- 容器运行时：Node `22.23.2`、ffmpeg `7.1.5`、yt-dlp `2026.07.04`。
+
+## 下一步优先级
+
+1. 使用真实账号验证四个平台的人工登录、Cookie 复用、账号同步完整性和耗时。
+2. 逐源验收新闻同步、备用获取方式、停止/重试和来源追踪。
+3. 对视频/字幕下载、429/登录墙、作品保存和字幕注入内容创作做真实样本回归。
+4. 用真实 LLM/API 凭证验证模型目录、模型探测、视频内容分析和成本/限额处理。
+5. 对主要页面执行多分辨率截图回归，并继续修复溢出、对齐、空态和 loading 态。
+
+交接规则：修改后必须保留 `live/imported/mock` 边界、不提交敏感凭证、运行对应测试、重新构建受影响 Docker 镜像，并在本文件追加新的事实章节；不要使用 `docker compose down -v` 删除数据卷。

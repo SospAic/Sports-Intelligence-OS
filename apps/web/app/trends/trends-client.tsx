@@ -1015,15 +1015,9 @@ export function TrendsClient() {
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <main
-      className={
-        tab === "analytics"
-          ? "mx-auto w-full space-y-4 px-4 py-4 lg:px-6"
-          : "mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8"
-      }
-    >
+    <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
       {/* Header */}
-      {tab !== "analytics" && <PageHeader
+      <PageHeader
         eyebrow="Hotspot Intelligence"
         title="热点情报中心"
         description="跨平台真实视频样本、热点衍生话题与智能搜索分析"
@@ -1048,7 +1042,7 @@ export function TrendsClient() {
             </button>
           </div>
         }
-      />}
+      />
 
       {/* Module Tabs: 趋势榜单 / 衍生话题 / 智能搜索 */}
       <div className="flex gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-1.5">
@@ -1069,6 +1063,15 @@ export function TrendsClient() {
 
       {tab === "trends" && (
         <>
+          {/* 趋势榜单 标题与副标题（与其他页签区块风格一致） */}
+          <div className="mb-1 flex items-center gap-2">
+            <TrendingUp size={18} className="text-cyan-400" />
+            <h2 className="font-semibold text-white">趋势榜单</h2>
+          </div>
+          <p className="mb-4 text-sm text-slate-500">
+            跨平台真实视频样本与热点话题排行，可按平台、分类筛选，并查看赛道趋势图表与各平台派生话题。
+          </p>
+
           {/* Platform Filter Tabs */}
           <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50 p-2">
         {PLATFORM_TABS.map((tab) => (

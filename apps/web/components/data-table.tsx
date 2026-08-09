@@ -218,11 +218,6 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
-      {!virtualized && !data.length && (
-        <div className="grid min-h-40 place-items-center text-sm text-slate-500">
-          {empty}
-        </div>
-      )}
       <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 px-4 py-3 text-xs text-slate-400">
         <span>
           {virtualized

@@ -52,6 +52,86 @@ class Settings(BaseSettings):
     )
     password_min_length: int = Field(default=12, ge=12, le=128)
     youtube_api_key: SecretStr | None = None
+    video_search_enabled: bool = True
+    video_search_default_interval_seconds: int = Field(default=3600, ge=60, le=2_592_000)
+    video_search_max_candidates_per_run: int = Field(default=20, ge=1, le=200)
+    video_search_analyzer: Literal["none", "gemini_video", "mock"] = "none"
+    video_search_request_timeout_seconds: float = Field(default=180.0, ge=10.0, le=900.0)
+    video_search_max_upload_bytes: int = Field(default=100_000_000, ge=10_000_000, le=500_000_000)
+    gemini_api_key: SecretStr | None = None
+    gemini_video_model: str = "gemini-3.6-flash"
+
+    # ---- 本地语义检索（pgvector + 自托管 embedding 服务，不依赖任何外部 LLM）----
+    semantic_search_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable local vector retrieval over already-ingested content items. "
+            "Requires the pgvector extension and a reachable embedding backend."
+        ),
+    )
+    embedding_backend: Literal["none", "tei", "ollama"] = Field(
+        default="none",
+        description=(
+            "'tei' talks to an OpenAI-compatible /v1/embeddings endpoint "
+            "(HuggingFace Text Embeddings Inference, vLLM, Infinity, ...); "
+            "'ollama' talks to /api/embed; 'none' disables embedding generation."
+        ),
+    )
+    embedding_base_url: str = Field(
+        default="http://embeddings:80",
+        max_length=2048,
+        description="Base URL of the self-hosted embedding service (Docker-internal).",
+    )
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = Field(
+        default="BAAI/bge-m3",
+        max_length=240,
+        description=(
+            "Embedding model identifier. BGE-M3 is the default: MIT licensed, "
+            "1024 dimensions, strong Chinese/English cross-lingual retrieval."
+        ),
+    )
+    embedding_dimension: int = Field(
+        default=1024,
+        ge=64,
+        le=4096,
+        description=(
+            "Vector width. MUST match the deployed model and the column type created "
+            "by the alembic migration; changing it requires a re-index/backfill."
+        ),
+    )
+    embedding_batch_size: int = Field(default=16, ge=1, le=128)
+    embedding_request_timeout_seconds: float = Field(default=60.0, ge=5.0, le=600.0)
+    embedding_chunk_chars: int = Field(
+        default=700,
+        ge=100,
+        le=4000,
+        description="Target characters per embedded chunk before overlap is applied.",
+    )
+    embedding_chunk_overlap_chars: int = Field(default=100, ge=0, le=1000)
+    embedding_max_chunks_per_item: int = Field(
+        default=200,
+        ge=1,
+        le=5000,
+        description="Safety cap so one very long transcript cannot dominate a backfill run.",
+    )
+    rerank_enabled: bool = Field(
+        default=False,
+        description=(
+            "Re-score the head of the RRF-fused candidate list with a cross-feature "
+            "model (vector similarity + keyword density + recency + source quality). "
+            "Off by default: the fused ranking stays byte-for-byte identical."
+        ),
+    )
+    rerank_top_n: int = Field(
+        default=30,
+        ge=1,
+        le=200,
+        description=(
+            "How many fused candidates enter the rerank stage. The tail keeps its "
+            "fused order, so this bounds the extra cost regardless of 'candidates'."
+        ),
+    )
     platform_request_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     platform_request_max_attempts: int = Field(default=3, ge=1, le=5)
     sync_task_max_retries: int = Field(default=3, ge=0, le=10)
@@ -66,26 +146,135 @@ class Settings(BaseSettings):
             "locked by a task the worker failed to dispatch."
         ),
     )
-    sync_page_limit: int = Field(default=20, ge=1, le=200)
+    sync_page_limit: int = Field(
+        default=5,
+        ge=1,
+        le=200,
+        description=(
+            "How many content-list pages a single account sync ingests. Account "
+            "monitoring only needs recent works, so this is deliberately small: a "
+            "large value forced pathological channels to page for 20+ rounds and "
+            "starved the worker. 5 pages (~250 recent videos) is plenty for a "
+            "periodic monitor."
+        ),
+    )
+    sync_stale_grace_seconds: int = Field(
+        default=120,
+        ge=30,
+        le=1800,
+        description=(
+            "Slack added to sync_run_timeout_seconds to derive when a 'running' "
+            "sync run is declared crashed. A run that respects its own budget can "
+            "never exceed budget+grace, so anything past that lost its worker. "
+            "The generic task_stale_after_seconds (2100s) is far too coarse for "
+            "account sync: a crashed run would hold the account lock for 35 "
+            "minutes, during which the account cannot be synced at all."
+        ),
+    )
+    sync_page_fetch_timeout_seconds: int = Field(
+        default=120,
+        ge=20,
+        le=600,
+        description=(
+            "Hard cap on a single content-list page fetch inside one sync. The "
+            "page-boundary wait_for uses min(remaining_run_budget, this). Capping "
+            "it BELOW the adapter's own extract timeout means a slow/unreachable "
+            "channel fails the page via asyncio.wait_for (which breaks the loop "
+            "and finalises what was ingested) instead of burning the whole run "
+            "budget on retried extracts. Directly serves 'no long stalls'."
+        ),
+    )
+    sync_fetch_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description=(
+            "How many per-video metadata extractions a single account sync may "
+            "run in parallel. Measured on a real YouTube channel (8 works): 28.1s "
+            "sequential, 9.8s at 4, 6.8s at 8. Each adapter clamps this to its own "
+            "platform ceiling (TikTok/Douyin stay low because burst traffic trips "
+            "their anti-bot layer), so raising it never makes a fragile platform "
+            "more aggressive than is safe. Set to 1 to restore the strictly "
+            "sequential legacy behaviour."
+        ),
+    )
+    sync_incremental_probe_size: int = Field(
+        default=15,
+        ge=1,
+        le=200,
+        description=(
+            "Size of the first content-list window for an account we already "
+            "track. Enumerating a channel window is itself a paid network call, "
+            "so a routine sync probes only the head of the reverse-chronological "
+            "catalogue and stops as soon as a whole page is already stored. Later "
+            "pages widen back to the normal window when the probe turns out to be "
+            "all new."
+        ),
+    )
+    sync_fast_list_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable the fast content-listing path: enumerate the channel window "
+            "with a cheap flat catalogue read, then fully extract only the works "
+            "that actually need it (new works, or all works when the workspace "
+            "policy refreshes existing ones). The legacy path re-extracted every "
+            "work in the window on every sync, which dominated sync wall clock. "
+            "Disable to force the legacy single-shot extraction."
+        ),
+    )
+    # yt-dlp / YouTube runtime. Node 22+ is used when present; the explicit
+    # path is useful for Windows hosts and for Docker images with a fixed path.
+    ytdlp_node_path: str | None = None
+    ytdlp_remote_components: str = ""
+    ytdlp_allow_runtime_update: bool = False
+    browser_cdp_endpoint: str = Field(
+        default="http://browser:9222",
+        min_length=8,
+        max_length=240,
+        description="Docker 内置人工登录浏览器的私有 CDP 地址。",
+    )
+    browser_vnc_url: str = Field(
+        default="http://localhost:6080/vnc.html?autoconnect=1&resize=scale",
+        max_length=2048,
+        description="Docker 内置人工登录浏览器的 noVNC 地址。",
+    )
     sync_run_timeout_seconds: int = Field(
-        default=1800,
+        default=300,
         ge=120,
         le=7200,
         description=(
             "Hard wall-clock budget for a single account sync run. When exceeded "
             "the run stops paging, commits whatever it has ingested, and finishes "
-            "as success/degraded instead of running unbounded. Keep this below "
-            "SIO_TASK_STALE_AFTER_SECONDS (default 2100) so healthy-but-slow runs "
-            "are never wrongly flagged as crashed by the stale-recovery watchdog."
+            "as success/degraded instead of running unbounded. Lowered from 1800s "
+            "to 300s: a single account sync must never monopolise a worker for "
+            "minutes. Keep this below SIO_TASK_STALE_AFTER_SECONDS (default 2100) "
+            "so healthy-but-slow runs are never wrongly flagged as crashed by the "
+            "stale-recovery watchdog."
         ),
     )
+
+    @property
+    def sync_stale_after_seconds(self) -> int:
+        """When a ``running`` sync run is considered crashed.
+
+        Derived from the run's own wall-clock budget rather than the generic
+        ``task_stale_after_seconds`` so the watchdog tracks the engine: a run
+        that honours its budget always finishes within
+        ``sync_run_timeout_seconds``; anything beyond that plus the grace window
+        lost its worker and must have its account lock released promptly.
+        Never longer than the generic setting, so tightening that still applies.
+        """
+
+        derived = int(self.sync_run_timeout_seconds) + int(self.sync_stale_grace_seconds)
+        return min(derived, int(self.task_stale_after_seconds))
+
     llm_openai_compatible_base_url: str | None = None
     llm_openai_compatible_api_key: SecretStr | None = None
-    llm_default_model: str = "gpt-4.1-mini"
+    llm_default_model: str = "gpt-5.6-terra"
     llm_default_temperature: float = Field(default=0.4, ge=0.0, le=2.0)
     llm_default_top_p: float = Field(default=1.0, ge=0.0, le=1.0)
-    llm_default_max_tokens: int = Field(default=4096, ge=1, le=131_072)
-    llm_request_timeout_seconds: float = Field(default=60.0, ge=5.0, le=300.0)
+    llm_default_max_tokens: int = Field(default=8192, ge=1, le=131_072)
+    llm_request_timeout_seconds: float = Field(default=90.0, ge=5.0, le=300.0)
     llm_request_max_attempts: int = Field(default=3, ge=1, le=5)
     notification_encryption_key: SecretStr | None = None
     notification_request_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)

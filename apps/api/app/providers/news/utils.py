@@ -21,6 +21,29 @@ TRACKING_QUERY_KEYS = {
 }
 SENSITIVE_QUERY_PARTS = ("api_key", "apikey", "access_token", "token", "secret", "password")
 
+# Docker Desktop / transparent proxy DNS can return synthetic non-global
+# addresses (for example RFC 2544's 198.18.0.0/15) for public media sites.
+# These are the only host families allowed to use the media-download DNS
+# compatibility path; arbitrary URLs still go through the full SSRF check.
+MEDIA_SOURCE_HOST_SUFFIXES = frozenset(
+    {
+        "youtube.com",
+        "youtube-nocookie.com",
+        "youtu.be",
+        "tiktok.com",
+        "douyin.com",
+        "iesdouyin.com",
+        "bilibili.com",
+        "b23.tv",
+        "instagram.com",
+        "facebook.com",
+        "vimeo.com",
+        "twitch.tv",
+        "x.com",
+        "twitter.com",
+    }
+)
+
 
 def clean_text(value: object, *, limit: int = 100_000) -> str | None:
     if value is None:
@@ -107,6 +130,37 @@ async def ensure_public_endpoint(
         if not ipaddress.ip_address(address[4][0]).is_global:
             raise ValueError("source URL resolved to a non-public IP address")
     return normalized
+
+
+def is_known_media_source(value: str) -> bool:
+    """Return whether ``value`` belongs to a supported public media host.
+
+    The check is deliberately suffix-boundary aware so a hostname such as
+    ``youtube.com.attacker.example`` is not treated as YouTube.
+    """
+
+    normalized = validate_source_url(value)
+    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
+    return any(
+        host == suffix or host.endswith(f".{suffix}")
+        for suffix in MEDIA_SOURCE_HOST_SUFFIXES
+    )
+
+
+async def ensure_public_media_endpoint(value: str) -> str:
+    """Validate a downloader URL without rejecting Docker synthetic DNS.
+
+    Supported media hostnames retain literal-IP, local-hostname, credential,
+    and secret-query protections. Only their DNS resolution check is skipped
+    because the downloader may run behind a transparent proxy. Unknown hosts
+    must resolve exclusively to globally routable addresses.
+    """
+
+    normalized = validate_source_url(value)
+    return await ensure_public_endpoint(
+        normalized,
+        skip_dns_check=is_known_media_source(normalized),
+    )
 
 
 def normalize_title(value: str) -> str:

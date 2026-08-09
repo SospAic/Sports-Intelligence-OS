@@ -243,8 +243,16 @@ async def async_client(database_path: str) -> AsyncIterator[httpx.AsyncClient]:
     _seed_database(database_path)
     app = _build_test_app(database_path)
     transport = httpx.ASGITransport(app=app)  # type: ignore[arg-type]
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
-        yield ac
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            yield ac
+    finally:
+        # ASGITransport does not run the app lifespan, so the async engine
+        # created by create_app is never disposed otherwise. Without this,
+        # every async_client test leaks an asyncpg connection pool and the
+        # shared test database exhausts its connections after a few hundred
+        # tests, hanging the whole suite.
+        await app.state.engine.dispose()
 
 
 class RealShapedTestAdapter(PlatformAdapter):

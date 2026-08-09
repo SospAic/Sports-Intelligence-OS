@@ -11,10 +11,12 @@ from app.api.routes import (
     news,
     operations,
     reliability,
+    semantic_search,
     settings,
     topics,
     trends,
     users,
+    video_search,
     view_preferences,
 )
 
@@ -34,3 +36,5 @@ api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
 api_router.include_router(media.router)
 api_router.include_router(download.router)
+api_router.include_router(video_search.router)
+api_router.include_router(semantic_search.router)

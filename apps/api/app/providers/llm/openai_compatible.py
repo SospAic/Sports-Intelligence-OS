@@ -62,6 +62,44 @@ class OpenAICompatibleProvider(LLMProvider):
     def configured(self) -> bool:
         return bool(self.base_url and self._api_key)
 
+    @staticmethod
+    def _is_reasoning_model(model: str) -> bool:
+        """Return whether the model uses the modern reasoning parameter contract.
+
+        OpenAI-compatible gateways commonly expose GPT-5 and o-series models
+        through Chat Completions, but reject sampling parameters such as
+        ``temperature`` and use ``max_completion_tokens`` instead.  Keep this
+        deliberately narrow so ordinary third-party models retain the legacy
+        contract.
+        """
+        normalized = model.strip().casefold()
+        return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
+    @classmethod
+    def _generation_payload(cls, request: LLMRequest, *, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in request.messages
+            ],
+        }
+        if cls._is_reasoning_model(request.model):
+            if "max_completion_tokens" in request.parameters:
+                payload["max_completion_tokens"] = request.parameters["max_completion_tokens"]
+            elif "max_tokens" in request.parameters:
+                payload["max_completion_tokens"] = request.parameters["max_tokens"]
+            if "reasoning_effort" in request.parameters:
+                payload["reasoning_effort"] = request.parameters["reasoning_effort"]
+        else:
+            payload["temperature"] = float(request.parameters.get("temperature", 0.4))
+            for key in ("top_p", "max_tokens", "max_completion_tokens"):
+                if key in request.parameters:
+                    payload[key] = request.parameters[key]
+        if stream:
+            payload["stream"] = True
+        return payload
+
     async def validate_config(self, config: Mapping[str, Any]) -> None:
         if not self.configured:
             raise LLMProviderConfigurationError(
@@ -78,16 +116,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         await self.validate_config(request.parameters)
-        payload: dict[str, Any] = {
-            "model": request.model,
-            "messages": [
-                {"role": message.role, "content": message.content} for message in request.messages
-            ],
-            "temperature": float(request.parameters.get("temperature", 0.4)),
-        }
-        for key in ("top_p", "max_tokens"):
-            if key in request.parameters:
-                payload[key] = request.parameters[key]
+        payload = self._generation_payload(request)
         if request.response_schema is not None:
             payload["response_format"] = {"type": "json_object"}
         headers = {
@@ -178,17 +207,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     async def stream(self, request: LLMRequest) -> AsyncIterator[str]:
         await self.validate_config(request.parameters)
-        payload: dict[str, Any] = {
-            "model": request.model,
-            "messages": [
-                {"role": message.role, "content": message.content} for message in request.messages
-            ],
-            "temperature": float(request.parameters.get("temperature", 0.4)),
-            "stream": True,
-        }
-        for key in ("top_p", "max_tokens"):
-            if key in request.parameters:
-                payload[key] = request.parameters[key]
+        payload = self._generation_payload(request, stream=True)
         # Streaming is incompatible with JSON response format; omit response_format.
         headers = {
             **self.custom_headers,

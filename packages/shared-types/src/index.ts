@@ -300,6 +300,21 @@ export interface RuntimeSettingsRecord {
   warning: string;
 }
 
+export interface YtDlpRuntimeRecord {
+  node_configured_path: string | null;
+  node_resolved_path: string | null;
+  node_available: boolean;
+  node_version: string | null;
+  yt_dlp_version: string | null;
+  ejs_package_expected: boolean;
+  remote_components: string[];
+  update_enabled: boolean;
+  update_command: string;
+  update_note: string;
+  status: "ready" | "degraded";
+  detail: string;
+}
+
 export interface YtDlpSettings {
   dateafter: string;
   datebefore: string;
@@ -330,6 +345,17 @@ export interface YtDlpSettings {
   geo_bypass: boolean;
   geo_bypass_country: string;
   geo_verification_proxy: string;
+  cookies_from_browser:
+    | ""
+    | "brave"
+    | "chrome"
+    | "chromium"
+    | "edge"
+    | "firefox"
+    | "opera"
+    | "safari"
+    | "vivaldi"
+    | "whale";
   ignore_errors: boolean;
   no_warnings: boolean;
   extra_args: Record<string, unknown>;
@@ -715,7 +741,7 @@ export interface NewsSourceRecord {
   id: string;
   workspace_id: string;
   name: string;
-  source_type: "rss" | "atom" | "json" | "manual";
+  source_type: "rss" | "atom" | "json" | "web" | "manual";
   url: string | null;
   category: string;
   language: string | null;
@@ -730,6 +756,8 @@ export interface NewsSourceRecord {
   last_error_code: string | null;
   last_error_message: string | null;
   consecutive_failures: number;
+  active_sync_run_id: string | null;
+  active_sync_status: "queued" | "running" | null;
   created_at: string;
   updated_at: string;
 }

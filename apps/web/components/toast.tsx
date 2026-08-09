@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleCheck, CircleX, X } from "lucide-react";
+import { AlertTriangle, CircleCheck, CircleX, X } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 
-type Toast = { id: number; message: string; type: "success" | "error" };
+type Toast = { id: number; message: string; type: "success" | "warning" | "error" };
 type ToastContextValue = {
   notify: (message: string, type?: Toast["type"]) => void;
 };
@@ -40,10 +40,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`flex items-center gap-3 rounded-xl border p-3 shadow-2xl backdrop-blur ${toast.type === "error" ? "border-rose-700/60 bg-rose-950/95 text-rose-100" : "border-emerald-700/60 bg-emerald-950/95 text-emerald-100"}`}
+            className={`flex items-center gap-3 rounded-xl border p-3 shadow-2xl backdrop-blur ${
+            toast.type === "error"
+              ? "border-rose-700/60 bg-rose-950/95 text-rose-100"
+              : toast.type === "warning"
+                ? "border-amber-700/60 bg-amber-950/95 text-amber-100"
+                : "border-emerald-700/60 bg-emerald-950/95 text-emerald-100"
+          }`}
           >
             {toast.type === "error" ? (
               <CircleX size={18} />
+            ) : toast.type === "warning" ? (
+              <AlertTriangle size={18} />
             ) : (
               <CircleCheck size={18} />
             )}

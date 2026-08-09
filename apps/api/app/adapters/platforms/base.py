@@ -61,6 +61,23 @@ class AdapterCallContext:
     config: Mapping[str, Any]
     observed_at: datetime
     request_id: str
+    # Optional callable that receives live yt-dlp stderr lines (one call per
+    # line) so a sync executor can surface them as a scrolling runtime log.
+    # Carried on the per-call context (never on the shared adapter instance) so
+    # concurrent syncs never clobber each other's sink.
+    progress_sink: Any | None = None
+    # ── Fast-listing hints (see YtDlpAdapter.list_contents) ──────────────────
+    # External ids already stored for this account. An adapter that supports a
+    # cheap "enumerate first, extract later" strategy uses this to skip the
+    # expensive per-video extraction for works we already know about.
+    known_external_ids: frozenset[str] = frozenset()
+    # Whether the workspace sync policy wants known works left untouched. When
+    # False the adapter must still fetch full detail for known works so their
+    # metadata can be refreshed.
+    skip_known: bool = False
+    # Maximum number of concurrent per-video extractions. 1 keeps the strictly
+    # sequential behaviour; higher values trade anti-bot risk for wall clock.
+    fetch_concurrency: int = 1
 
 
 @dataclass(frozen=True)
@@ -154,6 +171,27 @@ class PermissionDeniedError(PlatformAdapterError):
 
 class AdapterNotFoundError(PlatformAdapterError):
     code = "not_found"
+
+
+class LoginRequiredError(PlatformAdapterError):
+    """Raised when login, CAPTCHA, or an interactive security step blocks access.
+
+    Permanent by definition: without credentials the request can never succeed,
+    so retrying only burns the scheduler's budget and delays the one thing that
+    actually fixes it — the operator configuring a cookie. Lives here rather
+    than in ``browser_base`` so yt-dlp and other non-browser adapters can raise
+    it without importing Playwright.
+    """
+
+    code = "login_required"
+    retryable = False
+
+    def __init__(self, platform: str, detail: str = ""):
+        msg = f"平台 {platform} 要求登录后才能访问该数据；公开页采集已停止，请改用官方 API/OAuth。"
+        if detail:
+            msg += f"（{detail}）"
+        super().__init__(msg)
+        self.platform = platform
 
 
 class RateLimitError(PlatformAdapterError):

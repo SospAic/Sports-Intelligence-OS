@@ -265,7 +265,7 @@ describe("生成和通知真实前端流程", () => {
       supports_streaming: false,
       detail: "Only deterministic test output",
       source: "builtin",
-      default_model: "gpt-4.1-mini",
+      default_model: "gpt-5.6-terra",
       default_parameters: {
         temperature: 0.2,
         top_p: 1,
@@ -442,12 +442,12 @@ describe("生成和通知真实前端流程", () => {
       base_url: "https://api.openai.com/v1",
       api_key_configured: false,
       config_masked: {},
-      default_model: "gpt-4.1-mini",
+      default_model: "gpt-5.6-terra",
       default_parameters: {
         temperature: 0.4,
         top_p: 1,
-        max_tokens: 4096,
-        timeout_seconds: 60,
+        max_tokens: 8192,
+        timeout_seconds: 90,
         max_attempts: 3,
       },
       input_cost_per_million: null,
@@ -511,8 +511,7 @@ describe("生成和通知真实前端流程", () => {
     const keyInput = await screen.findByLabelText(/^API Key/);
     await user.type(keyInput, "sk-browser-secret");
     const modelInput = screen.getByLabelText("默认模型");
-    await user.clear(modelInput);
-    await user.type(modelInput, "sports-model-v2");
+    await user.selectOptions(modelInput, "gpt-5.6-sol");
     await user.click(screen.getByRole("button", { name: "保存配置" }));
 
     await waitFor(() =>
@@ -532,10 +531,10 @@ describe("生成和通知真实前端流程", () => {
     const payload = JSON.parse(String(saveCall?.[1]?.body));
     expect(payload).toMatchObject({
       api_key: "sk-browser-secret",
-      default_model: "sports-model-v2",
+      default_model: "gpt-5.6-sol",
       temperature: 0.4,
       top_p: 1,
-      max_tokens: 4096,
+      max_tokens: 8192,
     });
   });
 });

@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -23,7 +24,9 @@ from app.providers.news.base import (
     NewsArticleData,
     NewsCallContext,
     NewsProvider,
+    NewsProviderContractError,
     NewsProviderError,
+    NewsProviderTransientError,
 )
 from app.providers.news.utils import (
     article_hash,
@@ -56,11 +59,20 @@ from app.schemas.news import (
 from app.services.audit import build_audit_entry, build_external_call_attempt
 from app.services.error_detail import business_hint_for
 
+logger = logging.getLogger(__name__)
+
 PROVIDER_BY_SOURCE_TYPE = {
     "rss": "rss",
     "atom": "atom",
     "json": "generic_json",
+    "web": "browser_news",
     "manual": "manual_news",
+}
+DEFAULT_PROVIDER_FALLBACKS = {
+    "rss": ("rss", "atom", "generic_json", "browser_news"),
+    "atom": ("atom", "rss", "generic_json", "browser_news"),
+    "json": ("generic_json", "rss", "atom", "browser_news"),
+    "web": ("browser_news", "rss", "atom", "generic_json"),
 }
 SECRET_CONFIG_MARKERS = ("password", "secret", "token", "api_key", "authorization", "cookie")
 MAX_CONFIG_BYTES = 65_536
@@ -236,8 +248,19 @@ class NewsService:
             enabled=enabled,
             include_quarantined=include_quarantined,
         )
+        source_reads: list[SourceRead] = []
+        for item in items:
+            active = await self.repository.active_run(f"news_source:{item.id}")
+            source_reads.append(
+                SourceRead.model_validate(item).model_copy(
+                    update={
+                        "active_sync_run_id": active.id if active else None,
+                        "active_sync_status": active.status if active else None,
+                    }
+                )
+            )
         return SourcePage(
-            items=[SourceRead.model_validate(item) for item in items],
+            items=source_reads,
             page=page,
             page_size=page_size,
             total=total,
@@ -247,7 +270,13 @@ class NewsService:
         source = await self.repository.source(workspace_id, source_id)
         if source is None:
             raise NewsNotFoundError("source was not found")
-        return SourceRead.model_validate(source)
+        active = await self.repository.active_run(f"news_source:{source.id}")
+        return SourceRead.model_validate(source).model_copy(
+            update={
+                "active_sync_run_id": active.id if active else None,
+                "active_sync_status": active.status if active else None,
+            }
+        )
 
     async def update_source(
         self,
@@ -286,21 +315,37 @@ class NewsService:
         await self.session.refresh(source)
         return SourceRead.model_validate(source)
 
-    async def disable_source(self, workspace_id: UUID, source_id: UUID, actor_id: UUID) -> None:
+    async def set_source_enabled(
+        self, workspace_id: UUID, source_id: UUID, actor_id: UUID, *, enabled: bool
+    ) -> SourceRead:
         source = await self.repository.source(workspace_id, source_id)
         if source is None:
             raise NewsNotFoundError("source was not found")
-        source.enabled = False
-        source.next_sync_at = None
+        source.enabled = enabled
+        if enabled:
+            source.next_sync_at = datetime.now(UTC)
+        else:
+            source.next_sync_at = None
         self._audit(
             workspace_id,
             actor_id,
-            "news.source.disabled",
+            "news.source.enabled" if enabled else "news.source.disabled",
             "news_source",
             source.id,
-            {"enabled": False, "articles_preserved": True},
+            {"enabled": enabled, "articles_preserved": True},
         )
         await self.session.commit()
+        await self.session.refresh(source)
+        active = await self.repository.active_run(f"news_source:{source.id}")
+        return SourceRead.model_validate(source).model_copy(
+            update={
+                "active_sync_run_id": active.id if active else None,
+                "active_sync_status": active.status if active else None,
+            }
+        )
+
+    async def disable_source(self, workspace_id: UUID, source_id: UUID, actor_id: UUID) -> None:
+        await self.set_source_enabled(workspace_id, source_id, actor_id, enabled=False)
 
     async def list_articles(
         self,
@@ -728,17 +773,54 @@ class NewsService:
             return NewsSyncRunRead.model_validate(active), False
         return NewsSyncRunRead.model_validate(run), True
 
+    async def cancel_sync_run(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        run_id: UUID,
+        actor_id: UUID,
+    ) -> NewsSyncRunRead:
+        run = await self.repository.run(run_id)
+        if run is None or run.workspace_id != workspace_id or run.source_id != source_id:
+            raise NewsNotFoundError("news sync run was not found")
+        if run.status not in ("queued", "running"):
+            return NewsSyncRunRead.model_validate(run)
+        now = datetime.now(UTC)
+        run.status = "cancelled"
+        run.finished_at = now
+        run.error_code = "cancelled_by_user"
+        run.error_message = "同步任务已由用户停止"
+        run.error_detail = run.error_message
+        run.error_hint = "已记录停止操作；已获取的历史文章不会删除。"
+        run.metadata_json = {**run.metadata_json, "cancelled_by_user": True}
+        run.lock_key = None
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.source.sync_cancelled",
+            "news_sync_run",
+            run.id,
+            {"source_id": str(source_id), "status": "cancelled"},
+        )
+        await self.session.commit()
+        try:
+            from app.tasks.news import sync_news_source
+
+            sync_news_source.revoke(str(run.id), terminate=True)
+        except Exception as exc:  # pragma: no cover - broker may be unavailable in dev/test
+            logger.debug("news_sync_revoke_unavailable", exc_info=exc)
+        return NewsSyncRunRead.model_validate(run)
+
     async def execute_sync(self, run_id: UUID) -> None:
         run = await self.repository.run(run_id)
         if run is None:
             raise NewsNotFoundError("news sync run was not found")
-        if run.status == "success":
+        if run.status in ("success", "cancelled"):
             return
         source = await self.repository.source(run.workspace_id, run.source_id)
         if source is None:
             await self._sync_error(run, None, "source_not_found", "source was deleted")
             return
-        provider = self.providers.get(run.provider_key)
         now = datetime.now(UTC)
         run.status = "running"
         run.started_at = run.started_at or now
@@ -749,48 +831,94 @@ class NewsService:
         ctx = NewsCallContext(
             config=self._provider_config(source), fetched_at=now, request_id=run.request_id
         )
-        cursor: str | None = None
         created = updated = duplicates = 0
-        attempt_started = datetime.now(UTC)
         attempt_number = int(run.metadata_json.get("retry_count", 0)) + 1
-        try:
-            await provider.validate_source(ctx.config)
-            for _ in range(int(source.config_json.get("max_pages", 10))):
-                start_value = run.metadata_json.get("start")
-                end_value = run.metadata_json.get("end")
-                if isinstance(start_value, str) and isinstance(end_value, str):
-                    page = await provider.fetch_range(
-                        ctx,
-                        start=datetime.fromisoformat(start_value),
-                        end=datetime.fromisoformat(end_value),
-                        cursor=cursor,
-                        limit=100,
-                    )
-                else:
-                    page = await provider.fetch_latest(ctx, cursor=cursor, limit=100)
-                for data in page.items:
-                    _, was_created, duplicate = await self._ingest(source, data)
-                    created += int(was_created)
-                    updated += int(not was_created)
-                    duplicates += int(duplicate)
-                if not page.next_cursor:
-                    break
-                cursor = page.next_cursor
-        except NewsProviderError as exc:
+        strategy_attempts: list[dict[str, Any]] = []
+        selected_provider_key: str | None = None
+        selected_items: list[NewsArticleData] | None = None
+        last_error: NewsProviderError | None = None
+        has_retryable_error = False
+        for provider_key in self._provider_candidates(source):
+            try:
+                provider = self.providers.get(provider_key)
+            except LookupError:
+                continue
+            attempt_started = datetime.now(UTC)
+            try:
+                items = await self._fetch_provider_items(provider, ctx, run)
+                if items is None:
+                    return
+            except NewsProviderError as exc:
+                last_error = exc
+                has_retryable_error = has_retryable_error or exc.retryable
+                strategy_attempts.append(
+                    {"provider": provider_key, "status": "failed", "code": exc.code}
+                )
+                self._record_external_attempt(
+                    run,
+                    source,
+                    attempt_started,
+                    attempt_number,
+                    provider_key=provider_key,
+                    status="failed",
+                    error_code=exc.code,
+                    error_detail=str(exc),
+                    retryable=exc.retryable,
+                )
+                attempt_number += 1
+                continue
+            except Exception as raw_exc:  # noqa: BLE001 - try the next acquisition strategy
+                exc = NewsProviderTransientError(
+                    f"{provider_key} failed unexpectedly: {type(raw_exc).__name__}"
+                )
+                last_error = exc
+                has_retryable_error = True
+                strategy_attempts.append(
+                    {"provider": provider_key, "status": "failed", "code": exc.code}
+                )
+                self._record_external_attempt(
+                    run,
+                    source,
+                    attempt_started,
+                    attempt_number,
+                    provider_key=provider_key,
+                    status="failed",
+                    error_code=exc.code,
+                    error_detail=str(raw_exc),
+                    retryable=True,
+                )
+                attempt_number += 1
+                continue
+            selected_provider_key = provider_key
+            selected_items = items
+            strategy_attempts.append(
+                {"provider": provider_key, "status": "selected", "items": len(items)}
+            )
             self._record_external_attempt(
                 run,
                 source,
                 attempt_started,
                 attempt_number,
-                status="failed",
-                error_code=exc.code,
-                error_detail=str(exc),
-                retryable=exc.retryable,
+                provider_key=provider_key,
+                status="success",
+                response_summary={"items": len(items)},
             )
-            if exc.retryable:
+            break
+
+        run.metadata_json = {
+            **run.metadata_json,
+            "acquisition_strategy": strategy_attempts,
+            "selected_provider": selected_provider_key,
+        }
+        if selected_items is None:
+            exc = last_error or NewsProviderContractError("all news acquisition strategies failed")
+            message = "多策略采集均失败：" + "; ".join(
+                f"{item['provider']}={item.get('code', 'unknown')}" for item in strategy_attempts
+            )
+            if has_retryable_error:
                 run.status = "queued"
                 run.error_code = exc.code
-                run.error_message = str(exc)[:2000]
+                run.error_message = message[:2000]
                 run.error_detail = str(exc)[:2000]
                 run.error_hint = business_hint_for(exc.code, category="news_sync")
                 run.metadata_json = {
@@ -798,40 +926,29 @@ class NewsService:
                     "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
                 }
                 source.last_error_code = exc.code
-                source.last_error_message = str(exc)[:2000]
+                source.last_error_message = message[:2000]
                 self._schedule_source_backoff(source)
                 await self.session.commit()
-                raise RetryableNewsSyncError(str(exc)) from exc
+                raise RetryableNewsSyncError(message) from exc
+            await self._sync_error(run, source, exc.code, message)
+            return
+
+        try:
+            for data in selected_items:
+                _, was_created, duplicate = await self._ingest(source, data)
+                created += int(was_created)
+                updated += int(not was_created)
+                duplicates += int(duplicate)
+        except NewsProviderError as exc:
             await self._sync_error(run, source, exc.code, str(exc))
             return
-        except Exception as exc:
-            self._record_external_attempt(
-                run,
-                source,
-                attempt_started,
-                attempt_number,
-                status="failed",
-                error_code="unexpected_news_sync_error",
-                error_detail=str(exc),
-                retryable=False,
-            )
-            await self._sync_error(
-                run, source, "unexpected_news_sync_error", "Unexpected news synchronization error"
-            )
-            raise
+        except Exception as exc:  # noqa: BLE001 - keep already-fetched items durable
+            await self._sync_error(run, source, "unexpected_news_sync_error", str(exc))
+            return
+        await self.session.refresh(run)
+        if run.status == "cancelled":
+            return
         finished = datetime.now(UTC)
-        self._record_external_attempt(
-            run,
-            source,
-            attempt_started,
-            attempt_number,
-            status="success",
-            response_summary={
-                "records_created": created,
-                "records_updated": updated,
-                "duplicates": duplicates,
-            },
-        )
         run.status = "success"
         run.finished_at = finished
         run.records_created = created
@@ -846,6 +963,43 @@ class NewsService:
         source.last_error_message = None
         source.consecutive_failures = 0
         await self.session.commit()
+
+    def _provider_candidates(self, source: Source) -> tuple[str, ...]:
+        configured = source.config_json.get("acquisition_fallbacks")
+        raw = configured if isinstance(configured, list) else DEFAULT_PROVIDER_FALLBACKS.get(
+            source.source_type, (source.provider_key, "browser_news")
+        )
+        candidates = [source.provider_key, *(str(item) for item in raw)]
+        return tuple(dict.fromkeys(candidates))
+
+    async def _fetch_provider_items(
+        self, provider: NewsProvider, ctx: NewsCallContext, run: NewsSyncRun
+    ) -> list[NewsArticleData] | None:
+        await provider.validate_source(ctx.config)
+        items: list[NewsArticleData] = []
+        cursor: str | None = None
+        max_pages = max(1, min(int(ctx.config.get("max_pages", 10)), 50))
+        for _ in range(max_pages):
+            await self.session.refresh(run)
+            if run.status == "cancelled":
+                return None
+            start_value = run.metadata_json.get("start")
+            end_value = run.metadata_json.get("end")
+            if isinstance(start_value, str) and isinstance(end_value, str):
+                page = await provider.fetch_range(
+                    ctx,
+                    start=datetime.fromisoformat(start_value),
+                    end=datetime.fromisoformat(end_value),
+                    cursor=cursor,
+                    limit=100,
+                )
+            else:
+                page = await provider.fetch_latest(ctx, cursor=cursor, limit=100)
+            items.extend(page.items)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return items
 
     async def mark_retry_exhausted(self, run_id: UUID, message: str) -> None:
         run = await self.repository.run(run_id)
@@ -956,6 +1110,7 @@ class NewsService:
         started_at: datetime,
         attempt_number: int,
         *,
+        provider_key: str | None = None,
         status: str,
         error_code: str | None = None,
         error_detail: str | None = None,
@@ -968,7 +1123,7 @@ class NewsService:
                 id=uuid4(),
                 workspace_id=run.workspace_id,
                 call_type="news_sync",
-                provider_key=run.provider_key,
+                provider_key=provider_key or run.provider_key,
                 entity_type="news_source",
                 entity_id=source.id,
                 attempt_number=attempt_number,

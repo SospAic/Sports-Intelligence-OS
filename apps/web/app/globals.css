@@ -60,11 +60,63 @@ a {
 :root[data-theme="light"] body {
   background: var(--background);
 }
+/* Light-theme overrides: remap the dark slate/black panel utilities used all
+   over the app to light surfaces. This keeps the existing (token-light) design
+   but makes every `bg-slate-9xx/N`, `bg-slate-8xx` and their hover variants
+   render as light panels in light mode instead of near-black. */
 :root[data-theme="light"] .bg-slate-950,
-:root[data-theme="light"] .bg-slate-950\/70,
+:root[data-theme="light"] .bg-slate-950\/95,
 :root[data-theme="light"] .bg-slate-950\/80,
-:root[data-theme="light"] .bg-slate-950\/95 {
+:root[data-theme="light"] .bg-slate-950\/75,
+:root[data-theme="light"] .bg-slate-950\/70 {
   background-color: rgba(255, 255, 255, 0.94) !important;
+}
+:root[data-theme="light"] .bg-slate-950\/60 {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+}
+:root[data-theme="light"] .bg-slate-950\/50 {
+  background-color: rgba(255, 255, 255, 0.86) !important;
+}
+:root[data-theme="light"] .bg-slate-950\/45 {
+  background-color: rgba(255, 255, 255, 0.84) !important;
+}
+:root[data-theme="light"] .bg-slate-950\/40 {
+  background-color: rgba(255, 255, 255, 0.82) !important;
+}
+:root[data-theme="light"] .bg-slate-950\/30 {
+  background-color: rgba(255, 255, 255, 0.78) !important;
+}
+:root[data-theme="light"] .bg-slate-900,
+:root[data-theme="light"] .bg-slate-900\/80,
+:root[data-theme="light"] .bg-slate-900\/60 {
+  background-color: rgba(248, 250, 252, 0.92) !important;
+}
+:root[data-theme="light"] .bg-slate-900\/50 {
+  background-color: rgba(248, 250, 252, 0.9) !important;
+}
+:root[data-theme="light"] .bg-slate-900\/40 {
+  background-color: rgba(248, 250, 252, 0.86) !important;
+}
+:root[data-theme="light"] .bg-slate-900\/30 {
+  background-color: rgba(248, 250, 252, 0.82) !important;
+}
+:root[data-theme="light"] .bg-slate-800,
+:root[data-theme="light"] .bg-slate-800\/70,
+:root[data-theme="light"] .bg-slate-800\/60 {
+  background-color: rgba(241, 245, 249, 0.9) !important;
+}
+:root[data-theme="light"] .bg-slate-800\/40 {
+  background-color: rgba(241, 245, 249, 0.85) !important;
+}
+:root[data-theme="light"] .bg-slate-700,
+:root[data-theme="light"] .bg-slate-700\/80 {
+  background-color: rgba(226, 232, 240, 0.92) !important;
+}
+:root[data-theme="light"] .bg-slate-700\/40 {
+  background-color: rgba(226, 232, 240, 0.7) !important;
+}
+:root[data-theme="light"] .bg-slate-600 {
+  background-color: rgba(203, 213, 225, 0.9) !important;
 }
 :root[data-theme="light"] .text-white,
 :root[data-theme="light"] .text-slate-100,
@@ -75,9 +127,48 @@ a {
 :root[data-theme="light"] .text-slate-400 {
   color: #52637a !important;
 }
+:root[data-theme="light"] .text-slate-500 {
+  color: #64748b !important;
+}
+:root[data-theme="light"] .text-cyan-100,
+:root[data-theme="light"] .text-cyan-200,
+:root[data-theme="light"] .text-cyan-300 {
+  color: #0e7490 !important;
+}
+:root[data-theme="light"] .text-amber-200,
+:root[data-theme="light"] .text-amber-300 {
+  color: #92400e !important;
+}
+:root[data-theme="light"] .text-emerald-300 {
+  color: #047857 !important;
+}
+:root[data-theme="light"] .text-rose-200 {
+  color: #be123c !important;
+}
 :root[data-theme="light"] .border-slate-800,
 :root[data-theme="light"] .border-slate-700 {
   border-color: rgba(51, 65, 85, 0.2) !important;
+}
+:root[data-theme="light"] .border-slate-800\/60,
+:root[data-theme="light"] .border-slate-700\/80,
+:root[data-theme="light"] .border-slate-700\/50 {
+  border-color: rgba(51, 65, 85, 0.16) !important;
+}
+:root[data-theme="light"] .border-slate-600 {
+  border-color: rgba(71, 85, 105, 0.3) !important;
+}
+/* Hover surfaces should also lift to a faint light tint, not turn dark. */
+:root[data-theme="light"] .hover\:bg-slate-800:hover,
+:root[data-theme="light"] .hover\:bg-slate-900:hover,
+:root[data-theme="light"] .hover\:bg-slate-950:hover,
+:root[data-theme="light"] .hover\:bg-slate-700:hover,
+:root[data-theme="light"] .hover\:bg-slate-900\/60:hover,
+:root[data-theme="light"] .hover\:bg-slate-900\/50:hover,
+:root[data-theme="light"] .hover\:bg-slate-900\/40:hover,
+:root[data-theme="light"] .hover\:bg-slate-900\/70:hover,
+:root[data-theme="light"] .hover\:bg-slate-900\/30:hover,
+:root[data-theme="light"] .hover\:bg-slate-700\/60:hover {
+  background-color: rgba(15, 23, 42, 0.06) !important;
 }
 :root[data-theme="light"] header.sticky {
   background: rgba(255, 255, 255, 0.9) !important;

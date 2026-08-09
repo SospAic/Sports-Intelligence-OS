@@ -70,6 +70,65 @@ def test_account_avatar_is_fetched_cached_and_served(
     assert list(tmp_path.glob("avatars/*"))
 
 
+def test_account_avatar_cache_invalidated_on_url_change(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Changing an account's avatar_url must invalidate the local cache even
+    when the new URL keeps the same file extension — otherwise the route keeps
+    serving the previously cached, now-wrong image."""
+    monkeypatch.setattr("app.api.routes.media.MEDIA_ROOT", str(tmp_path))
+    fetch_calls: list[str] = []
+
+    def fake_fetch(url: str, timeout: int = 10) -> bytes:
+        fetch_calls.append(url)
+        return FAKE_PNG
+
+    monkeypatch.setattr("app.api.routes.media._fetch_remote_bytes", fake_fetch)
+
+    csrf_token = authenticate(client)
+    account = _create_with_avatar(client, csrf_token, "https://example.com/avatar.png")
+
+    first = client.get(f"/api/v1/accounts/{account['id']}/avatar")
+    assert first.status_code == 200
+    assert len(fetch_calls) == 1
+
+    # Re-request: served from cache, no new fetch.
+    second = client.get(f"/api/v1/accounts/{account['id']}/avatar")
+    assert second.status_code == 200
+    assert len(fetch_calls) == 1
+
+    # Update the avatar URL (same extension) and request again.
+    patch = client.patch(
+        f"/api/v1/accounts/{account['id']}",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"avatar_url": "https://example.com/new-avatar.png"},
+    )
+    assert patch.status_code == 200, patch.text
+
+    third = client.get(f"/api/v1/accounts/{account['id']}/avatar")
+    assert third.status_code == 200
+    assert third.content == FAKE_PNG
+    # The new URL had to be fetched — the stale cached copy was not served.
+    assert len(fetch_calls) == 2
+    assert fetch_calls[-1] == "https://example.com/new-avatar.png"
+
+
+def test_avatar_cache_path_depends_on_url() -> None:
+    """Two different URLs (same extension) must map to different cache files,
+    and the same URL must be deterministic — this is what stops a changed
+    remote avatar from silently serving the old local copy."""
+    from app.api.routes.media import _avatar_cache_path
+
+    aid = uuid4()
+    a = _avatar_cache_path(aid, "https://example.com/a.png")
+    b = _avatar_cache_path(aid, "https://example.com/b.png")
+    assert a != b
+    assert _avatar_cache_path(aid, "https://example.com/a.png") == a
+    assert str(aid) in a
+
+
 def test_account_avatar_404_without_url(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

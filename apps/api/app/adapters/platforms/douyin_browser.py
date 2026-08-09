@@ -27,14 +27,17 @@ from app.adapters.platforms.base import (
     AdapterCapability,
     AdapterContractError,
     AdapterDescriptor,
-    AdapterNotFoundError,
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
     PlatformMetricsData,
     TransientAdapterError,
 )
-from app.adapters.platforms.browser_base import BrowserPlatformAdapter, LoginRequiredError
+from app.adapters.platforms.browser_base import (
+    BrowserPlatformAdapter,
+    LoginRequiredError,
+    reraise_if_terminal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,8 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
 
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "抖音")
 
             display_name = ""
             avatar_url = None
@@ -184,11 +189,13 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             if not display_name:
                 display_name = f"用户 {sec_uid[:12]}"
 
-            if not avatar_url:
+            # B: only attempt a DOM avatar fallback when the authoritative XHR
+            # returned data. On a walled page (user_data is None) we must NOT
+            # grab the page's default avatar. C: tightened to the real avatar
+            # container (no broad [class*='avatar'] / img.avatar).
+            if not avatar_url and user_data is not None:
                 try:
-                    img_el = page.locator(
-                        "[class*='avatar'] img, .user-avatar img, img.avatar"
-                    ).first
+                    img_el = page.locator(".user-avatar img").first
                     avatar_url = await img_el.get_attribute("src")
                 except Exception:
                     pass
@@ -224,8 +231,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                 metadata={"method": "browser_scrape", "locator": locator},
             )
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser scrape failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -244,6 +250,8 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             url = f"https://www.douyin.com/user/{external_id}"
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "抖音")
 
             follower_count = None
             like_count = None
@@ -335,7 +343,9 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             url = f"https://www.douyin.com/user/{external_account_id}"
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
-            await self._scroll_page(page, times=2)
+            # Anonymous-first: stop before scrolling a page that will never load.
+            await self._check_login_required(page, "抖音")
+            await self._scroll_page(page, times=2, ctx=ctx)
 
             # If API interception got data, use it.
             if post_data:
@@ -465,8 +475,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
 
             return AdapterPage(items=tuple(items_dom), next_cursor=None)
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser list_contents failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -480,6 +489,8 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             url = DOUYIN_VIDEO_URL.format(aweme_id=external_id)
             await page.goto(url, wait_until="domcontentloaded")
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "抖音")
 
             title = await page.title()
             title = title.replace(" - 抖音", "").strip()

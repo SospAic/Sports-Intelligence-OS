@@ -26,14 +26,17 @@ from app.adapters.platforms.base import (
     AdapterCapability,
     AdapterContractError,
     AdapterDescriptor,
-    AdapterNotFoundError,
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
     PlatformMetricsData,
     TransientAdapterError,
 )
-from app.adapters.platforms.browser_base import BrowserPlatformAdapter, LoginRequiredError
+from app.adapters.platforms.browser_base import (
+    BrowserPlatformAdapter,
+    LoginRequiredError,
+    reraise_if_terminal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +187,8 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             url = YT_CHANNEL_URL.format(handle=handle)
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "YouTube")
 
             # Try intercepted data first.
             display_name = ""
@@ -214,7 +219,11 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             if not display_name:
                 display_name = f"@{handle}"
 
-            if not avatar_url:
+            # B: only attempt a DOM avatar fallback when the authoritative
+            # youtubei/browse XHR returned the channel header. On a walled page
+            # (channel_data is None) we must NOT grab a default/generic image.
+            # The selector below is already precise (no broad [class*='avatar']).
+            if not avatar_url and channel_data is not None:
                 try:
                     img_el = page.locator("#channel-header img, yt-img-shadow#avatar img").first
                     avatar_url = await img_el.get_attribute("src")
@@ -250,8 +259,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
                 },
             )
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser scrape failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -271,6 +279,8 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             url = YT_CHANNEL_URL.format(handle=handle)
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "YouTube")
 
             subscriber_count = None
             try:
@@ -340,7 +350,9 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             url = f"{YT_CHANNEL_URL.format(handle=handle)}/videos"
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
-            await self._scroll_page(page, times=3)
+            # Anonymous-first: stop before scrolling a page that will never load.
+            await self._check_login_required(page, "YouTube")
+            await self._scroll_page(page, times=3, ctx=ctx)
 
             # Wait for video renderers.
             try:
@@ -357,8 +369,7 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             next_cursor = None
             return AdapterPage(items=tuple(items), next_cursor=next_cursor)
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser list_contents failed: {type(exc).__name__}: {exc}"
             ) from exc
@@ -449,6 +460,8 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             url = YT_VIDEO_URL.format(video_id=external_id)
             await page.goto(url, wait_until="domcontentloaded")
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "YouTube")
 
             title = await page.title()
             title = title.replace(" - YouTube", "").strip()

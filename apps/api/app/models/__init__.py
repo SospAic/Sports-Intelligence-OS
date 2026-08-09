@@ -9,6 +9,7 @@ from app.models.automation import (
 )
 from app.models.download import Download
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
+from app.models.embedding import ContentEmbedding, Vector, encode_vector
 from app.models.generation import (
     GenerationRun,
     GenerationStep,
@@ -57,6 +58,7 @@ from app.models.sync import SyncRun, SyncRunEvent
 from app.models.topics import SavedTopic
 from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.models.user import User
+from app.models.video_search import VideoSearchCandidate, VideoSearchPlan, VideoSearchRun
 from app.models.view_preference import UserViewPreference
 from app.models.workspace import Workspace, WorkspaceMembership
 
@@ -70,6 +72,7 @@ __all__ = [
     "AutomationEvaluation",
     "AutomationRule",
     "AutomationRuntimeState",
+    "ContentEmbedding",
     "ContentItem",
     "ContentSnapshot",
     "CrossPlatformLink",
@@ -115,6 +118,11 @@ __all__ = [
     "TrendVideo",
     "User",
     "UserViewPreference",
+    "Vector",
+    "VideoSearchCandidate",
+    "VideoSearchPlan",
+    "VideoSearchRun",
     "Workspace",
     "WorkspaceMembership",
+    "encode_vector",
 ]

@@ -31,19 +31,44 @@ x-backend-environment: &backend-environment
   SIO_BOOTSTRAP_ADMIN_PASSWORD: ${SIO_BOOTSTRAP_ADMIN_PASSWORD:-}
   SIO_BOOTSTRAP_WORKSPACE_NAME: ${SIO_BOOTSTRAP_WORKSPACE_NAME:-Content Intelligence OS}
   SIO_YOUTUBE_API_KEY: ${SIO_YOUTUBE_API_KEY:-}
+  SIO_VIDEO_SEARCH_ENABLED: ${SIO_VIDEO_SEARCH_ENABLED:-true}
+  SIO_VIDEO_SEARCH_DEFAULT_INTERVAL_SECONDS: ${SIO_VIDEO_SEARCH_DEFAULT_INTERVAL_SECONDS:-3600}
+  SIO_VIDEO_SEARCH_MAX_CANDIDATES_PER_RUN: ${SIO_VIDEO_SEARCH_MAX_CANDIDATES_PER_RUN:-20}
+  SIO_VIDEO_SEARCH_ANALYZER: ${SIO_VIDEO_SEARCH_ANALYZER:-none}
+  SIO_VIDEO_SEARCH_REQUEST_TIMEOUT_SECONDS: ${SIO_VIDEO_SEARCH_REQUEST_TIMEOUT_SECONDS:-180}
+  SIO_VIDEO_SEARCH_MAX_UPLOAD_BYTES: ${SIO_VIDEO_SEARCH_MAX_UPLOAD_BYTES:-100000000}
+  SIO_GEMINI_API_KEY: ${SIO_GEMINI_API_KEY:-}
+  SIO_GEMINI_VIDEO_MODEL: ${SIO_GEMINI_VIDEO_MODEL:-gemini-3.6-flash}
+  # 本地语义检索（pgvector + 自托管 embedding，不依赖外部 LLM）
+  SIO_SEMANTIC_SEARCH_ENABLED: ${SIO_SEMANTIC_SEARCH_ENABLED:-false}
+  SIO_EMBEDDING_BACKEND: ${SIO_EMBEDDING_BACKEND:-none}
+  SIO_EMBEDDING_BASE_URL: ${SIO_EMBEDDING_BASE_URL:-http://embeddings:80}
+  SIO_EMBEDDING_API_KEY: ${SIO_EMBEDDING_API_KEY:-}
+  SIO_EMBEDDING_MODEL: ${SIO_EMBEDDING_MODEL:-BAAI/bge-m3}
+  SIO_EMBEDDING_DIMENSION: ${SIO_EMBEDDING_DIMENSION:-1024}
+  SIO_EMBEDDING_BATCH_SIZE: ${SIO_EMBEDDING_BATCH_SIZE:-16}
+  SIO_EMBEDDING_REQUEST_TIMEOUT_SECONDS: ${SIO_EMBEDDING_REQUEST_TIMEOUT_SECONDS:-60}
+  SIO_EMBEDDING_CHUNK_CHARS: ${SIO_EMBEDDING_CHUNK_CHARS:-700}
+  SIO_EMBEDDING_CHUNK_OVERLAP_CHARS: ${SIO_EMBEDDING_CHUNK_OVERLAP_CHARS:-100}
+  SIO_EMBEDDING_MAX_CHUNKS_PER_ITEM: ${SIO_EMBEDDING_MAX_CHUNKS_PER_ITEM:-200}
   SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS: ${SIO_PLATFORM_REQUEST_TIMEOUT_SECONDS:-10}
   SIO_PLATFORM_REQUEST_MAX_ATTEMPTS: ${SIO_PLATFORM_REQUEST_MAX_ATTEMPTS:-3}
   SIO_SYNC_TASK_MAX_RETRIES: ${SIO_SYNC_TASK_MAX_RETRIES:-3}
   SIO_TASK_STALE_AFTER_SECONDS: ${SIO_TASK_STALE_AFTER_SECONDS:-2100}
   SIO_SYNC_PAGE_LIMIT: ${SIO_SYNC_PAGE_LIMIT:-20}
+  SIO_YTDLP_NODE_PATH: ${SIO_YTDLP_NODE_PATH:-/usr/local/bin/node}
+  SIO_YTDLP_REMOTE_COMPONENTS: ${SIO_YTDLP_REMOTE_COMPONENTS:-}
+  SIO_YTDLP_ALLOW_RUNTIME_UPDATE: ${SIO_YTDLP_ALLOW_RUNTIME_UPDATE:-false}
+  SIO_BROWSER_CDP_ENDPOINT: ${SIO_BROWSER_CDP_ENDPOINT:-http://browser:9222}
+  SIO_BROWSER_VNC_URL: ${SIO_BROWSER_VNC_URL:-http://localhost:6080/vnc.html?autoconnect=1&resize=scale}
   SIO_NEWS_SSRF_CHECK_ENABLED: ${SIO_NEWS_SSRF_CHECK_ENABLED:-true}
   SIO_LLM_OPENAI_COMPATIBLE_BASE_URL: ${SIO_LLM_OPENAI_COMPATIBLE_BASE_URL:-}
   SIO_LLM_OPENAI_COMPATIBLE_API_KEY: ${SIO_LLM_OPENAI_COMPATIBLE_API_KEY:-}
-  SIO_LLM_DEFAULT_MODEL: ${SIO_LLM_DEFAULT_MODEL:-gpt-4.1-mini}
+  SIO_LLM_DEFAULT_MODEL: ${SIO_LLM_DEFAULT_MODEL:-gpt-5.6-terra}
   SIO_LLM_DEFAULT_TEMPERATURE: ${SIO_LLM_DEFAULT_TEMPERATURE:-0.4}
   SIO_LLM_DEFAULT_TOP_P: ${SIO_LLM_DEFAULT_TOP_P:-1.0}
-  SIO_LLM_DEFAULT_MAX_TOKENS: ${SIO_LLM_DEFAULT_MAX_TOKENS:-4096}
-  SIO_LLM_REQUEST_TIMEOUT_SECONDS: ${SIO_LLM_REQUEST_TIMEOUT_SECONDS:-60}
+  SIO_LLM_DEFAULT_MAX_TOKENS: ${SIO_LLM_DEFAULT_MAX_TOKENS:-8192}
+  SIO_LLM_REQUEST_TIMEOUT_SECONDS: ${SIO_LLM_REQUEST_TIMEOUT_SECONDS:-90}
   SIO_LLM_REQUEST_MAX_ATTEMPTS: ${SIO_LLM_REQUEST_MAX_ATTEMPTS:-3}
   SIO_LLM_INTERNAL_HOSTS_ALLOWLIST: '["llm-gateway","llm-experimental"]'
   SIO_BROWSER_FIRST_MODE: ${SIO_BROWSER_FIRST_MODE:-false}
@@ -55,7 +80,11 @@ x-backend-environment: &backend-environment
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # postgres:17-alpine + 自编译 pgvector（见 deploy/postgres.Dockerfile 顶部注释）
+    build:
+      context: .
+      dockerfile: deploy/postgres.Dockerfile
+    image: sports-intelligence-os-postgres:17-pgvector
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sports_intelligence}
       POSTGRES_USER: ${POSTGRES_USER:-sio}
@@ -107,6 +136,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      browser:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -119,6 +150,44 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    restart: unless-stopped
+
+  browser:
+    build:
+      context: .
+      dockerfile: deploy/browser.Dockerfile
+    environment:
+      DISPLAY: ${SIO_BROWSER_DISPLAY:-:99}
+      PLAYWRIGHT_BROWSERS_PATH: /opt/browsers
+      SIO_BROWSER_PROFILE_DIR: /workspace/browser-profile
+      SIO_BROWSER_CDP_PORT: ${SIO_BROWSER_CDP_PORT:-9222}
+      SIO_BROWSER_CHROME_CDP_PORT: ${SIO_BROWSER_CHROME_CDP_PORT:-9223}
+      SIO_BROWSER_CDP_PUBLIC_HOST: ${SIO_BROWSER_CDP_PUBLIC_HOST:-browser}
+      SIO_BROWSER_VNC_PORT: ${SIO_BROWSER_VNC_PORT:-6080}
+    user: root
+    command:
+      [
+        "/bin/sh",
+        "-lc",
+        "chown -R sio:sio /workspace/browser-profile && exec su sio -s /bin/sh -c 'python /workspace/scripts/run_docker_browser.py'",
+      ]
+    shm_size: "2gb"
+    ports:
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - docker_browser_profile:/workspace/browser-profile
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9222/json/version', timeout=3)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
     restart: unless-stopped
 
   worker:
@@ -135,7 +204,7 @@ services:
         "apps.worker.celery_app:celery_app",
         "worker",
         "--loglevel=INFO",
-        "--queues=maintenance,monitoring,news,generation,automation,notification",
+        "--queues=maintenance,monitoring,news,generation,automation,notification,video-search",
       ]
     depends_on:
       api:
@@ -249,5 +318,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  docker_browser_profile:
   llm_gateway_data:
   llm_experimental_data:

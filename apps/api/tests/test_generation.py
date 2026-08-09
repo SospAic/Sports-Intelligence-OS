@@ -143,6 +143,23 @@ def test_generation_freezes_only_bounded_creator_controls() -> None:
     }
 
 
+def test_generation_freezes_selected_video_subtitles() -> None:
+    context = GenerationService._video_context(
+        {
+            "video_context": {
+                "name": "A tracked video",
+                "subtitleLangs": ["en"],
+                "subtitles": [{"lang": "en", "text": "First verified line"}],
+            }
+        }
+    )
+    assert context == {
+        "name": "A tracked video",
+        "subtitle_langs": ["en"],
+        "subtitles": [{"lang": "en", "text": "First verified line"}],
+    }
+
+
 async def _seed_defaults(database_path: Path) -> None:
     settings = Settings(
         environment="test",

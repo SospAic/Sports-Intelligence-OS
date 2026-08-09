@@ -27,14 +27,17 @@ from app.adapters.platforms.base import (
     AdapterCapability,
     AdapterContractError,
     AdapterDescriptor,
-    AdapterNotFoundError,
     AdapterPage,
     PlatformAccountData,
     PlatformContentData,
     PlatformMetricsData,
     TransientAdapterError,
 )
-from app.adapters.platforms.browser_base import BrowserPlatformAdapter, LoginRequiredError
+from app.adapters.platforms.browser_base import (
+    BrowserPlatformAdapter,
+    LoginRequiredError,
+    reraise_if_terminal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +95,8 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
         if not username:
             raise AdapterContractError(f"cannot extract username from locator: {locator}")
 
-        context, page = await self._new_page(ctx)
+        url = TIKTOK_PROFILE_URL.format(username=username)
+        context = None
         try:
             # Intercept SIGI_STATE or __UNIVERSAL_DATA_FOR_REHYDRATION__
             profile_data: dict[str, Any] | None = None
@@ -101,8 +105,8 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 nonlocal profile_data
                 if profile_data is not None:
                     return
-                url = response.url
-                if "/api/user/detail" in url or "/api/post/item_list" in url:
+                resp_url = response.url
+                if "/api/user/detail" in resp_url or "/api/post/item_list" in resp_url:
                     try:
                         data = await response.json()
                         if "userInfo" in data:
@@ -110,11 +114,16 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                     except Exception:
                         pass
 
-            page.on("response", _capture)
-
-            url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
+            context, page = await self._navigate(
+                ctx,
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.page_load_timeout_ms,
+                response_handler=_capture,
+            )
             await self._polite_delay(2.0)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "TikTok")
 
             # Try to extract from embedded JSON (SIGI_STATE).
             display_name = ""
@@ -165,12 +174,32 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             if not display_name:
                 display_name = f"@{username}"
 
-            if not avatar_url:
+            # B: a fully blocked / anti-bot TikTok page yields neither the XHR
+            # profile data nor any DOM identity, so display_name falls back to
+            # the synthetic "@{username}". Treat that as a login wall (consistent
+            # with fetch_account_analytics) rather than caching a shared default
+            # avatar for every walled account.
+            #
+            # This must be a *permanent* error. Anonymous access to a walled
+            # profile fails identically every time, so retrying spends the whole
+            # budget (3 attempts x ~41s = ~2m53s per account, every scheduled
+            # sync) to arrive at the same wall, and reports a useless
+            # "retry_exhausted" instead of the actionable "configure a cookie".
+            if not profile_data and display_name == f"@{username}":
+                raise LoginRequiredError(
+                    "TikTok",
+                    "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie",
+                )
+
+            # C: only attempt a DOM avatar fallback when the authoritative XHR
+            # actually returned data. On a walled page (profile_data is None) we
+            # must NOT grab the page's default grey avatar. The selector is also
+            # tightened to the real avatar containers (no broad [class*='avatar']).
+            if not avatar_url and profile_data is not None:
                 try:
                     img_el = page.locator(
                         "[data-e2e='browse-user-avatar'] img, "
-                        ".tiktok-1zpj2q-ImgAvatar img, "
-                        "[class*='avatar'] img, img.avatar"
+                        ".tiktok-1zpj2q-ImgAvatar img"
                     ).first
                     avatar_url = await img_el.get_attribute("src")
                 except Exception:
@@ -210,13 +239,13 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 },
             )
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser scrape failed: {type(exc).__name__}: {exc}"
             ) from exc
         finally:
-            await context.close()
+            if context is not None:
+                await context.close()
 
     async def fetch_account(self, ctx: AdapterCallContext, external_id: str) -> PlatformAccountData:
         return await self.resolve_account(ctx, external_id)
@@ -226,11 +255,18 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
     ) -> PlatformMetricsData:
         """Extract follower/like counts from the profile page."""
         username = external_id.lstrip("@")
-        context, page = await self._new_page(ctx)
+        url = TIKTOK_PROFILE_URL.format(username=username)
+        context = None
         try:
-            url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
+            context, page = await self._navigate(
+                ctx,
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.page_load_timeout_ms,
+            )
             await self._polite_delay(2.0)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "TikTok")
 
             follower_count = None
             like_count = None
@@ -280,10 +316,15 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 follower_count is None and like_count is None and video_count is None
             )
             if extraction_failed:
-                logger.warning(
-                    "tiktok_browser: all metrics extraction failed for %s — "
-                    "anti-bot wall or page structure changed",
-                    username,
+                # TikTok served a logged-out / anti-bot limited page: the
+                # rehydration JSON and the count DOM elements are both absent.
+                # Surface the wall explicitly instead of silently returning an
+                # all-None metrics object that downstream code can only label
+                # with a vague "指标提取失败". Permanent, not retryable — see the
+                # matching branch in ``resolve_account``.
+                raise LoginRequiredError(
+                    "TikTok",
+                    "公开页未返回账号指标（反爬/未登录拦截），需配置登录态 cookie",
                 )
             return PlatformMetricsData(
                 external_id=username,
@@ -293,10 +334,11 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 provider=self.key,
                 fetched_at=ctx.observed_at,
                 unavailable_metrics=unavailable,
-                metadata={"method": "browser_scrape", "extraction_failure": extraction_failed},
+                metadata={"method": "browser_scrape", "analytics_fetched": True},
             )
         finally:
-            await context.close()
+            if context is not None:
+                await context.close()
 
     async def list_contents(
         self,
@@ -309,14 +351,22 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
     ) -> AdapterPage:
         """Scrape the video list from the profile page."""
         username = external_account_id.lstrip("@")
-        context, page = await self._new_page(ctx)
+        url = TIKTOK_PROFILE_URL.format(username=username)
+        context = None
         try:
-            url = TIKTOK_PROFILE_URL.format(username=username)
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
+            context, page = await self._navigate(
+                ctx,
+                url,
+                wait_until="domcontentloaded",
+                timeout=self.page_load_timeout_ms,
+            )
             await self._polite_delay(2.0)
+            # Anonymous-first: stop before paying for 10 scroll rounds on a page
+            # that will never render the grid.
+            await self._check_login_required(page, "TikTok")
             # Scroll further than the default (10×) so TikTok lazily renders more
             # of the video grid before we scrape the anchors.
-            await self._scroll_page(page, times=10)
+            await self._scroll_page(page, times=10, ctx=ctx)
 
             # The video grid renders as anchors whose href contains "/video/".
             # (Legacy selectors such as [data-e2e='user-post-item'] are no longer
@@ -399,22 +449,25 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
 
             return AdapterPage(items=tuple(items), next_cursor=None)
         except Exception as exc:
-            if isinstance(exc, (AdapterContractError, AdapterNotFoundError)):
-                raise
+            reraise_if_terminal(exc)
             raise TransientAdapterError(
                 f"browser list_contents failed: {type(exc).__name__}: {exc}"
             ) from exc
         finally:
-            await context.close()
+            if context is not None:
+                await context.close()
 
     async def fetch_content(self, ctx: AdapterCallContext, external_id: str) -> PlatformContentData:
         """Fetch a single video page."""
-        context, page = await self._new_page(ctx)
+        url = f"https://www.tiktok.com/video/{external_id}"
+        context = None
         try:
-            # external_id might be just the video ID; construct a generic URL.
-            url = f"https://www.tiktok.com/video/{external_id}"
-            await page.goto(url, wait_until="domcontentloaded")
+            context, page = await self._navigate(
+                ctx, url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms
+            )
             await self._polite_delay(1.5)
+            # Anonymous-first: stop immediately if the platform demands login.
+            await self._check_login_required(page, "TikTok")
 
             title = await page.title()
             title = title.replace(" | TikTok", "").strip()
@@ -444,7 +497,8 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 metadata={"method": "browser_scrape"},
             )
         finally:
-            await context.close()
+            if context is not None:
+                await context.close()
 
     async def fetch_content_analytics(
         self, ctx: AdapterCallContext, external_ids: Sequence[str]

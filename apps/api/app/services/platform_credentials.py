@@ -14,6 +14,10 @@ from app.models.operations import AuditEntry
 from app.models.settings import PlatformCredentialSetting
 from app.providers.notifications.crypto import SecretConfigCipher, mask_secret_config
 from app.schemas.settings import PlatformCredentialRead, PlatformCredentialUpdate
+from app.services.platform_session_capture import (
+    BrowserSessionCaptureError,
+    capture_session,
+)
 
 API_FIELDS: dict[str, set[str]] = {
     "youtube": {"api_key"},
@@ -52,6 +56,7 @@ AUTHORIZED_LOGIN_CONFIRMATIONS = {
 }
 AUTHORIZED_SESSION_FIELDS = {
     "storage_state_json",
+    "cookies_netscape",
     "session_label",
     "session_expires_at",
     "account_authorization_confirmed",
@@ -256,10 +261,64 @@ class PlatformCredentialService:
                 "authorized_login": AUTHORIZED_LOGIN_FIELDS,
                 "authorized_session": AUTHORIZED_SESSION_FIELDS,
             }[row.mode]
+            fields = fields | PROXY_FIELDS | LOCAL_BROWSER_FIELDS
             return row.mode, {field: value for field, value in config.items() if field in fields}
         if key == "youtube" and self.settings.youtube_api_key is not None:
             return "api", {"api_key": self.settings.youtube_api_key.get_secret_value()}
         return "unconfigured", {}
+
+    async def capture_browser_session(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        platform_key: str,
+        *,
+        cdp_endpoint: str,
+        account_authorization_confirmed: bool,
+        platform_session_allowed: bool,
+        oauth_unavailable_or_insufficient: bool,
+    ) -> PlatformCredentialRead:
+        """Capture an already-authorized browser session and encrypt it.
+
+        The browser login itself remains manual. The captured Playwright state
+        and Netscape cookie text are written only through ``update``, which
+        encrypts the complete config and returns a masked response.
+        """
+
+        key = await self._validate_platform(platform_key)
+        if not all(
+            (
+                account_authorization_confirmed,
+                platform_session_allowed,
+                oauth_unavailable_or_insufficient,
+            )
+        ):
+            raise PlatformCredentialError(
+                "保存人工登录会话前必须完成账号授权、平台许可和 API 条件确认",
+                code="authorized_session_policy_incomplete",
+                status_code=422,
+            )
+        try:
+            captured = await capture_session(cdp_endpoint, key)
+        except BrowserSessionCaptureError as exc:
+            raise PlatformCredentialError(str(exc), code=exc.code, status_code=422) from exc
+
+        config = {
+            "storage_state_json": captured.storage_state_json,
+            "cookies_netscape": captured.cookies_netscape,
+            "session_label": f"人工浏览器授权（{captured.cookie_count} 个 Cookie）",
+            "session_expires_at": captured.session_expires_at,
+            "cdp_endpoint": cdp_endpoint.strip(),
+            "account_authorization_confirmed": "true",
+            "platform_session_allowed": "true",
+            "oauth_unavailable_or_insufficient": "true",
+        }
+        return await self.update(
+            workspace_id,
+            actor_id,
+            key,
+            PlatformCredentialUpdate(mode="authorized_session", config=config, enabled=True),
+        )
 
     async def _validate_platform(self, platform_key: str) -> str:
         key = platform_key.strip().casefold().removesuffix("_browser")
@@ -471,13 +530,21 @@ class PlatformCredentialService:
             {
                 key: value
                 for key, value in config.items()
-                if key not in {"username", "storage_state_json", "legacy_account_configs"}
+                if key
+                not in {
+                    "username",
+                    "storage_state_json",
+                    "cookies_netscape",
+                    "legacy_account_configs",
+                }
             }
         )
         if config.get("username"):
             safe["username"] = "configured"
         if config.get("storage_state_json"):
             safe["storage_state_json"] = "configured"
+        if config.get("cookies_netscape"):
+            safe["cookies_netscape"] = "configured"
         if config.get("legacy_account_configs"):
             safe["legacy_account_configs"] = "configured"
         if config.get("proxy_server"):

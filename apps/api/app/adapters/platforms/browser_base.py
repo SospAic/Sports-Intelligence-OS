@@ -19,6 +19,7 @@ import ipaddress
 import json
 import logging
 import os
+import random
 import socket
 from collections.abc import Mapping
 from typing import Any, cast
@@ -37,9 +38,16 @@ from playwright.async_api import (
 from app.adapters.platforms.base import (
     AdapterCallContext,
     AdapterHealth,
+    LoginRequiredError,
     PlatformAdapter,
     PlatformAdapterError,
 )
+
+# ``LoginRequiredError`` used to be defined here. It moved to ``base`` so that
+# non-browser adapters (yt-dlp) can raise it without importing Playwright.
+# Re-exported so existing ``from .browser_base import LoginRequiredError``
+# imports keep working.
+__all__ = ["LoginRequiredError"]
 
 logger = logging.getLogger(__name__)
 
@@ -94,18 +102,24 @@ def _normalize_cdp_endpoint(endpoint: str) -> str:
     return endpoint
 
 
-class LoginRequiredError(PlatformAdapterError):
-    """Raised when login, CAPTCHA, or an interactive security step blocks access."""
+def reraise_if_terminal(exc: BaseException) -> None:
+    """Let already-classified *permanent* adapter errors escape untouched.
 
-    code = "login_required"
-    retryable = False
+    Every browser adapter ends its scrape in a broad ``except Exception`` that
+    re-wraps the failure into :class:`TransientAdapterError` so the scheduler can
+    retry flaky pages. That wrapper is correct for genuine transient faults, but
+    it also used to swallow errors the adapter had *already* classified as
+    permanent — a login wall, a deleted account, a broken contract. Re-wrapping
+    them flips ``retryable`` from ``False`` to ``True``, so the scheduler burns
+    the full retry budget on a failure that can never succeed (Bilibili's login
+    wall alone cost ~26s x N retries per account, every hour, forever) and the
+    operator sees a useless "retry_exhausted" instead of "configure a cookie".
 
-    def __init__(self, platform: str, detail: str = ""):
-        msg = f"平台 {platform} 要求登录后才能访问该数据；公开页采集已停止，请改用官方 API/OAuth。"
-        if detail:
-            msg += f"（{detail}）"
-        super().__init__(msg)
-        self.platform = platform
+    Calling this first preserves each error's own ``retryable`` verdict. It is a
+    pure function: no IO, no logging, safe to call from any adapter.
+    """
+    if isinstance(exc, PlatformAdapterError) and not exc.retryable:
+        raise exc
 
 
 class BrowserPlatformAdapter(PlatformAdapter):
@@ -303,16 +317,96 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 ) from exc
         return context, page
 
+    async def _navigate(
+        self,
+        ctx: AdapterCallContext,
+        url: str,
+        *,
+        wait_until: str = "domcontentloaded",
+        timeout: int | None = None,
+        max_attempts: int = 3,
+        response_handler: Any | None = None,
+    ) -> tuple[BrowserContext, Page]:
+        """Open a fresh context and navigate to ``url`` with bounded retry.
+
+        Anti-bot platforms (notably TikTok) frequently reset the TCP connection
+        mid-navigation (``net::ERR_CONNECTION_CLOSED``). A brand-new context/page
+        usually recovers, so each attempt recreates the context; a single
+        transient drop should not fail the whole scrape.
+
+        ``response_handler`` (if given) is registered on the page *before* each
+        navigation attempt, so callers that intercept XHR responses (e.g. TikTok's
+        embedded user-detail JSON) still capture them across retries.
+        """
+        timeout = timeout or self.page_load_timeout_ms
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            context: BrowserContext | None = None
+            try:
+                self._progress(
+                    ctx,
+                    f"[{self.key}] 打开页面 {url}"
+                    + (f"（第 {attempt}/{max_attempts} 次尝试）" if attempt > 1 else ""),
+                )
+                context, page = await self._new_page(ctx)
+                if response_handler is not None:
+                    page.on("response", response_handler)
+                await page.goto(url, wait_until=wait_until, timeout=timeout)
+                self._progress(ctx, f"[{self.key}] 页面已加载，开始解析")
+                return context, page
+            except Exception as exc:  # noqa: BLE001 - transient network resets
+                last_exc = exc
+                logger.warning(
+                    "navigate attempt %d/%d to %s failed: %s: %s",
+                    attempt, max_attempts, url, type(exc).__name__, exc,
+                )
+                self._progress(
+                    ctx,
+                    f"[{self.key}] 打开失败（{type(exc).__name__}），"
+                    + ("准备重试…" if attempt < max_attempts else "已达最大重试次数"),
+                )
+                if context is not None:
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                if attempt < max_attempts:
+                    await asyncio.sleep(min(2.0 * attempt, 8.0) + random.uniform(0, 1.5))
+        assert last_exc is not None
+        raise last_exc
+
+    def _progress(self, ctx: AdapterCallContext | None, text: str) -> None:
+        """Emit one live log line for the sync run, if a sink is attached.
+
+        Shared by all four browser platforms so the account page shows a
+        scrolling log for TikTok/Douyin/Bilibili/YouTube, not just for the
+        yt-dlp path.
+
+        This is observability only: a broken or missing sink must never abort a
+        sync. (A previous revision passed a non-callable sink and took every
+        sync run down with ``TypeError``, so the guard here is deliberate.)
+        """
+        sink = getattr(ctx, "progress_sink", None)
+        if sink is None:
+            return
+        try:
+            sink(text)
+        except Exception:  # noqa: BLE001 - never let logging break a sync
+            logger.debug("progress sink rejected a line", exc_info=True)
+
     async def _polite_delay(self, multiplier: float = 1.0) -> None:
         """Wait between interactions to respect the target site's capacity."""
         delay = ((self._min_delay + self._max_delay) / 2) * multiplier
         await asyncio.sleep(delay)
 
-    async def _scroll_page(self, page: Page, times: int = 3) -> None:
+    async def _scroll_page(
+        self, page: Page, times: int = 3, *, ctx: AdapterCallContext | None = None
+    ) -> None:
         """Scroll the page incrementally to trigger lazy-loaded content."""
-        for _ in range(times):
+        for index in range(times):
             await page.mouse.wheel(0, 450)
             await self._polite_delay(0.5)
+            self._progress(ctx, f"[{self.key}] 滚动加载 {index + 1}/{times}")
 
     async def _check_login_required(self, page: Page, platform_name: str) -> None:
         """Detect if the platform is showing a login wall.

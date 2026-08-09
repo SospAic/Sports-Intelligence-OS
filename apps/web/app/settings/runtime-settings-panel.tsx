@@ -12,6 +12,7 @@ import { useToast } from "@/components/toast";
 import {
   Badge,
   Panel,
+  SettingsGroup,
   SkeletonRows,
   StatePanel,
   inputClass,
@@ -26,7 +27,11 @@ function serializeEnvValue(value: RuntimeSettingField["value"]): string {
   return value === null ? "" : String(value);
 }
 
-export function RuntimeSettingsPanel() {
+export function RuntimeSettingsPanel({
+  sectionKeys,
+}: {
+  sectionKeys?: string[];
+} = {}) {
   const { workspaceId } = useWorkspace();
   const { notify } = useToast();
   const runtime = useQuery({
@@ -40,10 +45,16 @@ export function RuntimeSettingsPanel() {
   const [overrides, setOverrides] = useState<Record<string, string | boolean>>(
     {},
   );
+  const sections = useMemo(() => {
+    const all = runtime.data?.sections ?? [];
+    return sectionKeys
+      ? all.filter((section) => sectionKeys.includes(section.key))
+      : all;
+  }, [runtime.data, sectionKeys]);
 
   const envDraft = useMemo(() => {
     const initial: Record<string, string | boolean> = {};
-    for (const section of runtime.data?.sections ?? []) {
+    for (const section of sections) {
       for (const field of section.fields) {
         if (field.secret || COMPOSITE_ENV_VARS.has(field.env_var)) continue;
         initial[field.env_var] =
@@ -59,7 +70,7 @@ export function RuntimeSettingsPanel() {
           `${key}=${typeof value === "boolean" ? String(value) : value}`,
       )
       .join("\n");
-  }, [overrides, runtime.data]);
+  }, [overrides, sections]);
 
   async function copyDraft() {
     try {
@@ -96,20 +107,23 @@ export function RuntimeSettingsPanel() {
         <p className="mt-2 text-xs text-amber-200/80">{runtime.data.warning}</p>
       </div>
 
-      {runtime.data.sections.map((section) => (
-        <Panel key={section.key} className="overflow-hidden">
-          <div className="border-b border-slate-800 p-5">
-            <h2 className="font-medium text-white">{section.title}</h2>
-            <p className="mt-1 text-xs leading-5 text-slate-500">
-              {section.description}
-            </p>
-          </div>
-          <div className="grid gap-x-5 gap-y-4 p-5 lg:grid-cols-2">
+      {sections.map((section) => (
+        <Panel key={section.key} className="overflow-hidden p-0">
+          <SettingsGroup
+            title={section.title}
+            description={section.description}
+            tone="slate"
+            className="m-5"
+          >
+          <div className="grid gap-3 lg:grid-cols-2">
             {section.fields.map((field) => {
               const composite = COMPOSITE_ENV_VARS.has(field.env_var);
               const editable = !field.secret && !composite;
               return (
-                <label className="grid gap-2 text-sm" key={field.key}>
+                <label
+                  className="grid min-w-0 gap-2 rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-sm"
+                  key={field.key}
+                >
                   <span className="flex items-center justify-between gap-3">
                     <span className="text-slate-200">{field.label}</span>
                     <code className="text-[10px] text-slate-500">
@@ -172,6 +186,7 @@ export function RuntimeSettingsPanel() {
               );
             })}
           </div>
+          </SettingsGroup>
         </Panel>
       ))}
 

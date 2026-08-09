@@ -128,6 +128,34 @@ async def disable_source(
     await service(request, db).disable_source(workspace.workspace_id, source_id, auth.user.id)
 
 
+@router.post("/sources/{source_id}/enable", response_model=SourceRead)
+async def enable_source(
+    source_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SourceRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await service(request, db).set_source_enabled(
+        workspace.workspace_id, source_id, auth.user.id, enabled=True
+    )
+
+
+@router.post("/sources/{source_id}/disable", response_model=SourceRead)
+async def disable_source_action(
+    source_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SourceRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await service(request, db).set_source_enabled(
+        workspace.workspace_id, source_id, auth.user.id, enabled=False
+    )
+
+
 @router.post("/sources/{source_id}/sync", response_model=NewsSyncRunRead, status_code=202)
 async def sync_source(
     source_id: UUID,
@@ -165,6 +193,24 @@ async def source_sync_runs(
 ) -> NewsSyncRunPage:
     return await service(request, db).list_sync_runs(
         workspace.workspace_id, source_id, page=page, page_size=page_size
+    )
+
+
+@router.post(
+    "/sources/{source_id}/sync/{run_id}/cancel",
+    response_model=NewsSyncRunRead,
+)
+async def cancel_source_sync(
+    source_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> NewsSyncRunRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(request, db).cancel_sync_run(
+        workspace.workspace_id, source_id, run_id, auth.user.id
     )
 
 

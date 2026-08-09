@@ -9,7 +9,10 @@ traversal before streaming the bytes back to the detail page.
 from __future__ import annotations
 
 import functools
+import hashlib
+import ipaddress
 import os
+import socket
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -135,30 +138,154 @@ _AVATAR_USER_AGENT = (
 )
 
 
+# Networks whose addresses must never be fetched for an avatar (SSRF guard).
+# NOTE: we deliberately do NOT reject every non-global address. Inside the
+# proxied / containerised runtime the DNS resolver rewrites *all* public CDN
+# hostnames to a private-looking egress address (e.g. 198.18.0.0/15, the RFC
+# 2544 benchmarking range, or the fdfe:dcba:9876::/48 documentation prefix used
+# by the egress proxy). Rejecting those blocks every legitimate avatar, which
+# is exactly why cached avatars were always empty before. We therefore only
+# block addresses that are genuinely internal / infrastructure. The proxy
+# egress ranges are explicitly allow-listed so real CDN images can be fetched.
+_PROXY_EGRESS_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("198.18.0.0/15"),
+    ipaddress.ip_network("fdfe:dcba:9876::/48"),
+)
+_DANGEROUS_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
+    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("169.254.0.0/16"),    # link-local incl. cloud metadata 169.254.169.254
+    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC1918
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),          # unique-local (ULA)
+)
+
+
 def _avatar_cache_path(account_id: UUID, avatar_url: str) -> str:
     parsed = urlparse(avatar_url)
     ext = os.path.splitext(parsed.path)[1].lower()
     if ext not in _AVATAR_ALLOWED_EXT:
         ext = ".jpg"
-    return os.path.join(MEDIA_ROOT, "avatars", f"{account_id}{ext}")
+    # Hash the URL into the cache filename so a changed remote avatar (same
+    # extension) invalidates the previously cached, now-wrong local copy.
+    # Previously the key was account_id + extension only, so an account whose
+    # avatar URL changed but kept the same extension would keep serving the
+    # stale image indefinitely.
+    url_hash = hashlib.sha256(avatar_url.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(MEDIA_ROOT, "avatars", f"{account_id}-{url_hash}{ext}")
+
+
+def _is_safe_avatar_url(url: str) -> None:
+    """Reject avatar URLs that resolve to internal / metadata addresses (SSRF).
+
+    We block loopback, link-local (incl. 169.254.169.254 cloud metadata),
+    RFC1918 and ULA ranges. Redirects are not followed, so a public hostname
+    cannot 30x to an internal one. The egress-proxy ranges (see
+    ``_PROXY_EGRESS_NETWORKS``) are explicitly allow-listed because the runtime
+    DNS rewrites every public CDN hostname to those private-looking addresses;
+    rejecting them would block all legitimate avatars.
+    """
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("avatar URL must use http or https")
+    hostname = (parsed.hostname or "").strip().lower()
+    if hostname in {"localhost", "0.0.0.0", "::1", "::", ""}:
+        raise ValueError("avatar host is not allowed")
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise ValueError(f"avatar host unresolved: {hostname}") from exc
+    for info in infos:
+        addr = info[4][0].split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        # Egress proxy rewrites public hostnames to these ranges — safe to fetch.
+        if any(ip in net for net in _PROXY_EGRESS_NETWORKS):
+            continue
+        if ip.is_loopback or ip.is_multicast:
+            raise ValueError("avatar host resolves to a loopback/multicast address")
+        if any(ip in net for net in _DANGEROUS_NETWORKS):
+            raise ValueError("avatar host resolves to a non-public address")
+
+
+# Maximum bytes we will cache for an avatar. Avatars are tiny (< 2 MB); this is
+# a hard ceiling so a misbehaving CDN / login-wall HTML page can never fill the
+# media volume. 10 MB gives generous headroom.
+_AVATAR_MAX_BYTES = 10 * 1024 * 1024
 
 
 def _fetch_remote_bytes(url: str, timeout: int = 10) -> bytes:
-    if urlparse(url).scheme.lower() not in {"http", "https"}:
-        raise ValueError("avatar URL must use http or https")
+    _is_safe_avatar_url(url)
+    parsed = urlparse(url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    # CDNs (YouTube / TikTok / Douyin) reject bare server-side requests and
+    # return 400/403/404 unless a browser-like Referer + Accept header is sent.
+    # A same-origin Referer is enough for all three platforms.
+    headers = {
+        "User-Agent": _AVATAR_USER_AGENT,
+        "Accept": "image/avif,image/webp,image/apng,image/png,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": origin,
+    }
     with httpx.Client(
         timeout=timeout,
-        headers={"User-Agent": _AVATAR_USER_AGENT},
-        follow_redirects=False,
+        headers=headers,
+        follow_redirects=True,
     ) as client:
         response = client.get(url)
         response.raise_for_status()
-        return response.content
+        # D: a login wall / error page is served as text/html, not an image.
+        # Reject non-image content up front so we never cache HTML as an avatar.
+        content_type = response.headers.get("content-type", "")
+        if content_type and not content_type.lower().startswith("image/"):
+            raise ValueError(f"avatar source is not an image: {content_type}")
+        # Reject oversized responses before reading the body (content-length is
+        # advisory, so the actual length is re-checked below).
+        declared = response.headers.get("content-length")
+        if declared and int(declared) > _AVATAR_MAX_BYTES:
+            raise ValueError("avatar source exceeds maximum size")
+        data = response.content
+        if len(data) > _AVATAR_MAX_BYTES:
+            raise ValueError("avatar source exceeds maximum size")
+        return data
 
 
 def _write_file(path: str, data: bytes) -> None:
     with open(path, "wb") as fh:
         fh.write(data)
+
+
+def cache_avatar_for_account(account_id: UUID, avatar_url: str | None) -> bool:
+    """Best-effort download + persist an account avatar at sync time so the
+    local copy survives CDN URL expiry (TikTok / Douyin sign their avatar URLs,
+    which 404 within hours). Returns True when a local copy was written.
+
+    Safe to call from the worker: failing fetches (expired signature, blocked
+    CDN) degrade to False and the ``/accounts/{id}/avatar`` endpoint later falls
+    back to the remote URL, then to initials.
+    """
+    if not avatar_url:
+        return False
+    # Skip re-download when a local copy already exists for this exact URL.
+    cache_path = _avatar_cache_path(account_id, avatar_url)
+    if os.path.isfile(cache_path):
+        return True
+    try:
+        data = _fetch_remote_bytes(avatar_url)
+    except Exception:  # noqa: BLE001 - avatar caching is never fatal
+        return False
+    if not data:
+        return False
+    cache_path = _avatar_cache_path(account_id, avatar_url)
+    avatars_dir = os.path.dirname(cache_path)
+    os.makedirs(avatars_dir, 0o755, exist_ok=True)
+    _write_file(cache_path, data)
+    return True
 
 
 @router.get("/accounts/{account_id}/avatar")

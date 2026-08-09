@@ -13,14 +13,17 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-4 border-b border-slate-800/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
-      <div>
+    <header className="grid gap-4 border-b border-slate-800/80 pb-6 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+      <div className="min-w-0">
         {eyebrow && (
           <p className="text-xs font-semibold tracking-[.22em] text-cyan-400 uppercase">
             {eyebrow}
           </p>
         )}
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white lg:text-3xl">
+        <h1
+          className="mt-1 min-w-0 truncate text-2xl font-semibold tracking-tight text-white lg:text-3xl"
+          title={title}
+        >
           {title}
         </h1>
         {description && (
@@ -30,7 +33,9 @@ export function PageHeader({
         )}
       </div>
       {actions && (
-        <div className="flex flex-wrap items-center gap-2">{actions}</div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">
+          {actions}
+        </div>
       )}
     </header>
   );
@@ -49,6 +54,38 @@ export function Panel({
     >
       {children}
     </section>
+  );
+}
+
+export function SettingsGroup({
+  title,
+  description,
+  children,
+  tone = "cyan",
+  className = "",
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+  tone?: "cyan" | "violet" | "amber" | "slate";
+  className?: string;
+}) {
+  const tones = {
+    cyan: "border-cyan-900/70 bg-cyan-950/10 text-cyan-200",
+    violet: "border-violet-900/70 bg-violet-950/10 text-violet-200",
+    amber: "border-amber-900/70 bg-amber-950/10 text-amber-200",
+    slate: "border-slate-700/80 bg-slate-900/30 text-slate-200",
+  };
+  return (
+    <fieldset
+      className={`min-w-0 rounded-xl border p-4 transition-colors ${tones[tone]} ${className}`}
+    >
+      <legend className="px-2 text-sm font-semibold">{title}</legend>
+      {description && (
+        <p className="mb-4 text-xs leading-5 text-slate-500">{description}</p>
+      )}
+      {children}
+    </fieldset>
   );
 }
 

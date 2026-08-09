@@ -136,7 +136,7 @@ Mock LLM 无需密钥，但输出始终带 `MOCK TEST OUTPUT`、`source_kind=moc
 ```dotenv
 SIO_LLM_OPENAI_COMPATIBLE_BASE_URL=https://provider.example/v1
 SIO_LLM_OPENAI_COMPATIBLE_API_KEY=
-SIO_LLM_DEFAULT_MODEL=gpt-4.1-mini
+SIO_LLM_DEFAULT_MODEL=gpt-5.6-terra
 ```
 
 浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
@@ -162,6 +162,17 @@ SIO_YOUTUBE_API_KEY=
 留空时 YouTube 同步会记录明确的配置错误，不会静默切换为 Mock。系统目前只获取公开频道、上传作品和公开统计；YouTube Analytics API 的流量来源、留存、收入、搜索词等私有字段尚未实现，也不会伪造。
 
 登录后可调用 `POST /api/v1/accounts/{id}/sync` 手动排队，并通过 `GET /api/v1/accounts/{id}/sync-runs` 或 Dashboard 查看最近状态、错误和下一同步时间。
+
+## 视频内容搜索
+
+`/video-search` 是基于视频内容证据的定时搜索闭环：先按平台发现候选 URL，再由视频分析器读取画面、动作、音频、语音转写与 OCR；只有包含有效起止时间戳和匹配依据的候选才会进入默认命中结果。标题、简介、标签、作者和 URL 只用于定位视频，不能单独形成命中。
+
+部署与配置：
+
+- 默认 `SIO_VIDEO_SEARCH_ANALYZER=none`，只记录真实候选，不伪造内容命中。
+- 配置 `SIO_VIDEO_SEARCH_ANALYZER=gemini_video` 与 `SIO_GEMINI_API_KEY` 后，公开 YouTube 可直接交给 Gemini；公开 Bilibili、TikTok、抖音候选会在允许域名内由 yt-dlp 材料化后通过 Gemini Files API 分析。
+- Docker 后端镜像包含 Node.js、yt-dlp、yt-dlp EJS 和 ffmpeg；分析上传大小由 `SIO_VIDEO_SEARCH_MAX_UPLOAD_BYTES` 限制，临时媒体在分析后清理。
+- TikTok、抖音的候选搜索仍受平台公开搜索、反爬和登录墙限制；失败会记录为不可用/部分完成，不会显示为真实命中。完整数据边界与扩展路线见 [视频内容搜索可行性报告](docs/VIDEO_CONTENT_SEARCH_FEASIBILITY.md) 和 [技术说明书](docs/VIDEO_CONTENT_SEARCH_TECHNICAL_SPEC.md)。
 
 ## Monorepo 结构
 

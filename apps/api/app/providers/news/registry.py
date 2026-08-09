@@ -36,5 +36,5 @@ def build_news_provider_registry(
         )
     )
     registry.register(ManualNewsProvider())
-    registry.register(BrowserNewsProvider())
+    registry.register(BrowserNewsProvider(skip_dns_check=skip_dns_check))
     return registry

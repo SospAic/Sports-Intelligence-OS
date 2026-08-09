@@ -178,6 +178,7 @@ function useDownloadModal(content: ContentRecord, workspaceId: string) {
         const rec = await apiRequest<DownloadRead>("/downloads", {
           method: "POST",
           workspaceId,
+          csrf: true,
           body: JSON.stringify({ url: content.canonical_url, ...form }),
         });
         setDownload(rec);
@@ -341,8 +342,9 @@ function DownloadModalFrame({
           </p>
         )}
         {download && download.status === "empty" && (
-          <p className="mt-3 text-xs text-slate-400">
-            已拉取，但未生成任何媒体文件（请检查清晰度 / 开关设置）。
+          <p className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-300">
+            {download.error ||
+              "已拉取，但未生成任何媒体文件（请检查清晰度 / 开关设置）。"}
           </p>
         )}
       </div>
@@ -619,14 +621,14 @@ export function ContentDetailClient({ id }: { id: string }) {
         actions={
           <>
             <Link
-              className={secondaryButtonClass}
+              className={`${secondaryButtonClass} whitespace-nowrap`}
               href={`/generate?input_type=content&input_id=${id}`}
             >
               <Sparkles size={15} />
               生成内容
             </Link>
             <a
-              className={secondaryButtonClass}
+              className={`${secondaryButtonClass} whitespace-nowrap`}
               href={data.canonical_url}
               target="_blank"
               rel="noreferrer"

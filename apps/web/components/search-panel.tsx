@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { apiRequest } from "@/lib/browser-api";
 import { useToast } from "@/components/toast";
+import { Search } from "lucide-react";
 
 interface SearchResult {
   title: string | null;
@@ -90,6 +91,15 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <div className="space-y-6">
+      {/* 智能搜索 标题与副标题（与情报分析区块风格一致） */}
+      <div className="mb-1 flex items-center gap-2">
+        <Search size={18} className="text-cyan-400" />
+        <h2 className="font-semibold text-white">智能搜索</h2>
+      </div>
+      <p className="mb-4 text-sm text-slate-500">
+        用自然语言描述需求，跨平台检索相关视频并分析热度、情绪、时间线与衍生话题，辅助选题与舆情研判。
+      </p>
+
       <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
         <label className="mb-1 block text-xs font-medium text-slate-400">
           用一段描述来检索（自然语言）

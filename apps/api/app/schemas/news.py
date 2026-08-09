@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-NewsSourceType = Literal["rss", "atom", "json", "manual"]
+NewsSourceType = Literal["rss", "atom", "json", "web", "manual"]
 NewsSort = Literal[
     "published_at",
     "fetched_at",
@@ -87,6 +87,8 @@ class SourceRead(BaseModel):
     last_error_code: str | None
     last_error_message: str | None
     consecutive_failures: int
+    active_sync_run_id: UUID | None = None
+    active_sync_status: Literal["queued", "running"] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -254,7 +256,7 @@ class NewsSyncRunRead(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    status: Literal["queued", "running", "success", "error", "skipped"]
+    status: Literal["queued", "running", "success", "error", "skipped", "cancelled"]
     records_created: int
     records_updated: int
     duplicate_count: int

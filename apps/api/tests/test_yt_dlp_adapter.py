@@ -31,6 +31,7 @@ from app.adapters.platforms.yt_dlp import (
     YouTubeYtDlpAdapter,
     YtDlpAdapter,
 )
+from app.services import ytdlp_runtime
 
 YOUTUBE_VIDEO = {
     "id": "dQw4w9WgXcQ",
@@ -96,6 +97,7 @@ def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
         structured=None,
         download=None,
         media_dir=None,
+        **kwargs,
     ):
         if "videos" in url:
             return list(video_entries), ""
@@ -512,6 +514,7 @@ async def test_fallback_used_when_yt_dlp_empty():
         structured=None,
         download=None,
         media_dir=None,
+        **kwargs,
     ):  # type: ignore[assignment]
         return [], "ERROR: unsupported"
 
@@ -549,6 +552,7 @@ async def test_empty_trailing_page_does_not_fallback():
         structured=None,
         download=None,
         media_dir=None,
+        **kwargs,
     ):
         return [], ""
 
@@ -579,6 +583,7 @@ def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
         structured=None,
         download=None,
         media_dir=None,
+        **kwargs,
     ):
         captured["dateafter"] = dateafter
         captured["datebefore"] = datebefore
@@ -721,8 +726,20 @@ def test_render_structured_translates_fields_to_flags():
     assert "--playlist-reverse" not in args
 
 
+def test_render_structured_supports_browser_cookie_auth_without_persisting_cookie_data():
+    args = YtDlpAdapter._render_structured({"cookies_from_browser": "chrome"})
+    assert args == ["--cookies-from-browser", "chrome"]
+
+
 def test_render_structured_skips_empty_and_none():
-    args = YtDlpAdapter._render_structured({"proxy": "", "age_limit": None, "geo_bypass": False})
+    args = YtDlpAdapter._render_structured(
+        {
+            "proxy": "",
+            "age_limit": None,
+            "geo_bypass": False,
+            "cookies_from_browser": "",
+        }
+    )
     assert args == []
 
 
@@ -778,7 +795,7 @@ def test_media_route_blocks_path_traversal(tmp_path):
         media_mod.MEDIA_ROOT = original
 
 
-def _capture_cmd(adapter, *, single=True, retries=None):
+def _capture_cmd(adapter, *, single=True, retries=None, structured=None):
     """Run a yt-dlp command builder with a stubbed subprocess and return the
     exact argv without executing anything on the network."""
     import asyncio
@@ -801,9 +818,13 @@ def _capture_cmd(adapter, *, single=True, retries=None):
     try:
         if single:
             if retries is None:
-                coro = adapter._run_yt_dlp_single("https://example.com/x")
+                coro = adapter._run_yt_dlp_single(
+                    "https://example.com/x", structured=structured
+                )
             else:
-                coro = adapter._run_yt_dlp_single("https://example.com/x", retries=retries)
+                coro = adapter._run_yt_dlp_single(
+                    "https://example.com/x", retries=retries, structured=structured
+                )
             loop.run_until_complete(coro)
         else:
             if retries is None:
@@ -825,6 +846,35 @@ def test_single_json_defaults_to_ten_retries():
     cmd = _capture_cmd(adapter, single=True)
     idx = cmd.index("--retries")
     assert cmd[idx + 1] == "10"
+
+
+def test_single_json_forwards_browser_cookie_setting():
+    cmd = _capture_cmd(
+        YouTubeYtDlpAdapter(),
+        single=True,
+        structured={"cookies_from_browser": "chrome"},
+    )
+    idx = cmd.index("--cookies-from-browser")
+    assert cmd[idx + 1] == "chrome"
+
+
+def test_single_json_materializes_captured_cookie_file_and_cleans_it_up():
+    cmd = _capture_cmd(
+        YouTubeYtDlpAdapter(),
+        single=True,
+        structured={
+            "cookies_netscape": (
+                "# Netscape HTTP Cookie File\n"
+                ".youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tprivate\n"
+            ),
+            "cookies_from_browser": "chrome",
+        },
+    )
+    idx = cmd.index("--cookies")
+    cookie_path = cmd[idx + 1]
+    assert os.path.exists(cookie_path) is False
+    assert "private" not in cmd
+    assert "--cookies-from-browser" not in cmd
 
 
 def test_single_json_honours_retry_override():
@@ -863,3 +913,29 @@ def test_resolve_retries_reads_sync_settings_override():
         config = {"yt_dlp": {"retries": "not-a-number"}}
 
     assert adapter._resolve_retries(_CtxBad()) == 10
+
+
+def test_extraction_commands_enable_node_when_runtime_is_available(monkeypatch):
+    """Every yt-dlp command builder should emit the current Node runtime flag."""
+
+    monkeypatch.setattr(ytdlp_runtime, "resolve_node_path", lambda configured=None: "node")
+    monkeypatch.setattr(ytdlp_runtime, "configured_remote_components", lambda: [])
+    cmd = _capture_cmd(YouTubeYtDlpAdapter(), single=False)
+    assert cmd[cmd.index("--js-runtimes") + 1] == "node:node"
+
+
+def test_runtime_remote_components_are_allowlisted(monkeypatch):
+    """Free-form environment values must not become arbitrary yt-dlp flags."""
+
+    monkeypatch.setattr(ytdlp_runtime, "resolve_node_path", lambda configured=None: None)
+    monkeypatch.setattr(
+        ytdlp_runtime,
+        "configured_remote_components",
+        lambda: ["ejs:github", "--exec", "ejs:npm"],
+    )
+    assert ytdlp_runtime.runtime_args() == [
+        "--remote-components",
+        "ejs:github",
+        "--remote-components",
+        "ejs:npm",
+    ]

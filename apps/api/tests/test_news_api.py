@@ -230,6 +230,75 @@ def test_manual_news_dedup_clustering_merge_split_bookmark_and_scoring(
     assert client.get("/api/v1/news/events").json()["total"] == 0
 
 
+def test_news_source_enable_disable_and_sync_cancel_are_auditable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.news.enqueue_news_sync", lambda _run_id: None)
+    csrf = authenticate(client)
+    source_response = client.post(
+        "/api/v1/news/sources",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "name": "Control RSS",
+            "source_type": "rss",
+            "url": "https://feed.example/control.xml",
+            "category": "sports_media",
+            "config": {"max_pages": 1},
+        },
+    )
+    assert source_response.status_code == 201, source_response.text
+    source_id = source_response.json()["id"]
+
+    disabled = client.post(
+        f"/api/v1/news/sources/{source_id}/disable",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    blocked = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert blocked.status_code == 422
+
+    enabled = client.post(
+        f"/api/v1/news/sources/{source_id}/enable",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    queued = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert queued.status_code == 202, queued.text
+    run_id = queued.json()["id"]
+
+    cancelled = client.post(
+        f"/api/v1/news/sources/{source_id}/sync/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    source_after = client.get(f"/api/v1/news/sources/{source_id}")
+    assert source_after.status_code == 200
+    assert source_after.json()["active_sync_run_id"] is None
+
+    queued_again = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert queued_again.status_code == 202, queued_again.text
+    client.post(
+        f"/api/v1/news/sources/{source_id}/sync/{queued_again.json()['id']}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
+
+
 @pytest.mark.asyncio
 async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     client: TestClient,

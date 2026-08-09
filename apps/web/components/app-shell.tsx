@@ -27,6 +27,7 @@ import {
   Plus,
   ScrollText,
   Search,
+  ScanSearch,
   Settings,
   Sparkles,
   TrendingUp,
@@ -117,6 +118,7 @@ const navigationGroups: ReadonlyArray<{
     items: [
       ["仪表盘", "/dashboard", Gauge],
       ["热点情报中心", "/trends", TrendingUp],
+      ["视频内容搜索", "/video-search", ScanSearch],
       ["账号监控", "/accounts", UsersRound],
       ["作品数据", "/contents", Video],
       ["新闻热点", "/news", Newspaper],
@@ -479,7 +481,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Menu size={21} />
             </button>
-            <div className="relative min-w-0 max-w-xl flex-1">
+            <div className="flex min-w-0 flex-1 items-center" />
+            <div className="relative min-w-0 w-full max-w-xl flex-[0_1_36rem]">
               <Search
                 className="absolute top-1/2 left-3 -translate-y-1/2 text-slate-500"
                 size={16}
@@ -606,13 +609,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
             <ThemeToggle />
-            <div className="relative hidden md:block">
+            <div className="relative hidden shrink-0 md:block">
               <button
                 aria-label={`同步状态：${queueHealth.label}`}
                 title={queueHealth.label}
-                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 transition hover:bg-slate-900 hover:text-slate-200"
+                className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs text-slate-400 transition hover:bg-slate-900 hover:text-slate-200"
                 onClick={() => setSyncPopoverOpen((value) => !value)}
               >
                 <Activity

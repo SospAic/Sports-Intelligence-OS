@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { AccountAvatar } from "@/components/account-avatar";
+import { TerminateButton } from "@/components/terminate-button";
 import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import { AddAccountModal } from "@/components/add-account-modal";
 import { useToast } from "@/components/toast";
@@ -222,17 +223,36 @@ function SyncDetailDrawer({
       )
     : -1;
 
+  const panelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    panelRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
+    <div
+      className="fixed inset-0 z-50 flex justify-end"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sync-detail-title"
+    >
       <button
         aria-label="关闭详情面板"
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
-      <aside className="relative flex h-full w-full max-w-md flex-col border-l border-slate-700 bg-slate-950 shadow-2xl">
+      <aside
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative flex h-full w-full max-w-md flex-col border-l border-slate-700 bg-slate-950 shadow-2xl outline-none"
+      >
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold text-white">
+            <h2 id="sync-detail-title" className="truncate text-sm font-semibold text-white">
               同步详情
             </h2>
             <p className="mt-0.5 truncate text-xs text-slate-500">
@@ -567,6 +587,26 @@ export function AccountsClient() {
     if (!canEdit || !account.is_active) return;
     setSyncTarget(account);
   }
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  async function cancelSync(account: AccountRecord, runId?: string) {
+    if (!workspaceId || !runId) return;
+    setCancellingId(account.id);
+    try {
+      await apiRequest(
+        `/accounts/${encodeURIComponent(account.id)}/sync/${runId}/cancel`,
+        { method: "POST", workspaceId, csrf: true },
+      );
+      notify("已发送终止请求，任务将尽快停止");
+      await client.invalidateQueries({ queryKey: ["accounts"] });
+      await client.invalidateQueries({
+        queryKey: ["account-latest-run", account.id],
+      });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "终止失败", "error");
+    } finally {
+      setCancellingId(null);
+    }
+  }
   async function deleteAccount(account: AccountRecord) {
     if (!workspaceId) return;
     if (!canDelete) {
@@ -731,6 +771,21 @@ export function AccountsClient() {
                     ? "同步中…"
                     : "同步"}
             </button>
+            {isSyncing && (
+              <TerminateButton
+                size="sm"
+                label="终止"
+                confirmingLabel="确认终止？"
+                busy={cancellingId === row.original.id}
+                onTerminate={() =>
+                  cancelSync(
+                    row.original,
+                    latestRunMap.get(row.original.id)?.id,
+                  )
+                }
+                title="终止正在进行的同步"
+              />
+            )}
             <button
               disabled={!isSyncing}
               onClick={() => setDrawerAccount(row.original)}

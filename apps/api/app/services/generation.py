@@ -1357,6 +1357,7 @@ class GenerationService:
         )
         if content is None:
             raise GenerationNotFound("作品输入不存在")
+        video_context = self._video_context(payload.input_payload)
         return {
             "title": content.title,
             "description": content.description,
@@ -1373,6 +1374,7 @@ class GenerationService:
                 }
             ],
             "frozen_at": datetime.now(UTC).isoformat(),
+            "video_context": video_context,
             **creator_controls,
         }
 
@@ -1393,6 +1395,50 @@ class GenerationService:
         if isinstance(creator_brief, str) and creator_brief.strip():
             controls["creator_brief"] = creator_brief.strip()[:2000]
         return controls
+
+    @staticmethod
+    def _video_context(payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze the operator's bounded material selections with the run."""
+        raw = payload.get("video_context")
+        if not isinstance(raw, dict):
+            return {}
+        context: dict[str, Any] = {}
+        name = raw.get("name")
+        if isinstance(name, str) and name.strip():
+            context["name"] = name.strip()[:500]
+        tags = raw.get("tags")
+        if isinstance(tags, list):
+            context["tags"] = [
+                str(item).strip()[:64] for item in tags if str(item).strip()
+            ][:30]
+        subtitle_langs = raw.get("subtitleLangs") or raw.get("subtitle_langs")
+        if isinstance(subtitle_langs, list):
+            context["subtitle_langs"] = [
+                str(item).strip()[:32] for item in subtitle_langs if str(item).strip()
+            ][:12]
+        subtitles = raw.get("subtitles")
+        if isinstance(subtitles, list):
+            bounded_subtitles: list[dict[str, str]] = []
+            remaining = 24000
+            for item in subtitles:
+                if not isinstance(item, dict) or remaining <= 0:
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                clipped = text.strip()[:remaining]
+                bounded_subtitles.append(
+                    {"lang": str(item.get("lang") or "")[:32], "text": clipped}
+                )
+                remaining -= len(clipped)
+            if bounded_subtitles:
+                context["subtitles"] = bounded_subtitles
+        comments = raw.get("comments")
+        if isinstance(comments, list):
+            context["comments"] = [
+                item for item in comments[:20] if isinstance(item, dict)
+            ]
+        return context
 
     def _article_payload(self, article: Article, source: Source) -> dict[str, Any]:
         return {

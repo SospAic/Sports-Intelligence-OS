@@ -18,6 +18,10 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Pause,
+  Play,
+  Square,
+  Database,
 } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -37,7 +41,9 @@ import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
 import { fetchReadyHealth } from "@/lib/health";
 import { LLMSettingsPanel } from "./llm-settings-panel";
+import { RuntimeSettingsPanel } from "./runtime-settings-panel";
 import { SyncSettingsPanel } from "./sync-settings-panel";
+import { SemanticSearchSettingsPanel } from "./semantic-search-settings-panel";
 
 type SourcePage = {
   items: NewsSourceRecord[];
@@ -61,17 +67,22 @@ type SettingsTab =
   | "notifications"
   | "sources"
   | "platforms"
-  | "sync";
+  | "sync"
+  | "search";
 
-const TABS: Array<{ key: SettingsTab; label: string; icon: typeof HeartPulse }> =
-  [
-    { key: "overview", label: "概览", icon: HeartPulse },
-    { key: "platforms", label: "平台管理", icon: Plug },
-    { key: "sync", label: "同步设置", icon: RefreshCw },
-    { key: "llm", label: "LLM API", icon: Sparkles },
-    { key: "notifications", label: "通知 Provider", icon: Send },
-    { key: "sources", label: "新闻源", icon: Newspaper },
-  ];
+const TABS: Array<{
+  key: SettingsTab;
+  label: string;
+  icon: typeof HeartPulse;
+}> = [
+  { key: "overview", label: "概览", icon: HeartPulse },
+  { key: "platforms", label: "平台管理", icon: Plug },
+  { key: "sync", label: "同步设置", icon: RefreshCw },
+  { key: "llm", label: "LLM API", icon: Sparkles },
+  { key: "search", label: "语义检索", icon: Database },
+  { key: "notifications", label: "通知 Provider", icon: Send },
+  { key: "sources", label: "新闻源", icon: Newspaper },
+];
 
 export function SettingsClient() {
   const { workspaceId, currentUser, role } = useWorkspace();
@@ -87,6 +98,7 @@ export function SettingsClient() {
       "sources",
       "platforms",
       "sync",
+      "search",
     ].includes(initialTab)
       ? initialTab
       : "overview",
@@ -141,6 +153,45 @@ export function SettingsClient() {
     }
   }
 
+  async function toggleSource(source: NewsSourceRecord) {
+    if (!workspaceId) return;
+    setSourcePending(true);
+    try {
+      await apiRequest(
+        `/news/sources/${source.id}/${source.enabled ? "disable" : "enable"}`,
+        {
+          method: "POST",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({}),
+        },
+      );
+      notify(source.enabled ? "新闻源已停用" : "新闻源已启用");
+      await queryClient.invalidateQueries({ queryKey: ["news-sources"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "状态更新失败", "error");
+    } finally {
+      setSourcePending(false);
+    }
+  }
+
+  async function cancelSourceSync(source: NewsSourceRecord) {
+    if (!workspaceId || !source.active_sync_run_id) return;
+    setSourcePending(true);
+    try {
+      await apiRequest(
+        `/news/sources/${source.id}/sync/${source.active_sync_run_id}/cancel`,
+        { method: "POST", workspaceId, csrf: true, body: JSON.stringify({}) },
+      );
+      notify("同步已停止，历史文章已保留");
+      await queryClient.invalidateQueries({ queryKey: ["news-sources"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "停止同步失败", "error");
+    } finally {
+      setSourcePending(false);
+    }
+  }
+
   const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
   const [creatingSource, setCreatingSource] = useState(false);
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
@@ -148,7 +199,6 @@ export function SettingsClient() {
     name: "",
     url: "",
     reliability_score: "50",
-    enabled: true,
   });
   const [sourcePending, setSourcePending] = useState(false);
 
@@ -189,7 +239,6 @@ export function SettingsClient() {
       if (editSourceForm.name.trim()) body.name = editSourceForm.name.trim();
       if (editSourceForm.url.trim()) body.url = editSourceForm.url.trim();
       body.reliability_score = Number(editSourceForm.reliability_score);
-      body.enabled = editSourceForm.enabled;
       await apiRequest(`/news/sources/${id}`, {
         method: "PATCH",
         workspaceId,
@@ -343,7 +392,7 @@ export function SettingsClient() {
           {creatingSource && (
             <form
               action={createSource}
-              className="grid gap-3 border-b border-cyan-900/60 bg-slate-950/50 p-5 md:grid-cols-2 xl:grid-cols-3"
+              className="m-4 grid gap-3 rounded-xl border border-cyan-900/70 bg-cyan-950/10 p-4 md:grid-cols-2 xl:grid-cols-3"
             >
               <input
                 name="name"
@@ -359,6 +408,7 @@ export function SettingsClient() {
                 <option value="rss">RSS</option>
                 <option value="atom">Atom</option>
                 <option value="json">JSON Feed</option>
+                <option value="web">公开网页（浏览器采集）</option>
                 <option value="manual">手动录入</option>
               </select>
               <input
@@ -449,19 +499,6 @@ export function SettingsClient() {
                       placeholder="可靠度"
                     />
                     <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-1 text-xs text-slate-400">
-                        <input
-                          type="checkbox"
-                          checked={editSourceForm.enabled}
-                          onChange={(e) =>
-                            setEditSourceForm({
-                              ...editSourceForm,
-                              enabled: e.target.checked,
-                            })
-                          }
-                        />
-                        启用
-                      </label>
                       <button
                         className="text-cyan-300 disabled:text-slate-600 text-sm"
                         disabled={sourcePending}
@@ -535,19 +572,41 @@ export function SettingsClient() {
                       <button
                         className={`${secondaryButtonClass} h-8 px-2`}
                         disabled={
-                          !source.enabled ||
+                          sourcePending ||
+                          (!source.active_sync_run_id && !source.enabled) ||
                           !["owner", "admin", "editor", "analyst"].includes(
                             role ?? "",
                           )
                         }
-                        onClick={() => syncSource(source.id)}
+                        onClick={() =>
+                          source.active_sync_run_id
+                            ? cancelSourceSync(source)
+                            : syncSource(source.id)
+                        }
                         type="button"
                       >
-                        <RefreshCw size={13} />
-                        同步
+                        {source.active_sync_run_id ? (
+                          <Square size={13} />
+                        ) : (
+                          <RefreshCw size={13} />
+                        )}
+                        {source.active_sync_run_id ? "停止" : "同步"}
                       </button>
                       {canEdit && (
                         <>
+                          <button
+                            className={`inline-flex items-center gap-1 text-xs ${source.enabled ? "text-amber-300 hover:text-amber-200" : "text-emerald-300 hover:text-emerald-200"}`}
+                            disabled={sourcePending}
+                            onClick={() => toggleSource(source)}
+                            type="button"
+                          >
+                            {source.enabled ? (
+                              <Pause size={13} />
+                            ) : (
+                              <Play size={13} />
+                            )}
+                            {source.enabled ? "停用" : "启用"}
+                          </button>
                           <button
                             className="inline-flex items-center gap-1 text-cyan-300 hover:text-cyan-200 text-xs"
                             onClick={() => {
@@ -558,7 +617,6 @@ export function SettingsClient() {
                                 reliability_score: String(
                                   source.reliability_score,
                                 ),
-                                enabled: source.enabled,
                               });
                             }}
                           >
@@ -648,7 +706,13 @@ export function SettingsClient() {
           )}
         </div>
       )}
-      {tab === "sync" && <SyncSettingsPanel />}
+      {tab === "sync" && (
+        <>
+          <SyncSettingsPanel />
+          <RuntimeSettingsPanel sectionKeys={["media_runtime"]} />
+        </>
+      )}
+      {tab === "search" && <SemanticSearchSettingsPanel />}
     </main>
   );
 }
@@ -909,8 +973,10 @@ function SecurePlatformCredentialCard({
     if (mode === "authorized_session") {
       for (const key of [
         "storage_state_json",
+        "cookies_netscape",
         "session_label",
         "session_expires_at",
+        "cdp_endpoint",
       ]) {
         const value = String(form.get(key) ?? "").trim();
         if (value)
@@ -946,6 +1012,85 @@ function SecurePlatformCredentialCard({
     }
   }
 
+  async function openManualLogin(form: HTMLFormElement | null) {
+    if (!form) return;
+    const cdpEndpoint =
+      String(new FormData(form).get("cdp_endpoint") ?? "").trim() ||
+      "http://browser:9222";
+    if (!cdpEndpoint) {
+      notify("请先填写本地浏览器 CDP 地址", "error");
+      return;
+    }
+    const browserWindow = window.open("about:blank", "sio-docker-browser");
+    if (browserWindow) browserWindow.opener = null;
+    setSaving(true);
+    try {
+      const response = await apiRequest<{
+        detail: string;
+        browser_view_url?: string | null;
+      }>(
+        `/settings/platform-credentials/${platform.key}/session-capture/open`,
+        {
+          method: "POST",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({ cdp_endpoint: cdpEndpoint }),
+        },
+      );
+      if (response.browser_view_url && browserWindow) {
+        browserWindow.location.href = response.browser_view_url;
+      } else if (browserWindow) {
+        browserWindow.close();
+      }
+      notify(response.detail);
+    } catch (error) {
+      browserWindow?.close();
+      notify(error instanceof Error ? error.message : "打开人工登录页失败", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function captureManualLogin(form: HTMLFormElement | null) {
+    if (!form) return;
+    const data = new FormData(form);
+    const cdpEndpoint =
+      String(data.get("cdp_endpoint") ?? "").trim() || "http://browser:9222";
+    if (!cdpEndpoint) {
+      notify("请先填写本地浏览器 CDP 地址", "error");
+      return;
+    }
+    const confirmations = {
+      account_authorization_confirmed:
+        data.get("account_authorization_confirmed") === "on",
+      platform_session_allowed: data.get("platform_session_allowed") === "on",
+      oauth_unavailable_or_insufficient:
+        data.get("oauth_unavailable_or_insufficient") === "on",
+    };
+    if (!Object.values(confirmations).every(Boolean)) {
+      notify("请完成授权、平台许可和 API 条件确认后再保存", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiRequest(
+        `/settings/platform-credentials/${platform.key}/session-capture/save`,
+        {
+          method: "POST",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({ cdp_endpoint: cdpEndpoint, ...confirmations }),
+        },
+      );
+      notify(`${platform.name} 已从人工登录浏览器中加密保存 Cookie 和会话`);
+      onSaved();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "保存浏览器登录会话失败", "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function revokeLoginAccess() {
     if (!window.confirm(`确定清除 ${platform.name} 的加密登录凭据和会话状态？`))
       return;
@@ -969,9 +1114,17 @@ function SecurePlatformCredentialCard({
 
   const hasLoginAccess = Boolean(
     setting?.configured_fields.some((field) =>
-      ["username", "password", "storage_state_json"].includes(field),
+      ["username", "password", "storage_state_json", "cookies_netscape"].includes(field),
     ),
   );
+
+  // 会话过期时间默认 +30 天（仅在从未保存过有效期时给出），避免误选成临近此刻导致保存后立刻失效。
+  const defaultSessionExpiry = (() => {
+    if (setting?.config_masked?.session_expires_at) return undefined;
+    const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  })();
 
   return (
     <Panel className="p-5">
@@ -1147,8 +1300,23 @@ function SecurePlatformCredentialCard({
         {mode === "authorized_session" && (
           <div className="space-y-3">
             <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3">
+              <p className="text-xs font-medium text-violet-300">人工登录并保存 Cookie</p>
+              <p className="mt-1 text-xs leading-5 text-slate-400">
+                默认使用 Docker 内置的可视化 Chromium。系统不会代填密码、绕过验证码或二次验证，
+                只读取当前平台 Cookie 并在后端加密保存。
+              </p>
+              <ol className="mt-2 list-decimal space-y-1 pl-4 text-[11px] leading-5 text-slate-500">
+                <li>点击打开平台登录页，系统会打开 Docker 内置浏览器窗口。</li>
+                <li>在 noVNC 浏览器窗口中人工完成登录、验证码和二次验证。</li>
+                <li>回到此页，确认授权项后点击保存已登录 Cookie。</li>
+              </ol>
               <p className="text-xs leading-5 text-slate-400">
-                住宅/轮换代理是绕过 TikTok、抖音等数据中心 IP 反爬封锁的关键。配合下方已授权的登录会话（storage_state），即可在「账号监控」中正常抓取到真实作品与播放数据。仅作用于当前工作区该平台的全部账号。
+                如需改用宿主机 Chrome/Edge，可将 CDP 地址替换为
+                <code className="mx-1 rounded bg-slate-800 px-1">http://host.docker.internal:9222</code>。
+              </p>
+              <p className="text-xs leading-5 text-slate-400">
+                住宅/轮换代理是绕过 TikTok、抖音等数据中心 IP
+                反爬封锁的关键。配合下方已授权的登录会话（storage_state），即可在「账号监控」中正常抓取到真实作品与播放数据。仅作用于当前工作区该平台的全部账号。
               </p>
               <div className="mt-3 grid gap-3 sm:grid-cols-1">
                 <label className="grid gap-1 text-xs text-slate-300">
@@ -1206,11 +1374,12 @@ function SecurePlatformCredentialCard({
                 />
               </label>
               <label className="grid gap-1 text-xs text-slate-300">
-                过期时间 *
+                过期时间 *（默认 +30 天）
                 <input
                   className={inputClass}
                   name="session_expires_at"
                   type="datetime-local"
+                  defaultValue={defaultSessionExpiry}
                   disabled={!canEdit}
                 />
               </label>
@@ -1245,26 +1414,58 @@ function SecurePlatformCredentialCard({
           </div>
         )}
         <div className="rounded-lg border border-slate-800 bg-emerald-950/30 p-3">
-          <p className="text-xs font-medium text-emerald-300">本地浏览器（可选，推荐用于 TikTok / 抖音）</p>
+          <p className="text-xs font-medium text-emerald-300">
+            Docker 内置浏览器（推荐）
+          </p>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            若 TikTok / 抖音 在默认无头浏览器下被反爬封锁，可改用你本机真实浏览器抓取——
-            指纹、IP、登录态都与你平时访问时一致。做法：用普通方式打开 Edge/Chrome 并带
+            默认填写 Docker 内置 Chromium 的私有 CDP 地址；如果改用本机真实浏览器，需用专用 profile
+            并带
             <code className="mx-1 rounded bg-slate-800 px-1">--remote-debugging-port=9222</code>
-            启动（或运行项目自带 launch_local_browser 脚本），再在此填写地址即可。
-            若 worker 运行在 Docker 内，请填
-            <code className="mx-1 rounded bg-slate-800 px-1">http://host.docker.internal:9222</code>，
-            否则填
-            <code className="mx-1 rounded bg-slate-800 px-1">http://127.0.0.1:9222</code>。
+            启动。若 worker 运行在 Docker 内，请填
+            <code className="mx-1 rounded bg-slate-800 px-1">
+              http://host.docker.internal:9222
+            </code>
+            ，否则保留
+            <code className="mx-1 rounded bg-slate-800 px-1">
+              http://browser:9222
+            </code>
+            。
           </p>
           <label className="mt-3 grid gap-1 text-xs text-slate-300">
             本地浏览器 CDP 地址
             <input
               name="cdp_endpoint"
               className={inputClass}
-              placeholder="http://127.0.0.1:9222 或 http://host.docker.internal:9222"
+              defaultValue={
+                String(setting?.config_masked?.cdp_endpoint ?? "").trim() ||
+                "http://browser:9222"
+              }
+              placeholder="Docker 内置浏览器：http://browser:9222"
               disabled={!canEdit}
             />
           </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button
+              type="button"
+              className={secondaryButtonClass}
+              disabled={saving || !canEdit}
+              onClick={(event) => {
+                void openManualLogin(event.currentTarget.form);
+              }}
+            >
+              打开平台登录页
+            </button>
+            <button
+              type="button"
+              className={`${buttonClass} justify-center`}
+              disabled={saving || !canEdit}
+              onClick={(event) => {
+                void captureManualLogin(event.currentTarget.form);
+              }}
+            >
+              保存已登录 Cookie
+            </button>
+          </div>
         </div>
         <button
           className={`${buttonClass} w-full justify-center`}

@@ -27,7 +27,7 @@ class Source(TimestampMixin, Base):
     __tablename__ = "news_sources"
     __table_args__ = (
         CheckConstraint(
-            "source_type IN ('rss', 'atom', 'json', 'manual')",
+            "source_type IN ('rss', 'atom', 'json', 'web', 'manual')",
             name="news_source_type",
         ),
         CheckConstraint(
@@ -199,7 +199,7 @@ class NewsSyncRun(Base):
     __tablename__ = "news_sync_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'success', 'error', 'skipped')",
+            "status IN ('queued', 'running', 'success', 'error', 'skipped', 'cancelled')",
             name="news_sync_run_status",
         ),
         Index("ix_news_sync_runs_source_started", "source_id", "started_at"),
