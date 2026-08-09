@@ -252,7 +252,6 @@ class GeminiVideoAnalyzer:
             source_kind=self.source_kind,
         )
 
-
     async def _analyze_non_youtube(
         self,
         *,
@@ -284,8 +283,7 @@ class GeminiVideoAnalyzer:
                 lambda: [
                     path
                     for path in temp_dir.rglob("*")
-                    if path.is_file()
-                    and path.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov"}
+                    if path.is_file() and path.suffix.lower() in {".mp4", ".webm", ".mkv", ".mov"}
                 ]
             )
             if not entries or not media_files:

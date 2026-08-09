@@ -14,7 +14,7 @@ from app.adapters.platforms.base import (
     AdapterCallContext,
     AdapterCapability,
     AdapterDescriptor,
-    TransientAdapterError,
+    LoginRequiredError,
 )
 from app.adapters.platforms.browser_base import BrowserPlatformAdapter
 from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
@@ -102,16 +102,12 @@ async def _instant_sleep(*_args, **_kwargs) -> None:
 
 @pytest.fixture
 def fast_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "app.adapters.platforms.browser_base.asyncio.sleep", _instant_sleep
-    )
+    monkeypatch.setattr("app.adapters.platforms.browser_base.asyncio.sleep", _instant_sleep)
 
 
 def test_navigate_retries_then_succeeds(fast_sleep: None) -> None:
     adapter = _NavTestAdapter([True, True, False])
-    context, page = asyncio.run(
-        adapter._navigate(None, "https://example.com", max_attempts=3)
-    )
+    context, page = asyncio.run(adapter._navigate(None, "https://example.com", max_attempts=3))
     assert adapter.new_page_calls == 3
     # Failed attempts' contexts must be closed; the surviving one is live.
     assert adapter.contexts[0].closed is True
@@ -134,9 +130,7 @@ def test_navigate_registers_response_handler_before_goto(fast_sleep: None) -> No
     adapter = _NavTestAdapter([False])
     handler = lambda response: None  # noqa: E731 - dummy
     asyncio.run(
-        adapter._navigate(
-            None, "https://example.com", max_attempts=3, response_handler=handler
-        )
+        adapter._navigate(None, "https://example.com", max_attempts=3, response_handler=handler)
     )
     assert adapter.pages[0].on_calls == 1
 
@@ -144,7 +138,14 @@ def test_navigate_registers_response_handler_before_goto(fast_sleep: None) -> No
 class _AnalyticsFakePage:
     """A logged-out / anti-bot limited TikTok page: no rehydration JSON and no
     count DOM elements are present, so every metric extraction path yields None.
+
+    ``url`` is a normal profile URL, not a login redirect: this page models the
+    subtler wall where TikTok serves a 200 response that is simply stripped of
+    data, so ``_check_login_required``'s URL and DOM probes both find nothing
+    and the failure has to be caught by the metrics-extraction branch instead.
     """
+
+    url = "https://www.tiktok.com/@nba"
 
     async def goto(self, url: str, **kwargs: object) -> None:  # noqa: D401
         return None
@@ -152,7 +153,7 @@ class _AnalyticsFakePage:
     async def evaluate(self, _expr: str) -> None:  # noqa: D401
         return None
 
-    def locator(self, _selector: str) -> "_AnalyticsFakePage._Loc":
+    def locator(self, _selector: str) -> _AnalyticsFakePage._Loc:
         return _AnalyticsFakePage._Loc()
 
     class _Loc:
@@ -182,10 +183,17 @@ class _AnalyticsTestAdapter(TikTokBrowserAdapter):
         return None
 
 
-def test_tiktok_analytics_raises_when_metrics_absent() -> None:
-    """A logged-out/anti-bot limited page must surface a clear, retryable error
-    instead of returning an all-None metrics object that downstream code can only
-    label with a vague '指标提取失败'."""
+def test_tiktok_analytics_raises_login_required_when_metrics_absent() -> None:
+    """A logged-out / anti-bot limited page must surface the login wall itself.
+
+    Returning an all-None metrics object would leave downstream code with only a
+    vague '指标提取失败'. Raising a *retryable* error would be just as wrong: no
+    number of retries can conjure data the platform refuses to serve anonymously,
+    so each attempt only burns the scheduler's budget. ``LoginRequiredError`` is
+    permanent and carries the one actionable instruction — configure a cookie.
+    """
     adapter = _AnalyticsTestAdapter()
-    with pytest.raises(TransientAdapterError):
+    with pytest.raises(LoginRequiredError) as excinfo:
         asyncio.run(adapter.fetch_account_analytics(None, "nba"))
+    assert excinfo.value.retryable is False
+    assert excinfo.value.code == "login_required"

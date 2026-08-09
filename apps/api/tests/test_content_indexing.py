@@ -325,9 +325,7 @@ async def test_index_item_writes_chunks_and_is_idempotent(
     embedder = StubEmbedder()
     service = ContentIndexingService(indexing_session, embedder=embedder)
 
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
 
     first = await service.index_item(item)
@@ -365,9 +363,7 @@ async def test_index_item_reembeds_after_text_change(
     embedder = StubEmbedder()
     service = ContentIndexingService(indexing_session, embedder=embedder)
 
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
     await service.index_item(item)
     await indexing_session.commit()
@@ -407,9 +403,7 @@ async def test_index_item_drops_stale_chunks_when_text_shrinks(
     )
     service = ContentIndexingService(indexing_session, settings, embedder=embedder)
 
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
     item.description = "。".join(f"第{index}段解说内容都很长" for index in range(12))
     await indexing_session.flush()
@@ -438,12 +432,8 @@ async def test_index_item_reports_disabled_backend(
     indexing_session: AsyncSession, database_path: str
 ) -> None:
     _, _, content_id = _seed_rows(database_path)
-    service = ContentIndexingService(
-        indexing_session, embedder=StubEmbedder(enabled=False)
-    )
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    service = ContentIndexingService(indexing_session, embedder=StubEmbedder(enabled=False))
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
     outcome = await service.index_item(item)
     assert outcome.status == "disabled"
@@ -465,9 +455,7 @@ async def test_index_item_reads_subtitle_from_media(
         encoding="utf-8",
     )
 
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
     item.media = {
         "base": "ws/acct/vid",
@@ -476,9 +464,7 @@ async def test_index_item_reads_subtitle_from_media(
     await indexing_session.flush()
 
     embedder = StubEmbedder()
-    outcome = await ContentIndexingService(
-        indexing_session, embedder=embedder
-    ).index_item(item)
+    outcome = await ContentIndexingService(indexing_session, embedder=embedder).index_item(item)
     await indexing_session.commit()
 
     assert outcome.status == "indexed"
@@ -510,17 +496,13 @@ async def test_index_item_ignores_subtitle_outside_media_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, _, content_id = _seed_rows(database_path)
-    monkeypatch.setattr(
-        "app.services.content_indexing.MEDIA_ROOT", str(tmp_path / "root")
-    )
+    monkeypatch.setattr("app.services.content_indexing.MEDIA_ROOT", str(tmp_path / "root"))
     (tmp_path / "root").mkdir()
     (tmp_path / "secret.zh.vtt").write_text(
         "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\n机密内容。\n", encoding="utf-8"
     )
 
-    item = await indexing_session.scalar(
-        select(ContentItem).where(ContentItem.id == content_id)
-    )
+    item = await indexing_session.scalar(select(ContentItem).where(ContentItem.id == content_id))
     assert item is not None
     item.media = {
         "base": "../",
@@ -528,9 +510,7 @@ async def test_index_item_ignores_subtitle_outside_media_root(
     }
     await indexing_session.flush()
 
-    await ContentIndexingService(
-        indexing_session, embedder=StubEmbedder()
-    ).index_item(item)
+    await ContentIndexingService(indexing_session, embedder=StubEmbedder()).index_item(item)
     await indexing_session.commit()
 
     kinds = (

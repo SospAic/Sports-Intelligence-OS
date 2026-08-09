@@ -95,7 +95,9 @@ async def update_ytdlp_runtime(
         out, err = await asyncio.wait_for(proc.communicate(), timeout=180)
     except (OSError, TimeoutError) as exc:
         logger.warning("yt-dlp runtime update failed: %s", exc)
-        raise HTTPException(status_code=503, detail="yt-dlp 更新失败，请检查 API 服务日志后重试。") from exc
+        raise HTTPException(
+            status_code=503, detail="yt-dlp 更新失败，请检查 API 服务日志后重试。"
+        ) from exc
     if proc.returncode != 0:
         logger.warning("yt-dlp runtime update exited with code %s", proc.returncode)
         raise HTTPException(status_code=503, detail="yt-dlp 更新失败，请检查 API 服务日志后重试。")
@@ -123,9 +125,7 @@ async def preview_download(
 
 
 @router.get("/preview/{task_id}", response_model=DownloadPreviewPoll)
-async def preview_download_status(
-    task_id: str, workspace: CurrentWorkspace
-) -> DownloadPreviewPoll:
+async def preview_download_status(task_id: str, workspace: CurrentWorkspace) -> DownloadPreviewPoll:
     """Poll the Celery result of a ``POST /downloads/preview`` request."""
 
     del workspace

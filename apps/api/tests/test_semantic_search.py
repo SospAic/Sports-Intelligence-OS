@@ -107,9 +107,7 @@ def test_fuse_keeps_keyword_only_hits() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _seed_contents(
-    workspace_id: UUID, account_id: UUID, rows: list[tuple[str, str]]
-) -> list[UUID]:
+def _seed_contents(workspace_id: UUID, account_id: UUID, rows: list[tuple[str, str]]) -> list[UUID]:
     now = datetime.now(UTC)
     ids: list[UUID] = []
     engine = create_engine(PG_SYNC_URL)
@@ -255,9 +253,7 @@ def test_subtitle_hit_exposes_seekable_time_range(
     workspace_id = UUID(account["workspace_id"])
     account_id = UUID(account["id"])
 
-    (content_id,) = _seed_contents(
-        workspace_id, account_id, [("决赛全场", "含完整解说。")]
-    )
+    (content_id,) = _seed_contents(workspace_id, account_id, [("决赛全场", "含完整解说。")])
     _seed_embeddings(
         workspace_id,
         [(content_id, "subtitle", "裁判亮出满分，比分被彻底改写。", 0, 45000)],
@@ -283,15 +279,11 @@ def test_query_degrades_to_keyword_when_backend_unavailable(
     workspace_id = UUID(account["workspace_id"])
     account_id = UUID(account["id"])
 
-    (content_id,) = _seed_contents(
-        workspace_id, account_id, [("跳水决赛", "反超夺冠。")]
-    )
+    (content_id,) = _seed_contents(workspace_id, account_id, [("跳水决赛", "反超夺冠。")])
     _seed_embeddings(workspace_id, [(content_id, "meta", "跳水决赛 反超夺冠。", 0, None)])
     _enable(client, monkeypatch, backend=False)
 
-    response = client.post(
-        "/api/v1/semantic-search/query", json={"query": "跳水决赛"}
-    )
+    response = client.post("/api/v1/semantic-search/query", json={"query": "跳水决赛"})
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["degraded"] is True
@@ -301,17 +293,13 @@ def test_query_degrades_to_keyword_when_backend_unavailable(
     assert payload["items"][0]["best_chunk"]["matched_by"] == ["keyword"]
 
 
-def test_query_filters_by_account(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_query_filters_by_account(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     csrf = authenticate(client)
     account = create_account(client, csrf)
     workspace_id = UUID(account["workspace_id"])
     account_id = UUID(account["id"])
 
-    (content_id,) = _seed_contents(
-        workspace_id, account_id, [("跳水决赛", "反超夺冠。")]
-    )
+    (content_id,) = _seed_contents(workspace_id, account_id, [("跳水决赛", "反超夺冠。")])
     _seed_embeddings(workspace_id, [(content_id, "meta", "跳水决赛 反超夺冠。", 0, None)])
     _enable(client, monkeypatch)
 
@@ -323,9 +311,7 @@ def test_query_filters_by_account(
     assert response.json()["items"] == []
 
 
-def test_status_reports_index_coverage(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_status_reports_index_coverage(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     csrf = authenticate(client)
     account = create_account(client, csrf)
     workspace_id = UUID(account["workspace_id"])
@@ -383,14 +369,10 @@ def test_reindex_dispatches_backfill_task(
         id = "task-123"
 
     def _delay(workspace_id: str, limit: int, reindex: bool) -> _Task:
-        dispatched.update(
-            {"workspace_id": workspace_id, "limit": limit, "reindex": reindex}
-        )
+        dispatched.update({"workspace_id": workspace_id, "limit": limit, "reindex": reindex})
         return _Task()
 
-    monkeypatch.setattr(
-        "app.tasks.embedding.backfill_content_embeddings.delay", _delay
-    )
+    monkeypatch.setattr("app.tasks.embedding.backfill_content_embeddings.delay", _delay)
 
     response = client.post(
         "/api/v1/semantic-search/reindex",
@@ -565,9 +547,7 @@ def test_rerank_enabled_returns_reranked_scores_within_limit(
     _enable(client, monkeypatch)
     client.app.state.settings.rerank_enabled = True  # type: ignore[attr-defined]
 
-    response = client.post(
-        "/api/v1/semantic-search/query", json={"query": "跳水决赛", "limit": 1}
-    )
+    response = client.post("/api/v1/semantic-search/query", json={"query": "跳水决赛", "limit": 1})
     assert response.status_code == 200, response.text
     payload = response.json()
     assert len(payload["items"]) == 1

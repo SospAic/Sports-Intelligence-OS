@@ -177,9 +177,7 @@ def build_chunks(
             max_chunks=remaining,
         )
         for chunk in subtitle_chunks:
-            pending.append(
-                PendingChunk(kind="subtitle", chunk=chunk, source_ref=subtitle_ref)
-            )
+            pending.append(PendingChunk(kind="subtitle", chunk=chunk, source_ref=subtitle_ref))
 
     return pending
 
@@ -243,9 +241,7 @@ class ContentIndexingService:
             numbered.append(replace(entry, chunk=replace(entry.chunk, index=index)))
 
         stale = [
-            key
-            for key in existing
-            if key[0] not in counters or key[1] >= counters.get(key[0], 0)
+            key for key in existing if key[0] not in counters or key[1] >= counters.get(key[0], 0)
         ]
         deleted = await self._delete_keys(item.id, model, set(stale))
 
@@ -286,9 +282,7 @@ class ContentIndexingService:
         )
         return {(kind, index): text_hash for kind, index, text_hash in rows.all()}
 
-    async def _delete_keys(
-        self, item_id: UUID, model: str, keys: set[tuple[str, int]]
-    ) -> int:
+    async def _delete_keys(self, item_id: UUID, model: str, keys: set[tuple[str, int]]) -> int:
         if not keys:
             return 0
         deleted = 0
@@ -355,9 +349,7 @@ class ContentIndexingService:
         base = media.get("base")
         if not isinstance(base, str) or not base:
             return None, None
-        track = select_subtitle_track(
-            media.get("subtitles"), preferred_language=item.language
-        )
+        track = select_subtitle_track(media.get("subtitles"), preferred_language=item.language)
         if track is None:
             return None, None
         relative = os.path.join(base, str(track["file"]))

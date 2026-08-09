@@ -118,9 +118,9 @@ async def build_download_preview(
         detected_platform = detect_platform_key_from_url(url)
         if detected_platform:
             async with session_factory() as session:
-                _, platform_config = await PlatformCredentialService(
-                    session, settings
-                ).resolve(workspace_id, detected_platform)
+                _, platform_config = await PlatformCredentialService(session, settings).resolve(
+                    workspace_id, detected_platform
+                )
             preview_config = {**platform_config, **preview_config}
         # Preview should remain responsive, while inheriting authentication and
         # extraction settings saved for this workspace.
@@ -295,9 +295,7 @@ def explain_empty_download(
 
     entry = entries[0] or {}
     wants_video = bool(options.get("download_video"))
-    wants_subs = bool(options.get("write_subtitles")) or bool(
-        options.get("write_auto_subtitles")
-    )
+    wants_subs = bool(options.get("write_subtitles")) or bool(options.get("write_auto_subtitles"))
     wants_thumb = bool(options.get("write_thumbnail"))
 
     if wants_subs and not wants_video:

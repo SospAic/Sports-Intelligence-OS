@@ -1408,9 +1408,7 @@ class GenerationService:
             context["name"] = name.strip()[:500]
         tags = raw.get("tags")
         if isinstance(tags, list):
-            context["tags"] = [
-                str(item).strip()[:64] for item in tags if str(item).strip()
-            ][:30]
+            context["tags"] = [str(item).strip()[:64] for item in tags if str(item).strip()][:30]
         subtitle_langs = raw.get("subtitleLangs") or raw.get("subtitle_langs")
         if isinstance(subtitle_langs, list):
             context["subtitle_langs"] = [
@@ -1435,9 +1433,7 @@ class GenerationService:
                 context["subtitles"] = bounded_subtitles
         comments = raw.get("comments")
         if isinstance(comments, list):
-            context["comments"] = [
-                item for item in comments[:20] if isinstance(item, dict)
-            ]
+            context["comments"] = [item for item in comments[:20] if isinstance(item, dict)]
         return context
 
     def _article_payload(self, article: Article, source: Source) -> dict[str, Any]:

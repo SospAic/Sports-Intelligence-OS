@@ -323,9 +323,7 @@ class SemanticSearchService:
             model=model, workspace_id=workspace_id, reindex=False
         ).order_by(None)
         pending = int(
-            await self._session.scalar(
-                select(func.count()).select_from(pending_query.subquery())
-            )
+            await self._session.scalar(select(func.count()).select_from(pending_query.subquery()))
             or 0
         )
 
@@ -616,15 +614,11 @@ class SemanticSearchService:
         head = hits[:top_n]
         tail = hits[top_n:]
 
-        signals = await self._item_signals(
-            workspace_id, {hit.content_item_id for hit in head}
-        )
+        signals = await self._item_signals(workspace_id, {hit.content_item_id for hit in head})
         now = datetime.now(UTC)
 
         for hit in head:
-            published_at, source_kind, status = signals.get(
-                hit.content_item_id, (None, None, None)
-            )
+            published_at, source_kind, status = signals.get(hit.content_item_id, (None, None, None))
             vector = vector_similarity(hit.distance) or 0.0
             keyword = keyword_match_density(hit.text, terms)
             recency = recency_score(published_at, now=now)

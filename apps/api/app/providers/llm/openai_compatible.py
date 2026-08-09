@@ -80,8 +80,7 @@ class OpenAICompatibleProvider(LLMProvider):
         payload: dict[str, Any] = {
             "model": request.model,
             "messages": [
-                {"role": message.role, "content": message.content}
-                for message in request.messages
+                {"role": message.role, "content": message.content} for message in request.messages
             ],
         }
         if cls._is_reasoning_model(request.model):

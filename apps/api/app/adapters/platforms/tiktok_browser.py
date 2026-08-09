@@ -198,8 +198,7 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             if not avatar_url and profile_data is not None:
                 try:
                     img_el = page.locator(
-                        "[data-e2e='browse-user-avatar'] img, "
-                        ".tiktok-1zpj2q-ImgAvatar img"
+                        "[data-e2e='browse-user-avatar'] img, .tiktok-1zpj2q-ImgAvatar img"
                     ).first
                     avatar_url = await img_el.get_attribute("src")
                 except Exception:

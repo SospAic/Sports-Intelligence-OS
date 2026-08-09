@@ -99,11 +99,7 @@ def test_scroll_page_reports_each_step() -> None:
     adapter._max_delay = 0.0
     sink = _CollectingSink()
 
-    asyncio.run(
-        adapter._scroll_page(
-            _FakePage(), times=3, ctx=SimpleNamespace(progress_sink=sink)
-        )
-    )
+    asyncio.run(adapter._scroll_page(_FakePage(), times=3, ctx=SimpleNamespace(progress_sink=sink)))
 
     assert sink.lines == [
         "[tiktok_browser] 滚动加载 1/3",

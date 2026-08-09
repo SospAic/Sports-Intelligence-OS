@@ -27,7 +27,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.models.download import Download
-from app.models.monitoring import Account, ContentItem
+from app.models.monitoring import ContentItem
 
 from .conftest import PG_SYNC_URL, TEST_PLATFORM_ID
 from .test_monitoring_api import authenticate, create_account
@@ -106,9 +106,7 @@ def test_serve_content_media_serves_recorded_file_but_blocks_traversal(
     base_dir.mkdir(parents=True)
     (base_dir / "clip.mp4").write_bytes(b"REAL-CONTENT-BYTES")
 
-    content_id, _ = _seed_content(
-        client, {"video": "clip.mp4", "base": "ws/h/vid"}
-    )
+    content_id, _ = _seed_content(client, {"video": "clip.mp4", "base": "ws/h/vid"})
 
     # Valid recorded file is served.
     ok = client.get(f"/api/v1/media/{content_id}/clip.mp4")
@@ -139,8 +137,6 @@ def test_download_file_serves_recorded_file_but_blocks_traversal(
     assert ok.status_code == 200, ok.text
     assert ok.content == b"REAL-DOWNLOAD-BYTES"
 
-    bad = client.get(
-        f"/api/v1/downloads/{download_id}/file/{_TRAVERSAL}", headers=headers
-    )
+    bad = client.get(f"/api/v1/downloads/{download_id}/file/{_TRAVERSAL}", headers=headers)
     assert bad.status_code in (400, 404), bad.text
     assert b"root:" not in bad.content

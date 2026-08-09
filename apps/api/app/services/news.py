@@ -966,8 +966,12 @@ class NewsService:
 
     def _provider_candidates(self, source: Source) -> tuple[str, ...]:
         configured = source.config_json.get("acquisition_fallbacks")
-        raw = configured if isinstance(configured, list) else DEFAULT_PROVIDER_FALLBACKS.get(
-            source.source_type, (source.provider_key, "browser_news")
+        raw = (
+            configured
+            if isinstance(configured, list)
+            else DEFAULT_PROVIDER_FALLBACKS.get(
+                source.source_type, (source.provider_key, "browser_news")
+            )
         )
         candidates = [source.provider_key, *(str(item) for item in raw)]
         return tuple(dict.fromkeys(candidates))

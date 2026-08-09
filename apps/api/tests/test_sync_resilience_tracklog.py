@@ -274,9 +274,7 @@ async def test_account_analytics_failure_keeps_profile_and_continues_contents() 
     platform_id = uuid4()
     account_id = uuid4()
     run_id = uuid4()
-    registry = _build_registry(
-        FailingAccountAnalyticsAdapter(key=ADAPTER_KEY, content_count=3)
-    )
+    registry = _build_registry(FailingAccountAnalyticsAdapter(key=ADAPTER_KEY, content_count=3))
     async with maker() as session:
         await _seed(session, workspace_id, platform_id, account_id, run_id, ADAPTER_KEY)
 

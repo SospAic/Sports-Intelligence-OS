@@ -16,6 +16,7 @@ Two public helpers:
   for bot-walled accounts (e.g. three TikTok accounts all showing the same
   grey default).
 """
+
 from __future__ import annotations
 
 from urllib.parse import urlparse

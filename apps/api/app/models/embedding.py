@@ -156,9 +156,7 @@ class ContentEmbedding(TimestampMixin, Base):
     end_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     #: 例如字幕文件的相对路径，便于溯源。
     source_ref: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    embedding: Mapped[list[float]] = mapped_column(
-        Vector(embedding_dimension()), nullable=False
-    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(embedding_dimension()), nullable=False)
     embedded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now
     )

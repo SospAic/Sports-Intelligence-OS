@@ -81,17 +81,13 @@ def build_pending_query(
 async def _count_pending(
     session: AsyncSession, *, model: str, workspace_id: UUID | None, reindex: bool
 ) -> int:
-    base = build_pending_query(
-        model=model, workspace_id=workspace_id, reindex=reindex
-    ).order_by(None)
-    return int(
-        await session.scalar(select(func.count()).select_from(base.subquery())) or 0
+    base = build_pending_query(model=model, workspace_id=workspace_id, reindex=reindex).order_by(
+        None
     )
+    return int(await session.scalar(select(func.count()).select_from(base.subquery())) or 0)
 
 
-async def _backfill(
-    *, workspace_id: UUID | None, limit: int, reindex: bool
-) -> dict[str, Any]:
+async def _backfill(*, workspace_id: UUID | None, limit: int, reindex: bool) -> dict[str, Any]:
     settings = get_settings()
     engine, session_factory = create_engine_and_session(settings)
     summary: dict[str, Any] = {
@@ -111,9 +107,7 @@ async def _backfill(
             service = ContentIndexingService(session, settings)
             if not service.embedder.enabled:
                 summary["status"] = "disabled"
-                summary["detail"] = (
-                    "SIO_EMBEDDING_BACKEND is 'none'; nothing was indexed"
-                )
+                summary["detail"] = "SIO_EMBEDDING_BACKEND is 'none'; nothing was indexed"
                 return summary
             model = service.embedder.model
             summary["model"] = model
@@ -153,12 +147,8 @@ async def _backfill(
                             reindex=reindex,
                         )
                         return summary
-                    summary["chunks_written"] = (
-                        int(summary["chunks_written"]) + outcome.written
-                    )
-                    summary["chunks_deleted"] = (
-                        int(summary["chunks_deleted"]) + outcome.deleted
-                    )
+                    summary["chunks_written"] = int(summary["chunks_written"]) + outcome.written
+                    summary["chunks_deleted"] = int(summary["chunks_deleted"]) + outcome.deleted
                     if outcome.status == "indexed":
                         summary["indexed"] = int(summary["indexed"]) + 1
                     elif outcome.status == "unchanged":
@@ -207,9 +197,7 @@ def backfill_content_embeddings(
 ) -> dict[str, Any]:
     parsed = UUID(workspace_id) if workspace_id else None
     bounded = max(1, min(int(limit), 5000))
-    return asyncio.run(
-        _backfill(workspace_id=parsed, limit=bounded, reindex=bool(reindex))
-    )
+    return asyncio.run(_backfill(workspace_id=parsed, limit=bounded, reindex=bool(reindex)))
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

@@ -3,7 +3,6 @@
 Pure-function checks (no DB / network) so they run in the default CI slice and
 enforce the rule that avatar handling is identical across all four platforms.
 """
-import pytest
 
 from app.adapters.platforms.avatar_helpers import (
     is_default_avatar_url,
@@ -55,9 +54,7 @@ def test_should_update_refuses_missing_new():
 def test_should_update_refuses_default_new():
     # A platform default new value never overwrites a stored avatar.
     assert (
-        should_update_avatar(
-            "https://x/old.jpg", "https://i0.hdslb.com/bfs/face/noface.gif"
-        )
+        should_update_avatar("https://x/old.jpg", "https://i0.hdslb.com/bfs/face/noface.gif")
         is False
     )
 
@@ -70,9 +67,7 @@ def test_should_update_same_value_skipped():
 def test_should_update_replaces_default_with_real():
     # If a prior sync smeared a default, a fresh real avatar must win.
     assert (
-        should_update_avatar(
-            "https://i0.hdslb.com/bfs/face/noface.gif", "https://x/new.jpg"
-        )
+        should_update_avatar("https://i0.hdslb.com/bfs/face/noface.gif", "https://x/new.jpg")
         is True
     )
 

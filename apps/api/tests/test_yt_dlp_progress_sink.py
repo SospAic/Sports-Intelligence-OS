@@ -124,9 +124,7 @@ def test_communicate_streams_stderr_to_callback() -> None:
             b'{"id": "abc"}\n',
             b"[download]  10%\n[download]  20%\n",
         )
-        return await YtDlpAdapter._communicate_with_timeout(
-            proc, 5, stderr_callback=sink
-        )
+        return await YtDlpAdapter._communicate_with_timeout(proc, 5, stderr_callback=sink)
 
     out, err = asyncio.run(_run())
     assert out == b'{"id": "abc"}\n'

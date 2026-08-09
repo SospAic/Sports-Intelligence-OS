@@ -45,9 +45,7 @@ PLATFORM_COOKIE_DOMAINS: dict[str, tuple[str, ...]] = {
 AUTH_COOKIE_HINTS: dict[str, frozenset[str]] = {
     "youtube": frozenset({"login_info", "sapisid", "__secure-3papisid", "sid"}),
     "tiktok": frozenset({"sessionid", "sid_tt", "uid_tt", "uid_tt_ss"}),
-    "douyin": frozenset(
-        {"sessionid", "sid_guard", "passport_csrf_token", "uid_tt", "uid_tt_ss"}
-    ),
+    "douyin": frozenset({"sessionid", "sid_guard", "passport_csrf_token", "uid_tt", "uid_tt_ss"}),
     "bilibili": frozenset({"sessdata", "bili_jct", "dedeuserid", "sid"}),
 }
 
@@ -154,7 +152,7 @@ def _storage_state_for_platform(
     for origin in state.get("origins", []):
         if not isinstance(origin, dict):
             continue
-        host = (urlsplit(str(origin.get("origin") or "")).hostname or "")
+        host = urlsplit(str(origin.get("origin") or "")).hostname or ""
         if _domain_matches(host, allowed_domains):
             origins.append(origin)
     return {"cookies": cookies, "origins": origins}
@@ -163,7 +161,7 @@ def _storage_state_for_platform(
 def _pick_page(contexts: list[object], allowed_domains: tuple[str, ...]):
     for context in contexts:
         for page in getattr(context, "pages", []):
-            host = (urlsplit(page.url).hostname or "")
+            host = urlsplit(page.url).hostname or ""
             if _domain_matches(host, allowed_domains):
                 return context, page
     return None, None

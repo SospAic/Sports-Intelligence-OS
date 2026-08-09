@@ -22,7 +22,7 @@ import os
 import random
 import socket
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse, urlunparse
 
 from playwright.async_api import (
@@ -50,6 +50,10 @@ from app.adapters.platforms.base import (
 __all__ = ["LoginRequiredError"]
 
 logger = logging.getLogger(__name__)
+
+# Mirrors Playwright's own ``wait_until`` literal set. Declaring it explicitly
+# keeps ``_navigate`` type-safe when forwarding the value to ``page.goto``.
+WaitUntilState = Literal["commit", "domcontentloaded", "load", "networkidle"]
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -322,8 +326,10 @@ class BrowserPlatformAdapter(PlatformAdapter):
         ctx: AdapterCallContext,
         url: str,
         *,
-        wait_until: str = "domcontentloaded",
-        timeout: int | None = None,
+        wait_until: WaitUntilState = "domcontentloaded",
+        # Playwright's own per-goto timeout, forwarded verbatim to page.goto();
+        # it is not an asyncio cancellation budget, so ASYNC109 does not apply.
+        timeout: int | None = None,  # noqa: ASYNC109
         max_attempts: int = 3,
         response_handler: Any | None = None,
     ) -> tuple[BrowserContext, Page]:
@@ -358,7 +364,11 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 last_exc = exc
                 logger.warning(
                     "navigate attempt %d/%d to %s failed: %s: %s",
-                    attempt, max_attempts, url, type(exc).__name__, exc,
+                    attempt,
+                    max_attempts,
+                    url,
+                    type(exc).__name__,
+                    exc,
                 )
                 self._progress(
                     ctx,
@@ -368,10 +378,17 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 if context is not None:
                     try:
                         await context.close()
-                    except Exception:
-                        pass
+                    except Exception as close_exc:
+                        # The attempt already failed; a context that also refuses
+                        # to close must not mask the original navigation error.
+                        logger.debug(
+                            "failed to close context after navigate error",
+                            extra={"error_type": type(close_exc).__name__},
+                        )
                 if attempt < max_attempts:
-                    await asyncio.sleep(min(2.0 * attempt, 8.0) + random.uniform(0, 1.5))
+                    # Jitter only spreads out retries; it is not a security primitive.
+                    backoff = min(2.0 * attempt, 8.0) + random.uniform(0, 1.5)  # noqa: S311
+                    await asyncio.sleep(backoff)
         assert last_exc is not None
         raise last_exc
 

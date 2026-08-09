@@ -94,9 +94,7 @@ def test_safe_avatar_url_allows_proxy_egress(monkeypatch):
 def test_cache_avatar_for_account_writes_file(tmp_path, monkeypatch):
     from app.api.routes.media import cache_avatar_for_account
 
-    monkeypatch.setattr(
-        "app.api.routes.media._fetch_remote_bytes", lambda url: b"FAKEIMAGE"
-    )
+    monkeypatch.setattr("app.api.routes.media._fetch_remote_bytes", lambda url: b"FAKEIMAGE")
     monkeypatch.setattr("app.api.routes.media.MEDIA_ROOT", str(tmp_path))
     import uuid
 
@@ -170,7 +168,7 @@ class _FakeAvatarClient:
 
 
 def test_fetch_remote_bytes_rejects_non_image(monkeypatch):
-    from app.api.routes.media import _AVATAR_MAX_BYTES, _fetch_remote_bytes
+    from app.api.routes.media import _fetch_remote_bytes
 
     monkeypatch.setattr("app.api.routes.media._is_safe_avatar_url", lambda url: None)
     resp = _FakeAvatarResp("text/html; charset=utf-8", b"<html>")

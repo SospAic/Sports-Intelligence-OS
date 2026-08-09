@@ -221,6 +221,7 @@ def _recovery_args_for(url: str, attempt: int) -> list[str]:
         return ["--extractor-args", f"tiktok:app_info={TIKTOK_RECOVERY_APP_INFO[index]}"]
     return []
 
+
 # Structured ``sync_settings.yt_dlp`` fields that map to a yt-dlp CLI flag.
 # ``dateafter`` / ``datebefore`` / ``playlist_start`` are handled by the sync
 # executor's windowing (not as raw flags here), and ``extra_args`` is a
@@ -1064,9 +1065,7 @@ class YtDlpAdapter(PlatformAdapter):
         try:
             results = await asyncio.gather(
                 *(
-                    self._extract_one_video(
-                        video_urls[vid], base_flags=base, semaphore=semaphore
-                    )
+                    self._extract_one_video(video_urls[vid], base_flags=base, semaphore=semaphore)
                     for vid in ids
                 )
             )

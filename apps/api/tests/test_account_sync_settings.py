@@ -202,9 +202,7 @@ async def test_executor_config_for_bridges_captured_cookie_into_yt_dlp(monkeypat
             return await _fake_resolve(workspace_id, platform_key)
 
     monkeypatch.setattr("app.services.sync.PlatformCredentialService", _FakeCredService)
-    executor.repository = SimpleNamespace(
-        get_sync_settings_config=_fake_get_sync_settings_config
-    )
+    executor.repository = SimpleNamespace(get_sync_settings_config=_fake_get_sync_settings_config)
     account = SimpleNamespace(
         workspace_id=uuid4(),
         platform=SimpleNamespace(key="youtube"),

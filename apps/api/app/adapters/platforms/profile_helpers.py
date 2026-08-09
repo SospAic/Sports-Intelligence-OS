@@ -25,6 +25,7 @@ Both are *scrape failures wearing a valid-looking string*, so they pass a
 simple "is it non-empty" check and get persisted, permanently mislabelling the
 account. The guard below rejects them before they are written.
 """
+
 from __future__ import annotations
 
 # Exact (case/whitespace-normalized) strings that mean "the page we scraped was

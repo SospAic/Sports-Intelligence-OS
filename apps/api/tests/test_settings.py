@@ -83,9 +83,7 @@ def test_manual_browser_session_capture_encrypts_cookie_material(
         sync_engine.dispose()
 
 
-def test_manual_browser_login_defaults_to_docker_browser(
-    client: TestClient, monkeypatch
-) -> None:
+def test_manual_browser_login_defaults_to_docker_browser(client: TestClient, monkeypatch) -> None:
     csrf = authenticate(client)
 
     async def fake_open(endpoint: str, platform_key: str) -> str:

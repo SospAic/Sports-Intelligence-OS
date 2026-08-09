@@ -818,9 +818,7 @@ def _capture_cmd(adapter, *, single=True, retries=None, structured=None):
     try:
         if single:
             if retries is None:
-                coro = adapter._run_yt_dlp_single(
-                    "https://example.com/x", structured=structured
-                )
+                coro = adapter._run_yt_dlp_single("https://example.com/x", structured=structured)
             else:
                 coro = adapter._run_yt_dlp_single(
                     "https://example.com/x", retries=retries, structured=structured
@@ -864,8 +862,7 @@ def test_single_json_materializes_captured_cookie_file_and_cleans_it_up():
         single=True,
         structured={
             "cookies_netscape": (
-                "# Netscape HTTP Cookie File\n"
-                ".youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tprivate\n"
+                "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tprivate\n"
             ),
             "cookies_from_browser": "chrome",
         },

@@ -21,9 +21,7 @@ def test_youtube_video_id_variants() -> None:
 
 def test_run_preview_passthrough() -> None:
     fake = {"status": "ok", "preview": {"url": "u", "title": "t"}}
-    with patch(
-        "app.services.download.build_download_preview", new=AsyncMock(return_value=fake)
-    ):
+    with patch("app.services.download.build_download_preview", new=AsyncMock(return_value=fake)):
         result = asyncio.run(_run_preview("https://x", uuid.uuid4()))
     assert result == fake
 
@@ -76,15 +74,19 @@ async def test_build_preview_ok() -> None:
     sr.return_value.get_sync_settings_config = AsyncMock(return_value={})
     ydl = MagicMock()
     ydl.return_value._run_yt_dlp = AsyncMock(return_value=(entries, {}))
-    with patch(
-        "app.db.session.create_engine_and_session",
-        return_value=_fake_engine_session(session),
-    ), patch("app.repositories.sync.SyncRepository", sr), patch(
-        "app.services.platform_detect.detect_platform_key_from_url", return_value=None
-    ), patch(
-        "app.providers.news.utils.ensure_public_media_endpoint",
-        new=AsyncMock(return_value="https://x"),
-    ), patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl):
+    with (
+        patch(
+            "app.db.session.create_engine_and_session",
+            return_value=_fake_engine_session(session),
+        ),
+        patch("app.repositories.sync.SyncRepository", sr),
+        patch("app.services.platform_detect.detect_platform_key_from_url", return_value=None),
+        patch(
+            "app.providers.news.utils.ensure_public_media_endpoint",
+            new=AsyncMock(return_value="https://x"),
+        ),
+        patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl),
+    ):
         result = await build_download_preview("https://x", ws, settings)
     assert result["status"] == "ok"
     assert result["preview"]["title"] == "T"
@@ -101,23 +103,24 @@ async def test_build_preview_429_fallback() -> None:
     ydl.return_value._run_yt_dlp = AsyncMock(
         side_effect=Exception("HTTP Error 429: Too Many Requests")
     )
-    with patch(
-        "app.db.session.create_engine_and_session",
-        return_value=_fake_engine_session(session),
-    ), patch(
-        "app.repositories.sync.SyncRepository",
-        MagicMock(**{"return_value.get_sync_settings_config": AsyncMock(return_value={})}),
-    ), patch(
-        "app.services.platform_detect.detect_platform_key_from_url", return_value=None
-    ), patch(
-        "app.providers.news.utils.ensure_public_media_endpoint",
-        new=AsyncMock(return_value="https://www.youtube.com/watch?v=v1"),
-    ), patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl), patch(
-        "app.services.download._youtube_oembed_preview", new=AsyncMock(return_value=oembed)
+    with (
+        patch(
+            "app.db.session.create_engine_and_session",
+            return_value=_fake_engine_session(session),
+        ),
+        patch(
+            "app.repositories.sync.SyncRepository",
+            MagicMock(**{"return_value.get_sync_settings_config": AsyncMock(return_value={})}),
+        ),
+        patch("app.services.platform_detect.detect_platform_key_from_url", return_value=None),
+        patch(
+            "app.providers.news.utils.ensure_public_media_endpoint",
+            new=AsyncMock(return_value="https://www.youtube.com/watch?v=v1"),
+        ),
+        patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl),
+        patch("app.services.download._youtube_oembed_preview", new=AsyncMock(return_value=oembed)),
     ):
-        result = await build_download_preview(
-            "https://www.youtube.com/watch?v=v1", ws, settings
-        )
+        result = await build_download_preview("https://www.youtube.com/watch?v=v1", ws, settings)
     assert result["status"] == "ok"
     assert result["preview"]["title"] == "oembed"
 
@@ -128,22 +131,23 @@ async def test_build_preview_generic_error() -> None:
     session = AsyncMock()
     ydl = MagicMock()
     ydl.return_value._run_yt_dlp = AsyncMock(side_effect=Exception("boom"))
-    with patch(
-        "app.db.session.create_engine_and_session",
-        return_value=_fake_engine_session(session),
-    ), patch(
-        "app.repositories.sync.SyncRepository",
-        MagicMock(**{"return_value.get_sync_settings_config": AsyncMock(return_value={})}),
-    ), patch(
-        "app.services.platform_detect.detect_platform_key_from_url", return_value=None
-    ), patch(
-        "app.providers.news.utils.ensure_public_media_endpoint",
-        new=AsyncMock(return_value="https://www.tiktok.com/@u/video/1"),
-    ), patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl), patch(
-        "app.services.download._youtube_oembed_preview", new=AsyncMock(return_value=None)
+    with (
+        patch(
+            "app.db.session.create_engine_and_session",
+            return_value=_fake_engine_session(session),
+        ),
+        patch(
+            "app.repositories.sync.SyncRepository",
+            MagicMock(**{"return_value.get_sync_settings_config": AsyncMock(return_value={})}),
+        ),
+        patch("app.services.platform_detect.detect_platform_key_from_url", return_value=None),
+        patch(
+            "app.providers.news.utils.ensure_public_media_endpoint",
+            new=AsyncMock(return_value="https://www.tiktok.com/@u/video/1"),
+        ),
+        patch("app.adapters.platforms.yt_dlp.YtDlpAdapter", ydl),
+        patch("app.services.download._youtube_oembed_preview", new=AsyncMock(return_value=None)),
     ):
-        result = await build_download_preview(
-            "https://www.tiktok.com/@u/video/1", ws, settings
-        )
+        result = await build_download_preview("https://www.tiktok.com/@u/video/1", ws, settings)
     assert result["status"] == "error"
     assert result["error_code"] == 422

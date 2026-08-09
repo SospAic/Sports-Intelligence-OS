@@ -188,9 +188,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             avatar_url = None
             if display_name != f"UID {mid}":
                 try:
-                    avatar_el = page.locator(
-                        ".h-avatar img, .bili-avatar img, .b-avatar img"
-                    ).first
+                    avatar_el = page.locator(".h-avatar img, .bili-avatar img, .b-avatar img").first
                     avatar_url = await avatar_el.get_attribute("src")
                     if avatar_url and avatar_url.startswith("//"):
                         avatar_url = "https:" + avatar_url

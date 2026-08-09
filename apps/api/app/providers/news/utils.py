@@ -142,8 +142,7 @@ def is_known_media_source(value: str) -> bool:
     normalized = validate_source_url(value)
     host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
     return any(
-        host == suffix or host.endswith(f".{suffix}")
-        for suffix in MEDIA_SOURCE_HOST_SUFFIXES
+        host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_SOURCE_HOST_SUFFIXES
     )
 
 

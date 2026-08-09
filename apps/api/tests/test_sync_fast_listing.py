@@ -147,11 +147,13 @@ def test_fetch_concurrency_is_clamped_per_platform() -> None:
     youtube = YouTubeYtDlpAdapter()
     tiktok = TikTokYtDlpAdapter()
 
-    assert youtube._fetch_concurrency(_ctx(fetch_concurrency=99)) == (
-        YTDLP_PLATFORM_FETCH_CONCURRENCY["youtube"]
+    assert (
+        youtube._fetch_concurrency(_ctx(fetch_concurrency=99))
+        == (YTDLP_PLATFORM_FETCH_CONCURRENCY["youtube"])
     )
-    assert tiktok._fetch_concurrency(_ctx(fetch_concurrency=99)) == (
-        YTDLP_PLATFORM_FETCH_CONCURRENCY["tiktok"]
+    assert (
+        tiktok._fetch_concurrency(_ctx(fetch_concurrency=99))
+        == (YTDLP_PLATFORM_FETCH_CONCURRENCY["tiktok"])
     )
     # TikTok's ceiling is strictly lower than YouTube's: anti-bot posture.
     assert tiktok._fetch_concurrency(_ctx(fetch_concurrency=99)) < youtube._fetch_concurrency(
@@ -311,9 +313,7 @@ async def test_metrics_cache_is_populated_for_every_listed_work(recorder) -> Non
         known_external_ids=frozenset({"known1"}),
     )
 
-    await adapter.list_contents(
-        ctx, HANDLE, published_after=None, cursor=None, page_size=10
-    )
+    await adapter.list_contents(ctx, HANDLE, published_after=None, cursor=None, page_size=10)
     analytics = await adapter.fetch_content_analytics(ctx, ["known1", "new1"])
 
     by_id = {row.external_id: row for row in analytics}

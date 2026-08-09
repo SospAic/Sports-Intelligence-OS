@@ -152,14 +152,14 @@ _PROXY_EGRESS_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...
     ipaddress.ip_network("fdfe:dcba:9876::/48"),
 )
 _DANGEROUS_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
-    ipaddress.ip_network("127.0.0.0/8"),       # loopback
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback
     ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("169.254.0.0/16"),    # link-local incl. cloud metadata 169.254.169.254
-    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
-    ipaddress.ip_network("10.0.0.0/8"),        # RFC1918
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local incl. cloud metadata 169.254.169.254
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC1918
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("fc00::/7"),          # unique-local (ULA)
+    ipaddress.ip_network("fc00::/7"),  # unique-local (ULA)
 )
 
 
@@ -192,7 +192,8 @@ def _is_safe_avatar_url(url: str) -> None:
     if parsed.scheme.lower() not in {"http", "https"}:
         raise ValueError("avatar URL must use http or https")
     hostname = (parsed.hostname or "").strip().lower()
-    if hostname in {"localhost", "0.0.0.0", "::1", "::", ""}:
+    # These literals are an SSRF *denylist*, not a bind address.
+    if hostname in {"localhost", "0.0.0.0", "::1", "::", ""}:  # noqa: S104
         raise ValueError("avatar host is not allowed")
     try:
         infos = socket.getaddrinfo(hostname, None)

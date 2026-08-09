@@ -138,8 +138,7 @@ class EmbeddingService:
         response = await client.post(url, json=body, headers=headers)
         if response.status_code >= 400:
             raise EmbeddingError(
-                f"embedding backend returned HTTP {response.status_code}: "
-                f"{response.text[:300]}"
+                f"embedding backend returned HTTP {response.status_code}: {response.text[:300]}"
             )
         try:
             data = response.json()

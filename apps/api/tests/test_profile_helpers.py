@@ -5,6 +5,7 @@ YouTube, TikTok, Douyin and Bilibili. The three corruption shapes asserted
 below were all found as real rows in the live database before the guard
 existed (see profile_helpers module docstring).
 """
+
 from __future__ import annotations
 
 import pytest
