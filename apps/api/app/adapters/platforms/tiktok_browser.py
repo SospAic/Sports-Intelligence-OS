@@ -90,6 +90,28 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             raise LoginRequiredError("TikTok", "登录需要验证码、2FA 或其他人工验证")
         return True
 
+    def _session_configured(self, ctx: AdapterCallContext) -> bool:
+        """True when a login session/cookie is present in the call context.
+
+        Distinguishes a *real* login wall (no credential configured, so retrying
+        is futile) from a transient anti-bot challenge served to an already
+        authenticated browser, which a retry can clear.
+        """
+        cfg = ctx.config or {}
+        return bool(cfg.get("storage_state_json") or cfg.get("cookies_netscape"))
+
+    def _raise_login_wall(self, ctx: AdapterCallContext, detail: str) -> None:
+        if self._session_configured(ctx):
+            # A session IS configured, so the wall is almost certainly TikTok's
+            # intermittent anti-bot challenge rather than a missing credential.
+            # Mark it retryable so the run's existing backoff/retry budget
+            # (platform_request_max_attempts) can self-heal it instead of
+            # permanently failing the account.
+            raise TransientAdapterError(
+                "TikTok 已配置登录态但被反爬墙临时拦截，将按可重试策略自动重试"
+            )
+        raise LoginRequiredError("TikTok", detail)
+
     async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         """Navigate to the profile page and extract account info."""
         username = locator.lstrip("@")
@@ -189,9 +211,8 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
             if is_anti_bot_shell_profile(
                 profile_data or None, display_name, synthetic_names=(f"@{username}",)
             ):
-                raise LoginRequiredError(
-                    "TikTok",
-                    "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie",
+                self._raise_login_wall(
+                    ctx, "公开页未返回账号资料（反爬/未登录拦截），需配置登录态 cookie"
                 )
 
             # C: only attempt a DOM avatar fallback when the authoritative XHR
@@ -324,9 +345,8 @@ class TikTokBrowserAdapter(BrowserPlatformAdapter):
                 # all-None metrics object that downstream code can only label
                 # with a vague "指标提取失败". Permanent, not retryable — see the
                 # matching branch in ``resolve_account``.
-                raise LoginRequiredError(
-                    "TikTok",
-                    "公开页未返回账号指标（反爬/未登录拦截），需配置登录态 cookie",
+                self._raise_login_wall(
+                    ctx, "公开页未返回账号指标（反爬/未登录拦截），需配置登录态 cookie"
                 )
             return PlatformMetricsData(
                 external_id=username,
