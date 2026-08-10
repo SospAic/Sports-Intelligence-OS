@@ -1805,33 +1805,44 @@ class PlatformSyncExecutor:
         return created, updated, failed, content_analytics_failed
 
     @staticmethod
-    def _view_count_from_metadata(meta: Mapping[str, Any] | None) -> int | None:
-        """Recover a per-work view count captured by browser adapters.
+    def _metrics_from_metadata(meta: Mapping[str, Any] | None) -> dict[str, int]:
+        """Harvest interaction metrics browser adapters stash during listing.
 
-        Browser adapters stash ``view_count`` (int) or ``view_text`` (e.g.
-        '1.2M views') in ``ContentItem.metadata_json`` because their
-        ``fetch_content_analytics`` cannot retrieve structured metrics. We
-        surface that as a real ``ContentSnapshot.view_count`` so the UI shows
-        "相关数据" instead of blanks.
+        Browser adapters cannot call a structured analytics API, so when they
+        scrape a profile/video page they record whatever the DOM exposes in
+        ``ContentItem.metadata_json`` — e.g. Douyin ``digg_count``/``comment_count``/
+        ``share_count``/``play_count``, Bilibili ``comment``/``play``. The default
+        ``fetch_content_analytics`` therefore returns no metrics, which left
+        ``ContentSnapshot`` rows with blank like/comment/share counts.
+
+        This normalizes those aliases into the canonical snapshot fields so #61
+        interaction snapshots and #62 comment counts carry real data instead of
+        being dropped.
         """
         if not meta:
-            return None
-        for key in ("view_count", "play_count"):
-            vc = meta.get(key)
-            if isinstance(vc, bool):
-                continue
-            if isinstance(vc, int) and not isinstance(vc, bool):
-                return vc
-            if isinstance(vc, float):
-                return int(vc)
-            if isinstance(vc, str) and vc.strip():
-                parsed = parse_compact_count(vc)
-                if parsed is not None:
-                    return parsed
-        vt = meta.get("view_text")
-        if isinstance(vt, str) and vt.strip():
-            return parse_compact_count(vt)
-        return None
+            return {}
+        out: dict[str, int] = {}
+
+        def take(canonical: str, *keys: str) -> None:
+            for key in keys:
+                raw = meta.get(key)
+                if isinstance(raw, bool):
+                    continue
+                val: int | None = None
+                if isinstance(raw, (int, float)):
+                    val = int(raw)
+                elif isinstance(raw, str) and raw.strip():
+                    val = parse_compact_count(raw)
+                if val is not None:
+                    out[canonical] = val
+                    return
+
+        take("view_count", "view_count", "play_count", "view_text")
+        take("like_count", "like_count", "digg_count")
+        take("comment_count", "comment_count")
+        take("share_count", "share_count", "repost_count")
+        take("favorite_count", "favorite_count")
+        return out
 
     def _synthesize_content_snapshots(
         self,
@@ -1840,22 +1851,29 @@ class PlatformSyncExecutor:
         page_items: list[ContentItem],
         analytics: Sequence[PlatformMetricsData],
     ) -> int:
-        """Create a ContentSnapshot from adapter-captured view counts when the
-        platform's ``fetch_content_analytics`` returned no structured metrics."""
+        """Create a ContentSnapshot from interaction metrics browser adapters
+        stashed in ``ContentItem.metadata_json`` when ``fetch_content_analytics``
+        returned no structured metrics.
+
+        Douyin/Bilibili listings expose like/comment/share/play counts; without
+        harvesting them here those counts would be dropped and #61/#62 would
+        show blanks. The analytics path already covers adapters that return
+        real metrics, so those external ids are skipped below.
+        """
         snapshotted = {a.external_id for a in analytics if a.metrics}
         made = 0
         for item in page_items:
             if item.external_id in snapshotted:
                 continue
-            vc = self._view_count_from_metadata(item.metadata_json)
-            if vc is not None:
+            metrics = self._metrics_from_metadata(item.metadata_json)
+            if metrics:
                 self.session.add(
                     self._content_snapshot(
                         item.id,
                         PlatformMetricsData(
                             external_id=item.external_id,
                             captured_at=ctx.observed_at,
-                            metrics={"view_count": vc},
+                            metrics=metrics,
                             source_kind="live",
                             provider=adapter.key,
                             fetched_at=ctx.observed_at,

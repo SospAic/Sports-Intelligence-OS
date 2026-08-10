@@ -11,17 +11,26 @@ def parse_compact_count(text: str | None) -> int | None:
     """Parse compact count strings into an integer.
 
     Handles '1.2M', '456K', '1,234,567', '789' and trailing words such as
-    'views' / '播放' / '次观看'. Returns ``None`` when nothing parseable.
+    'views' / '播放' / '次观看'. Also handles Chinese compact suffixes
+    '万' (1e4) and '亿' (1e8) as in '1.2万', '3.4亿', '1.2万亿' — these appear
+    throughout Douyin/Bilibili UIs. Returns ``None`` when nothing parseable.
     """
     if not text:
         return None
     t = text.strip().upper().replace(",", "")
-    t = re.sub(r"[^0-9.KMB]", "", t)
-    m = re.match(r"([\d.]+)\s*([KMB]?)", t)
+    t = re.sub(r"[^0-9.KMB万亿]", "", t)
+    m = re.match(r"([\d.]+)\s*([KMB万万亿]*)", t)
     if not m:
         return None
     num = float(m.group(1))
-    mult = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}.get(m.group(2), 1)
+    mult = {
+        "K": 1_000,
+        "M": 1_000_000,
+        "B": 1_000_000_000,
+        "万": 10_000,
+        "亿": 100_000_000,
+        "万亿": 1_000_000_000_000,
+    }.get(m.group(2), 1)
     return int(num * mult)
 
 
