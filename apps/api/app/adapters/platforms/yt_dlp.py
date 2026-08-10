@@ -140,6 +140,14 @@ YTDLP_LOGIN_WALL_MARKERS: tuple[str, ...] = (
     "join this channel",
 )
 
+# TikTok anti-bot layer serving a stripped page raises yt-dlp's
+# "Unable to extract universal data for rehydration". This is *not* in
+# :data:`YTDLP_PERMANENT_ERROR_MARKERS` because the adapter must first exhaust
+# its escalating recovery attempts (mobile-API ``app_info`` rotation) — only
+# once every attempt fails do we treat it as a wall. See
+# :data:`YTDLP_ANTIBOT_REHYDRATION_MARKERS` and :func:`_permanent_error_for`.
+YTDLP_ANTIBOT_REHYDRATION_MARKERS: tuple[str, ...] = ("universal data for rehydration",)
+
 # "The credentials/region are not allowed to see this" -> 权限/地域限制.
 YTDLP_FORBIDDEN_MARKERS: tuple[str, ...] = (
     "do not have permission",
@@ -188,6 +196,15 @@ def _permanent_error_for(platform: str, err_text: str) -> PlatformAdapterError |
         return PermissionDeniedError(f"{platform} 拒绝访问该资源：{excerpt}")
     if any(marker in lowered for marker in YTDLP_GONE_MARKERS):
         return AdapterNotFoundError(f"{platform} 资源不存在或已被删除：{excerpt}")
+    # Anti-bot "stripped page" errors (TikTok: "universal data for rehydration").
+    # These are deliberately absent from :data:`YTDLP_PERMANENT_ERROR_MARKERS`
+    # so the escalating recovery attempts run first; once they are exhausted the
+    # only remedy is a real login / cookie, so surface it as a wall.
+    if any(marker in lowered for marker in YTDLP_ANTIBOT_REHYDRATION_MARKERS):
+        return LoginRequiredError(
+            platform,
+            f"反爬拦截（页面未水合），需配置登录态/凭证后重试：{excerpt}",
+        )
     return None
 
 

@@ -17,6 +17,7 @@ import pytest
 from app.adapters.platforms.base import LoginRequiredError, TransientAdapterError
 from app.adapters.platforms.yt_dlp import (
     TIKTOK_RECOVERY_APP_INFO,
+    YTDLP_EXTRACTION_ATTEMPTS,
     YtDlpAdapter,
     _is_permanent_extractor_error,
     _recovery_args_for,
@@ -147,6 +148,33 @@ async def test_permanent_error_fails_fast_without_retry(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rehydration_failure_is_non_retryable_after_recovery(monkeypatch) -> None:
+    """#65: a TikTok anti-bot "universal data for rehydration" error must first
+    burn its escalating recovery attempts, then surface as a *non-retryable*
+    login wall so the Celery retry ladder does not multiply wall clock."""
+
+    calls: list[list[str]] = []
+    # Every attempt fails with the rehydration error -> recovery is exhausted.
+    _install_fake_exec(
+        monkeypatch,
+        [(b"", REHYDRATION_ERROR.encode(), 1)] * YTDLP_EXTRACTION_ATTEMPTS,
+        calls,
+    )
+
+    with pytest.raises(LoginRequiredError) as excinfo:
+        await YtDlpAdapter()._run_yt_dlp(TIKTOK_URL, download={}, playlist_end=1)
+
+    assert excinfo.value.retryable is False
+    assert excinfo.value.code == "login_required"
+    # The adapter must have actually tried the recovery paths before giving up.
+    assert len(calls) == YTDLP_EXTRACTION_ATTEMPTS
+    assert any(
+        "--extractor-args" in call and any(a.startswith("tiktok:app_info=") for a in call)
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_successful_first_attempt_does_not_retry(monkeypatch) -> None:
     payload = json.dumps({"id": "abc", "title": "ok"}).encode()
     calls: list[list[str]] = []
@@ -181,12 +209,16 @@ async def test_timeout_is_never_retried(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_all_attempts_exhausted_raises_with_original_error(monkeypatch) -> None:
+    """#65: rehydration exhaustion is a non-retryable wall, not a transient error."""
+
     calls: list[list[str]] = []
     _install_fake_exec(monkeypatch, [(b"", REHYDRATION_ERROR.encode(), 1)], calls)
 
-    with pytest.raises(TransientAdapterError, match="rehydration"):
+    with pytest.raises(LoginRequiredError) as excinfo:
         await YtDlpAdapter()._run_yt_dlp(TIKTOK_URL, download={}, playlist_end=1)
 
+    assert excinfo.value.retryable is False
+    assert excinfo.value.code == "login_required"
     assert len(calls) >= 2, "exhausting attempts still means more than one try"
 
 
