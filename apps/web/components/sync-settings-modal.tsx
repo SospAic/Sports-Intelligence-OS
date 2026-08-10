@@ -9,6 +9,7 @@ import type {
 } from "@sio/shared-types";
 import { Loader2, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { useWorkspace } from "@/components/app-shell";
 import {
@@ -121,19 +122,20 @@ export function SyncSettingsModal({
     }
   }
 
-  return (
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-4 pt-[10vh]"
       role="dialog"
       aria-modal="true"
       aria-labelledby="sync-settings-modal-title"
     >
       <button
         aria-label="关闭"
-        className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+        className="fixed inset-0 -z-10 bg-black/60 backdrop-blur-sm"
         onClick={onClose}
       />
-      <div className="relative flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+      <div className="relative flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
           <div className="min-w-0">
             <h2 id="sync-settings-modal-title" className="text-sm font-semibold text-white">
@@ -188,6 +190,7 @@ export function SyncSettingsModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
