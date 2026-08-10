@@ -505,6 +505,11 @@ class PlatformSyncExecutor:
         # derived value rides along on the new (append-only) row — never via an
         # UPDATE of an existing snapshot.
         self._pending_account_snapshot: AccountSnapshot | None = None
+        # Content ids whose embeddable text changed during this run. Collected
+        # while ingesting and flushed to the incremental index task after each
+        # page commit (see ``_flush_pending_indexing``), so the dispatch always
+        # happens against an already-committed row.
+        self._pending_index_ids: list[UUID] = []
 
     def _remaining_budget_seconds(self, run: SyncRun) -> float:
         """Return the remaining wall-clock budget for an external call.
@@ -1595,9 +1600,12 @@ class PlatformSyncExecutor:
                 # A single work that fails to upsert must not abort the whole
                 # sync. Record it, continue, and surface it in the tracklog.
                 try:
-                    content, was_created, was_skipped = await self._upsert_content(
-                        account, data, skip_existing=skip_existing
-                    )
+                    (
+                        content,
+                        was_created,
+                        was_skipped,
+                        indexable_changed,
+                    ) = await self._upsert_content(account, data, skip_existing=skip_existing)
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
                     logger.warning(
@@ -1628,6 +1636,10 @@ class PlatformSyncExecutor:
                     page_skipped += 1
                 else:
                     updated += int(not was_created)
+                # Text-affecting fields changed (or it's brand new) -> queue a
+                # fresh vector index so semantic search sees the latest text.
+                if indexable_changed:
+                    self._pending_index_ids.append(content.id)
                     action = "created" if was_created else "updated"
                     self._emit(
                         run,
@@ -1652,6 +1664,7 @@ class PlatformSyncExecutor:
                         f"（本页 {page_processed}/{batch_total}，累计 {run.items_processed} 条）",
                     )
                     await self.session.commit()
+                    await self._flush_pending_indexing()
             if page_skipped > 0:
                 self._emit(
                     run,
@@ -1894,9 +1907,33 @@ class PlatformSyncExecutor:
         if sink is not None:
             sink.push(f"▸ {message}")
 
+    @staticmethod
+    def _index_signature(
+        title: str | None,
+        description: str | None,
+        tags: list[str] | None,
+        media: Any,
+    ) -> tuple[object, ...]:
+        """Stable signature of the text that feeds embedding.
+
+        Only title / description / tags / subtitle tracks affect the embedded
+        vectors; engagement metrics live in ``content_snapshots`` and must NOT
+        trigger a re-index. Used to decide whether a content upsert needs a
+        fresh vector index.
+        """
+
+        subs = (media or {}).get("subtitles") if isinstance(media, dict) else None
+        if isinstance(subs, list):
+            subs_sig = tuple(
+                sorted((s.get("lang", ""), s.get("file", "")) for s in subs if isinstance(s, dict))
+            )
+        else:
+            subs_sig = ()
+        return (title, description, tuple(sorted(tags or [])), subs_sig)
+
     async def _upsert_content(
         self, account: Account, data: PlatformContentData, skip_existing: bool = False
-    ) -> tuple[ContentItem, bool, bool]:
+    ) -> tuple[ContentItem, bool, bool, bool]:
         content = await self.session.scalar(
             select(ContentItem).where(
                 ContentItem.workspace_id == account.workspace_id,
@@ -1906,6 +1943,11 @@ class PlatformSyncExecutor:
             )
         )
         created = content is None
+        old_index_sig = (
+            self._index_signature(content.title, content.description, content.tags, content.media)
+            if content is not None
+            else None
+        )
         skipped = False
         if content is None:
             content = ContentItem(
@@ -1989,7 +2031,45 @@ class PlatformSyncExecutor:
                 # union with existing to avoid clobbering manually added tags
                 merged = list(dict.fromkeys([*content.tags, *data.tags]))
                 content.tags = merged[:30]
-        return content, created, skipped
+        if created:
+            indexable_changed = True
+        else:
+            new_index_sig = self._index_signature(
+                content.title, content.description, content.tags, content.media
+            )
+            indexable_changed = new_index_sig != old_index_sig
+        return content, created, skipped, indexable_changed
+
+    async def _flush_pending_indexing(self) -> None:
+        """Dispatch the incremental index task for content whose text changed.
+
+        Called right after a per-page ``commit``, so every queued id is already
+        durable in the database when ``index_content_item`` picks it up. No-ops
+        unless semantic search is actually enabled (otherwise there is nothing
+        to index into).
+        """
+
+        if not self._pending_index_ids:
+            return
+        indexing_enabled = self.settings.semantic_search_enabled
+        backend_ready = self.settings.embedding_backend != "none"
+        if not (indexing_enabled and backend_ready):
+            self._pending_index_ids.clear()
+            return
+        try:
+            from app.tasks.embedding import index_content_item
+        except Exception:  # pragma: no cover - import guard
+            self._pending_index_ids.clear()
+            return
+        for content_id in self._pending_index_ids:
+            try:
+                index_content_item.delay(str(content_id))
+            except Exception as exc:  # noqa: BLE001 - broker may be unavailable
+                logger.warning(
+                    "sync_index_dispatch_failed",
+                    extra={"content_item_id": str(content_id), "error": str(exc)},
+                )
+        self._pending_index_ids.clear()
 
     def _content_snapshot(self, content_id: UUID, data: PlatformMetricsData) -> ContentSnapshot:
         value = data.metrics

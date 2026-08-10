@@ -26,6 +26,7 @@ from uuid import UUID
 
 import anyio
 from sqlalchemy import delete, func, select
+from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -285,18 +286,17 @@ class ContentIndexingService:
     async def _delete_keys(self, item_id: UUID, model: str, keys: set[tuple[str, int]]) -> int:
         if not keys:
             return 0
-        deleted = 0
-        for kind, index in keys:
-            result = await self._session.execute(
-                delete(ContentEmbedding).where(
-                    ContentEmbedding.content_item_id == item_id,
-                    ContentEmbedding.model == model,
-                    ContentEmbedding.chunk_kind == kind,
-                    ContentEmbedding.chunk_index == index,
-                )
+        # One bulk DELETE instead of N per-key round-trips: during a large
+        # backfill the stale-chunk set can be large, and the per-key loop was a
+        # measurable source of round-trips.
+        result = await self._session.execute(
+            delete(ContentEmbedding).where(
+                ContentEmbedding.content_item_id == item_id,
+                ContentEmbedding.model == model,
+                sa_tuple(ContentEmbedding.chunk_kind, ContentEmbedding.chunk_index).in_(keys),
             )
-            deleted += int(result.rowcount or 0)
-        return deleted
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def _persist(
         self,

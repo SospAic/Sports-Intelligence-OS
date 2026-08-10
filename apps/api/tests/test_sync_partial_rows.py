@@ -208,7 +208,7 @@ async def test_partial_row_does_not_erase_stored_detail() -> None:
     async with maker() as session:
         account = await session.get(Account, account_id)
         executor = PlatformSyncExecutor(session, ProviderRegistry(), _settings())
-        content, created, skipped = await executor._upsert_content(
+        content, created, skipped, _indexable_changed = await executor._upsert_content(
             account, _content_data(partial=True), skip_existing=False
         )
         await session.commit()
@@ -236,7 +236,7 @@ async def test_full_row_still_overwrites_stored_detail() -> None:
     async with maker() as session:
         account = await session.get(Account, account_id)
         executor = PlatformSyncExecutor(session, ProviderRegistry(), _settings())
-        content, _created, _skipped = await executor._upsert_content(
+        content, _created, _skipped, _indexable_changed = await executor._upsert_content(
             account, _content_data(partial=False, status="public"), skip_existing=False
         )
         await session.commit()
@@ -258,7 +258,7 @@ async def test_missing_status_never_violates_the_not_null_constraint() -> None:
     async with maker() as session:
         account = await session.get(Account, account_id)
         executor = PlatformSyncExecutor(session, ProviderRegistry(), _settings())
-        content, _created, _skipped = await executor._upsert_content(
+        content, _created, _skipped, _indexable_changed = await executor._upsert_content(
             account, _content_data(partial=False, status=None), skip_existing=False
         )
         await session.commit()

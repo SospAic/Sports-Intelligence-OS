@@ -132,6 +132,19 @@ class Settings(BaseSettings):
             "fused order, so this bounds the extra cost regardless of 'candidates'."
         ),
     )
+    embedding_cache_enabled: bool = Field(
+        default=True,
+        description=(
+            "Cache embedding vectors in-process keyed by (model, text) so repeated "
+            "passages (same caption, re-embedded on re-index) never hit the backend twice."
+        ),
+    )
+    embedding_cache_max_entries: int = Field(
+        default=20000,
+        ge=1,
+        le=200000,
+        description="LRU ceiling for the in-process embedding cache (vectors are ~4KB each).",
+    )
     platform_request_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     platform_request_max_attempts: int = Field(default=3, ge=1, le=5)
     sync_task_max_retries: int = Field(default=3, ge=0, le=10)

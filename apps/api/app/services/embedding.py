@@ -29,6 +29,7 @@ from typing import Any
 import httpx
 
 from app.core.config import Settings, get_settings
+from app.services.text_chunking import sha256_text
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +181,77 @@ class EmbeddingService:
         return vectors
 
 
-def build_embedding_service(settings: Settings | None = None) -> EmbeddingService:
-    """Factory kept separate so tests can swap in a stub."""
+class CachedEmbeddingService(EmbeddingService):
+    """``EmbeddingService`` with an in-process LRU cache keyed by ``(model, text)``.
 
-    return EmbeddingService(settings)
+    Re-indexing the same caption / description / subtitle block across runs would
+    otherwise re-hit the backend every time. Identical passages collapse to one
+    backend call; the cache is bounded so a long backfill cannot exhaust memory.
+    """
+
+    def __init__(self, settings: Settings | None = None, max_entries: int = 20000) -> None:
+        super().__init__(settings)
+        self._cache: dict[str, list[float]] = {}
+        self._cache_max = max(1, int(max_entries))
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def _key(self, text: str) -> str:
+        return sha256_text(f"{self._model}\0{text}")
+
+    async def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        if not self.enabled:
+            # Short-circuit exactly like the base class (raises EmbeddingError).
+            return await super().embed_texts(texts)
+
+        results: list[list[float] | None] = [None] * len(texts)
+        # Deduplicate within the batch: the same passage appearing twice in one
+        # call must still hit the backend only once. We remember which miss
+        # slot each input position resolves to and fill them all afterwards.
+        seen_keys: dict[str, int] = {}
+        miss_texts: list[str] = []
+        index_to_slot: list[int] = []
+        for index, text in enumerate(texts):
+            key = self._key(text)
+            cached = self._cache.get(key)
+            if cached is not None:
+                results[index] = cached
+                self.cache_hits += 1
+                index_to_slot.append(-1)
+                continue
+            slot = seen_keys.get(key)
+            if slot is None:
+                slot = len(miss_texts)
+                seen_keys[key] = slot
+                miss_texts.append(text)
+                self.cache_misses += 1
+            index_to_slot.append(slot)
+
+        if miss_texts:
+            computed = await super().embed_texts(miss_texts)
+            for text, vector in zip(miss_texts, computed, strict=True):
+                self._cache[self._key(text)] = vector
+            for index, slot in enumerate(index_to_slot):
+                if slot >= 0:
+                    results[index] = computed[slot]
+            # Crude LRU eviction: when over budget, drop the oldest half.
+            if len(self._cache) > self._cache_max:
+                excess = len(self._cache) - self._cache_max
+                for stale in list(self._cache)[: max(excess, self._cache_max // 2)]:
+                    self._cache.pop(stale, None)
+
+        return [row for row in results if row is not None]
+
+
+def build_embedding_service(settings: Settings | None = None) -> EmbeddingService:
+    """Factory kept separate so tests can swap in a stub.
+
+    Wraps the service in an in-process cache unless ``embedding_cache_enabled``
+    is off, so both ``ContentIndexingService`` and ``SemanticSearchService``
+    (which receive the embedder via dependency injection) benefit for free.
+    """
+
+    resolved = settings or get_settings()
+    if resolved.embedding_cache_enabled and resolved.embedding_backend != "none":
+        return CachedEmbeddingService(resolved, max_entries=resolved.embedding_cache_max_entries)
+    return EmbeddingService(resolved)
