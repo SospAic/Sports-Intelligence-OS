@@ -1816,6 +1816,14 @@ HA require deployment infrastructure outside this local Compose workspace.
 
 下一入口：恢复 Docker/PostgreSQL 后先执行 `20260815_0004` 迁移和审核工作台集成测试；随后补成员邀请与频道级权限、Notes/评论协作，再设计官方授权边界内的排期和发布 Adapter 契约。
 
+## 2026-08-15 Redis AOF 故障核查与恢复
+
+- 根因确认：`sports-intelligence-os-redis-1` 持续 `Restarting (1)`，退出码为 1；Redis 日志显示 `appendonly.aof.31.base.rdb` 正常加载 38,628 个 key，但 `appendonly.aof.31.incr.aof` 末尾 441 字节格式损坏。只读 `redis-check-aof` 报告 `ok_up_to=57284387`、`diff=441`。
+- 已先停止 Redis 重启循环，并在 named volume `sports-intelligence-os_redis_data` 内创建恢复备份：`/data/appendonlydir/recovery-backup-20260815T125853Z/`，包含损坏增量 AOF、base RDB、manifest，SHA-256 已记录在操作输出中。
+- 使用 Redis 7.4 同版本镜像的官方 `redis-check-aof --fix`，在确认后仅截去 441 字节损坏尾部；Redis 启动后自动完成 AOF 重写并生成 `appendonly.aof.32.base.rdb` / `appendonly.aof.32.incr.aof`。
+- 实机验证通过：Redis 容器 `healthy`；`redis-cli ping` 返回 `PONG`；当前增量 AOF `diff=0` 且 `is valid`；`INFO persistence` 显示 `aof_last_write_status:ok`、`aof_last_bgrewrite_status:ok`；`DBSIZE=20131`；API `/health/live` 和 `/health/ready` 返回 200，ready 中 `database=ok`、`redis=ok`；API、Worker、Beat 容器内 Redis ping 均为 True；Compose 配置校验通过。
+- 未删除 Redis/PostgreSQL 数据卷，未重建业务镜像；本次是持久化文件的受控恢复。故障排查和恢复顺序已补充到 `docs/TROUBLESHOOTING.md`。
+
 ## 2026-08-15 Storage lifecycle governance and release-gate follow-up
 
 - Implemented the storage lifecycle policy and migration
