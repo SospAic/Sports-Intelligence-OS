@@ -92,6 +92,11 @@ class TrendAggregate(BaseModel):
 
     generated_at: datetime
     window_days: int
+    source_scope: str = "live"
+    raw_topic_observations: int = 0
+    unique_topics: int = 0
+    raw_video_observations: int = 0
+    unique_videos: int = 0
     platforms: list[str]
     categories: list[str]
     # 趋势时间线: 每天每平台的累计热度

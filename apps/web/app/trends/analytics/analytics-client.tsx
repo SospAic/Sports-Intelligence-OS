@@ -58,6 +58,11 @@ type AggItem = {
 type Agg = {
   generated_at: string;
   window_days: number;
+  source_scope: string;
+  raw_topic_observations: number;
+  unique_topics: number;
+  raw_video_observations: number;
+  unique_videos: number;
   platforms: string[];
   categories: string[];
   timeline: { date: string; platform: string; heat: number }[];
@@ -253,6 +258,11 @@ export function AnalyticsClient() {
           <p className="mb-3 text-xs text-slate-500">
             {MODES.find((m) => m.key === mode)?.hint} · 窗口 {data.window_days} 天 · 平台{" "}
             {activePlatforms.map((p) => PLATFORM_LABELS[p] ?? p).join("/") || "全部"}
+          </p>
+          <p className="mb-4 text-[11px] text-slate-600">
+            数据范围：{data.source_scope === "live" ? "实时来源" : data.source_scope} · 已按平台与实体去重：
+            {data.unique_topics} 个话题（{data.raw_topic_observations} 条观测）· {data.unique_videos} 个视频/资讯实体（
+            {data.raw_video_observations} 条观测）
           </p>
 
           {mode === "timeline" && (

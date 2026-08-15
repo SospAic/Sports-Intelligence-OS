@@ -176,6 +176,137 @@ async def test_trend_dashboard_uses_latest_unique_observations(
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_trend_aggregate_deduplicates_snapshots_and_excludes_unverified_rows(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    """Analytics must rank entities, not every append-only observation."""
+    authenticate(client)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            session.add_all(
+                [
+                    TrendTopic(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        title="Same topic",
+                        category="basketball",
+                        heat_score=10,
+                        rank=2,
+                        sample_size=1,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now - timedelta(days=2),
+                    ),
+                    TrendTopic(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        title="Same topic",
+                        category="basketball",
+                        heat_score=30,
+                        rank=1,
+                        sample_size=2,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                    TrendTopic(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        title="Unverified topic",
+                        category="basketball",
+                        heat_score=100,
+                        rank=1,
+                        sample_size=1,
+                        metadata_json={"source_kind": "imported"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        external_id="video-1",
+                        title="Old video",
+                        category="basketball",
+                        breakout_score=1,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now - timedelta(days=1),
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        external_id="video-1",
+                        title="Current video",
+                        category="basketball",
+                        breakout_score=3,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        external_id="unverified-video",
+                        title="Unverified video",
+                        category="basketball",
+                        breakout_score=100,
+                        metadata_json={"source_kind": "imported"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="web",
+                        external_id="feed-a:https://publisher.example/story",
+                        title="Same syndicated article",
+                        category="basketball",
+                        breakout_score=20,
+                        metadata_json={
+                            "source_kind": "live",
+                            "source_article_id": "https://publisher.example/story",
+                        },
+                        observed_at=now - timedelta(hours=1),
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="web",
+                        external_id="feed-b:https://publisher.example/story",
+                        title="Same syndicated article",
+                        category="basketball",
+                        breakout_score=25,
+                        metadata_json={
+                            "source_kind": "live",
+                            "source_article_id": "https://publisher.example/story",
+                        },
+                        observed_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            result = await TrendService(session).aggregate(workspace_id, days=30)
+
+            ranking = result["ranking"]
+            assert [item.title for item in ranking].count("Same topic") == 1
+            assert [item.title for item in ranking].count("Same syndicated article") == 1
+            assert "Old video" not in [item.title for item in ranking]
+            assert "Unverified topic" not in [item.title for item in ranking]
+            assert "Unverified video" not in [item.title for item in ranking]
+            assert result["window_days"] == 30
+            assert result["raw_video_observations"] == 4
+            assert result["unique_videos"] == 2
+            basketball = next(
+                item for item in result["matrix"]
+                if item["platform"] == "youtube" and item["category"] == "basketball"
+            )
+            assert basketball["heat"] == pytest.approx(33.0)
+    finally:
+        await engine.dispose()
+
+
 def test_trend_terms_use_controlled_sports_vocabulary_and_explicit_hashtags() -> None:
     assert _trend_terms("NBA 总决赛集锦 #绝杀时刻") >= {"NBA", "绝杀时刻"}
     assert _trend_terms("普通生活记录") == set()

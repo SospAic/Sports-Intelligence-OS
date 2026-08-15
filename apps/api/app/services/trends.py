@@ -58,6 +58,61 @@ class TrendService:
                 pass
         return bool(row.observed_at >= cutoff)
 
+    @staticmethod
+    def _topic_identity(row: TrendTopic) -> tuple[str, str]:
+        """Return the stable identity used by all topic projections.
+
+        Trend topics are append-only observations.  ``id`` is therefore a
+        snapshot id, not an entity id; using it in analytics would render the
+        same topic once per collection run.  Titles are the current canonical
+        key because the collector stores normalized terms rather than a
+        separate topic entity table.
+        """
+        return row.platform, row.title.strip().casefold()
+
+    @staticmethod
+    def _video_identity(row: TrendVideo) -> tuple[str, str]:
+        """Return the stable identity for a video or public article row.
+
+        Platform videos are keyed by their provider id.  RSS-backed web rows
+        include the same article in multiple feeds, so their provider-scoped
+        ``external_id`` is not an entity id; ``source_article_id`` is the
+        canonical article identity and must take precedence when present.
+        """
+        if row.platform == "web":
+            source_article_id = str(
+                (row.metadata_json or {}).get("source_article_id") or ""
+            ).strip()
+            if source_article_id:
+                return row.platform, source_article_id.casefold()
+        return row.platform, row.external_id.strip()
+
+    @staticmethod
+    def _latest_unique[T: Any](
+        rows: list[T], identity: Any,
+    ) -> list[T]:
+        """Keep the newest observation for each logical entity.
+
+        The trend tables intentionally retain history for audit and trend
+        analysis.  Read models must project that history into one current row
+        per entity before ranking or summing metrics.  ``id`` is only a
+        deterministic tie-breaker when two observations share a timestamp.
+        """
+        ordered = sorted(
+            rows,
+            key=lambda row: (row.observed_at, str(row.id)),
+            reverse=True,
+        )
+        seen: set[Any] = set()
+        result: list[T] = []
+        for row in ordered:
+            key = identity(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(row)
+        return result
+
     async def _latest_topics(
         self,
         workspace_id: UUID,
@@ -74,19 +129,14 @@ class TrendService:
         rows = (
             await self.session.scalars(stmt.order_by(TrendTopic.observed_at.desc()).limit(5_000))
         ).all()
-        latest: list[TrendTopic] = []
-        seen: set[tuple[str, str]] = set()
         cutoff = self._cutoff(window_hours)
-        for row in rows:
-            if row.metadata_json.get("source_kind") != "live" or not self._row_is_in_window(
-                row, cutoff, topic=True
-            ):
-                continue
-            identity = (row.platform, row.title.casefold())
-            if identity not in seen:
-                seen.add(identity)
-                latest.append(row)
-        return latest
+        live_rows = [
+            row
+            for row in rows
+            if (row.metadata_json or {}).get("source_kind") == "live"
+            and self._row_is_in_window(row, cutoff, topic=True)
+        ]
+        return self._latest_unique(live_rows, self._topic_identity)
 
     async def _latest_videos(
         self,
@@ -104,19 +154,14 @@ class TrendService:
         rows = (
             await self.session.scalars(stmt.order_by(TrendVideo.observed_at.desc()).limit(5_000))
         ).all()
-        latest: list[TrendVideo] = []
-        seen: set[tuple[str, str]] = set()
         cutoff = self._cutoff(window_hours)
-        for row in rows:
-            if row.metadata_json.get("source_kind") != "live" or not self._row_is_in_window(
-                row, cutoff
-            ):
-                continue
-            identity = (row.platform, row.external_id)
-            if identity not in seen:
-                seen.add(identity)
-                latest.append(row)
-        return latest
+        live_rows = [
+            row
+            for row in rows
+            if (row.metadata_json or {}).get("source_kind") == "live"
+            and self._row_is_in_window(row, cutoff)
+        ]
+        return self._latest_unique(live_rows, self._video_identity)
 
     async def get_dashboard(
         self, workspace_id: UUID, *, window_hours: int = 24
@@ -273,7 +318,8 @@ class TrendService:
         timeline (每天每平台累计热度), ranking (热点/视频按热度), index
         (各平台归一化热度 0-100), matrix (平台 × 分类 热度合计).
         """
-        cutoff = datetime.now(UTC) - timedelta(days=days)
+        safe_days = max(1, min(int(days), 90))
+        cutoff = datetime.now(UTC) - timedelta(days=safe_days)
 
         tstmt = select(TrendTopic).where(
             TrendTopic.workspace_id == workspace_id,
@@ -283,7 +329,7 @@ class TrendService:
             tstmt = tstmt.where(TrendTopic.platform.in_(platforms))
         if category:
             tstmt = tstmt.where(TrendTopic.category == category)
-        topics = (
+        topic_rows = (
             await self.session.scalars(tstmt.order_by(TrendTopic.observed_at.desc()).limit(20_000))
         ).all()
 
@@ -295,9 +341,38 @@ class TrendService:
             vstmt = vstmt.where(TrendVideo.platform.in_(platforms))
         if category:
             vstmt = vstmt.where(TrendVideo.category == category)
-        videos = (
+        video_rows = (
             await self.session.scalars(vstmt.order_by(TrendVideo.observed_at.desc()).limit(20_000))
         ).all()
+
+        # The tables are append-only snapshots.  Only live, publication-valid
+        # observations belong in the default hotspot analytics, and each
+        # logical entity must contribute once to ranking/index/matrix metrics.
+        topics = [
+            row
+            for row in topic_rows
+            if (row.metadata_json or {}).get("source_kind") == "live"
+            and self._row_is_in_window(row, cutoff, topic=True)
+        ]
+        videos = [
+            row
+            for row in video_rows
+            if (row.metadata_json or {}).get("source_kind") == "live"
+            and self._row_is_in_window(row, cutoff)
+        ]
+        latest_topics = self._latest_unique(topics, self._topic_identity)
+        latest_videos = self._latest_unique(videos, self._video_identity)
+
+        # Preserve a useful daily timeline without summing repeated snapshots
+        # of one entity collected multiple times on the same day.
+        daily_topics = self._latest_unique(
+            topics,
+            lambda row: (row.observed_at.date().isoformat(), *self._topic_identity(row)),
+        )
+        daily_videos = self._latest_unique(
+            videos,
+            lambda row: (row.observed_at.date().isoformat(), *self._video_identity(row)),
+        )
 
         plat_set: set[str] = set()
         cat_set: set[str] = set()
@@ -311,10 +386,10 @@ class TrendService:
 
         # 趋势时间线: 每天 × 平台 的累计热度
         day_plat_heat: dict[tuple[str, str], float] = {}
-        for t in topics:
+        for t in daily_topics:
             key = (t.observed_at.date().isoformat(), t.platform)
             day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(t.heat_score)
-        for v in videos:
+        for v in daily_videos:
             if v.breakout_score is not None:
                 key = (v.observed_at.date().isoformat(), v.platform)
                 day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(v.breakout_score)
@@ -323,10 +398,14 @@ class TrendService:
         ]
 
         # 排行榜单: 热点按热度 + 视频按爆发分
-        top_topics = sorted(topics, key=lambda x: x.heat_score, reverse=True)[:25]
+        top_topics = sorted(
+            latest_topics,
+            key=lambda x: (x.heat_score, x.observed_at),
+            reverse=True,
+        )[:25]
         top_videos = sorted(
-            [v for v in videos if v.breakout_score is not None],
-            key=lambda x: x.breakout_score or 0,
+            [v for v in latest_videos if v.breakout_score is not None],
+            key=lambda x: (x.breakout_score or 0, x.observed_at),
             reverse=True,
         )[:25]
         ranking: list[TrendAggregateItem] = []
@@ -355,11 +434,15 @@ class TrendService:
                 )
             )
 
-        # 指数对比: 各平台总热度归一化到 0-100
+        # Ranking mixes two 0-100 derived scores, so sort the merged result by
+        # score instead of placing every topic ahead of every video.
+        ranking.sort(key=lambda item: item.metric, reverse=True)
+
+        # 指数对比: 各平台当前实体热度归一化到 0-100
         plat_heat: dict[str, float] = {}
-        for t in topics:
+        for t in latest_topics:
             plat_heat[t.platform] = plat_heat.get(t.platform, 0.0) + float(t.heat_score)
-        for v in videos:
+        for v in latest_videos:
             if v.breakout_score is not None:
                 plat_heat[v.platform] = plat_heat.get(v.platform, 0.0) + float(v.breakout_score)
         max_heat = max(plat_heat.values()) if plat_heat else 0.0
@@ -373,10 +456,10 @@ class TrendService:
 
         # 热度矩阵: 平台 × 分类 热度合计
         pc: dict[tuple[str, str], float] = {}
-        for t in topics:
+        for t in latest_topics:
             k = (t.platform, t.category)
             pc[k] = pc.get(k, 0.0) + float(t.heat_score)
-        for v in videos:
+        for v in latest_videos:
             if v.breakout_score is not None and v.category:
                 k = (v.platform, v.category)
                 pc[k] = pc.get(k, 0.0) + float(v.breakout_score)
@@ -387,7 +470,12 @@ class TrendService:
 
         return {
             "generated_at": datetime.now(UTC),
-            "window_days": days,
+            "window_days": safe_days,
+            "source_scope": "live",
+            "raw_topic_observations": len(topics),
+            "unique_topics": len(latest_topics),
+            "raw_video_observations": len(videos),
+            "unique_videos": len(latest_videos),
             "platforms": sorted(plat_set),
             "categories": sorted(cat_set),
             "timeline": timeline,

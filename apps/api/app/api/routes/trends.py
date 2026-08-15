@@ -41,6 +41,7 @@ router = APIRouter(prefix="/trends", tags=["trends"])
 Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=100)]
 WindowHours = Annotated[int, Query(ge=24, le=72)]
+AnalyticsDays = Annotated[int, Query(ge=1, le=90)]
 
 
 @router.get("/dashboard", response_model=TrendDashboard)
@@ -168,7 +169,7 @@ async def aggregate_trends(
     db: DatabaseSession,
     platforms: str | None = None,
     category: str | None = None,
-    days: int = 30,
+    days: AnalyticsDays = 30,
 ) -> TrendAggregate:
     """Single/multi-platform + category aggregation for the analytics view.
 

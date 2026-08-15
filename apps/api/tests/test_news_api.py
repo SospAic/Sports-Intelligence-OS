@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -7,11 +9,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.news import Article
+from app.models.news import Article, EventArticle, Source, TopicEvent
 from app.models.workspace import Workspace
 from app.providers.news.base import NewsProvider
 from app.providers.news.feed import RSSProvider
 from app.providers.registry import ProviderRegistry
+from app.repositories.news import EventFilters, NewsRepository
 from app.services.news import NewsService
 from app.services.news_seed import (
     DEFAULT_SOURCE_EXAMPLES,
@@ -397,3 +400,100 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
         for item in sources.json()["items"]
         if "example_config" in item["config"]
     )
+
+
+@pytest.mark.asyncio
+async def test_event_listing_projects_duplicate_normalized_titles(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    """Keep repeated historical event rows out of the current event list."""
+    csrf = authenticate(client)
+    source = create_manual_source(client, csrf)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            source_row = await session.get(Source, UUID(str(source["id"])))
+            assert source_row is not None
+            for index, heat in enumerate((20, 80)):
+                event = TopicEvent(
+                    id=UUID(int=index + 1),
+                    workspace_id=workspace_id,
+                    title=f"Same event {index}",
+                    normalized_title="same normalized event",
+                    summary=None,
+                    sport="basketball",
+                    league="NBA",
+                    start_time=now,
+                    last_update_time=now - timedelta(hours=index),
+                    article_count=1,
+                    source_count=1,
+                    heat_score=Decimal(str(heat)),
+                    reliability_score=Decimal("80"),
+                    controversy_score=Decimal("0"),
+                    visual_score=Decimal("50"),
+                    story_score=Decimal("50"),
+                    status="active",
+                    metadata_json={"source_kind": "imported"},
+                    is_bookmarked=False,
+                    bookmarked_at=None,
+                )
+                article = Article(
+                    id=UUID(int=index + 101),
+                    workspace_id=workspace_id,
+                    source_id=source_row.id,
+                    external_id=f"same-event-{index}",
+                    canonical_url=f"https://publisher.example/same-event-{index}",
+                    title=f"Same event {index}",
+                    summary=None,
+                    content=None,
+                    author=None,
+                    published_at=now,
+                    event_time=now,
+                    fetched_at=now,
+                    language="en",
+                    sport="basketball",
+                    league="NBA",
+                    country="US",
+                    metadata_json={},
+                    content_hash=f"{index + 1:064d}",
+                    duplicate_group_id=None,
+                    is_bookmarked=False,
+                    source_kind="imported",
+                    source_provider="manual_news",
+                    source_url=f"https://publisher.example/same-event-{index}",
+                    raw_payload_ref=None,
+                )
+                session.add_all([event, article])
+                await session.flush()
+                session.add(
+                    EventArticle(
+                        id=UUID(int=index + 201),
+                        event_id=event.id,
+                        article_id=article.id,
+                        match_score=Decimal("1"),
+                        linked_by="automatic",
+                        created_at=now,
+                    )
+                )
+            await session.commit()
+
+            items, total = await NewsRepository(session).list_events(
+                workspace_id,
+                filters=EventFilters(),
+                sort="heat_score",
+                order="desc",
+                page=1,
+                page_size=20,
+            )
+            assert total == 1
+            assert len(items) == 1
+            assert float(items[0].heat_score) == 80
+    finally:
+        await engine.dispose()

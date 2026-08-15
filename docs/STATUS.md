@@ -1824,6 +1824,16 @@ HA require deployment infrastructure outside this local Compose workspace.
 - 实机验证通过：Redis 容器 `healthy`；`redis-cli ping` 返回 `PONG`；当前增量 AOF `diff=0` 且 `is valid`；`INFO persistence` 显示 `aof_last_write_status:ok`、`aof_last_bgrewrite_status:ok`；`DBSIZE=20131`；API `/health/live` 和 `/health/ready` 返回 200，ready 中 `database=ok`、`redis=ok`；API、Worker、Beat 容器内 Redis ping 均为 True；Compose 配置校验通过。
 - 未删除 Redis/PostgreSQL 数据卷，未重建业务镜像；本次是持久化文件的受控恢复。故障排查和恢复顺序已补充到 `docs/TROUBLESHOOTING.md`。
 
+## 2026-08-15 热点情报中心排行榜重复项与指标审计
+
+- 根因确认：`/trends/aggregate` 直接把 `trend_topics` / `trend_videos` 的追加式历史快照全部加入排行榜、平台指数和分类矩阵；近 30 天数据库中话题观测 23,828 条但唯一平台+话题仅 490 个，视频/资讯观测 131,894 条但唯一平台+external_id 仅 2,313 个。
+- 已修复分析投影：默认只使用 `source_kind=live` 且满足时间/发布时间边界的数据；排行榜按平台+规范化话题或平台+external_id 取最新观测；时间线按日期+实体去重；指数与矩阵按去重后的当前实体计算；合并榜单按分数排序。
+- web 资讯改用 `metadata.source_article_id` 作为 canonical article 身份，修复同一篇文章被不同 RSS feed 投影为不同 external_id 后重复入榜的问题；新闻事件列表按 `normalized_title` 做非破坏性 read-model 去重，历史文章和事件审计链不删除。
+- API 返回原始观测数/去重实体数，前端在“情报分析”中显示数据范围和去重统计；`days` 参数收敛到 1–90 天。
+- 发现并修复部署阻断：Compose 将可选 `SIO_MEDIA_STORAGE_QUOTA_BYTES=` 作为空字符串传入，Pydantic 无法解析为 `int | None`，导致 API 启动重启；空值现在按未设置处理。该修复不改变默认生命周期清理关闭的安全边界。
+- 验证：最终 API/Worker/Beat/字幕 Worker 镜像重建并更新成功；迁移 `20260815_0004 (head)`；API/Web/数据库/Redis 健康检查通过；Ruff、compileall、mypy 通过；趋势/资讯去重回归 `3 passed`，空配额启动回归 `1 passed`。宿主机 pnpm 直跑因 Node 未在 PATH 中阻断，但 Web Docker production build 已通过 Next.js TypeScript 阶段。
+- 审计报告见 `docs/HOTSPOT_INTELLIGENCE_AUDIT_2026-08-15.md`。历史快照未删除，RSS 不同 canonical URL 的转载仍保留来源证据，跨语言实体归一化、模型回测和真实平台 canary 仍是后续边界。
+
 ## 2026-08-15 Storage lifecycle governance and release-gate follow-up
 
 - Implemented the storage lifecycle policy and migration

@@ -391,11 +391,32 @@ class NewsRepository:
         }
         sort_column = sort_columns[sort]
         ordering = sort_column.asc() if order == "asc" else sort_column.desc()
+        # A topic event is a read-model entity, while the underlying article
+        # links are append-only evidence.  Older sync runs can leave multiple
+        # active rows with the same normalized title (for example when the
+        # same RSS item reappears after the clustering lookback).  Keep the
+        # newest/best row visible without deleting historical rows or their
+        # audit links.  The requested sort determines which duplicate wins.
+        ranked_events = (
+            select(
+                TopicEvent.id.label("event_id"),
+                func.row_number()
+                .over(
+                    partition_by=(TopicEvent.workspace_id, TopicEvent.normalized_title),
+                    order_by=(ordering, TopicEvent.last_update_time.desc(), TopicEvent.id.asc()),
+                )
+                .label("entity_rank"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        unique_event_ids = ranked_events.c.entity_rank == 1
         items = list(
             (
                 await self.session.scalars(
                     select(TopicEvent)
-                    .where(*conditions)
+                    .join(ranked_events, TopicEvent.id == ranked_events.c.event_id)
+                    .where(unique_event_ids)
                     .order_by(ordering, TopicEvent.id.asc())
                     .offset((page - 1) * page_size)
                     .limit(page_size)
@@ -405,7 +426,9 @@ class NewsRepository:
         total = int(
             (
                 await self.session.scalar(
-                    select(func.count()).select_from(TopicEvent).where(*conditions)
+                    select(func.count())
+                    .select_from(ranked_events)
+                    .where(unique_event_ids)
                 )
             )
             or 0

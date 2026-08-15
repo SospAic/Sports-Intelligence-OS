@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEVELOPMENT_SECRET = "local-development-secret-replace-before-production-2026"  # noqa: S105
@@ -230,6 +230,15 @@ class Settings(BaseSettings):
             "Optional soft quota for the media volume; health reporting never deletes files."
         ),
     )
+
+    @field_validator("media_storage_quota_bytes", mode="before")
+    @classmethod
+    def _empty_media_quota_is_unset(cls, value: object) -> object:
+        """Treat Compose's optional empty environment value as ``None``."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        return value
+
     media_storage_scan_max_files: int = Field(
         default=100_000,
         ge=100,
