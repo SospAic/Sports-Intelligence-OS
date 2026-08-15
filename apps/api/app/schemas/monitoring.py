@@ -396,6 +396,30 @@ class ContentRead(BaseModel):
     tags: list[str] = Field(default_factory=list)
     latest_snapshot: ContentSnapshotRead | None = None
     view_growth_24h: float | None = None
+    artifacts: list["MediaArtifactRead"] = Field(default_factory=list)
+
+
+class MediaArtifactRead(BaseModel):
+    """Physical integrity state for one downloadable/playable resource."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    content_item_id: UUID | None = None
+    download_id: UUID | None = None
+    artifact_kind: str
+    language: str | None = None
+    format: str | None = None
+    file_name: str
+    relative_path: str
+    status: Literal["pending", "ready", "missing", "corrupt", "failed", "stale"]
+    size_bytes: int | None = None
+    sha256: str | None = None
+    mime_type: str | None = None
+    source_kind: SourceKind
+    source_provider: str
+    checked_at: datetime | None = None
+    error_detail: str | None = None
 
 
 class CommentRead(BaseModel):
@@ -405,11 +429,37 @@ class CommentRead(BaseModel):
     content_item_id: UUID
     platform_comment_id: str
     author_name: str
+    author_url: str | None = None
+    author_avatar_url: str | None = None
     text: str
     like_count: int | None = None
     reply_count: int | None = None
+    parent_comment_id: str | None = None
+    is_reply: bool = False
     published_at: datetime | None = None
     fetched_at: datetime
+    source_kind: SourceKind = "live"
+    source_provider: str
+    source_url: str | None = None
+    metadata: dict[str, Any] = Field(validation_alias="metadata_json", default_factory=dict)
+
+
+class CommentSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    content_item_id: UUID
+    comment_id: UUID
+    platform_comment_id: str
+    rank: int
+    like_count: int | None = None
+    reply_count: int | None = None
+    published_at: datetime | None = None
+    captured_at: datetime
+    source_kind: SourceKind = "live"
+    source_provider: str
+    source_url: str | None = None
+    metadata: dict[str, Any] = Field(validation_alias="metadata_json", default_factory=dict)
 
 
 class ContentPage(BaseModel):
@@ -459,19 +509,37 @@ class AccountContentSummary(BaseModel):
     avg_completion_rate: float | None = None
     avg_watch_time_seconds: float | None = None
     avg_engagement_rate: float | None = None
+    # Totals across the latest snapshot of each synced work. These are kept
+    # separate so the UI never presents account lifetime likes as "total
+    # interactions" and never hides the underlying interaction breakdown.
+    total_like_count: int | None = None
+    total_comment_count: int | None = None
+    total_share_count: int | None = None
+    total_favorite_count: int | None = None
     total_interactions: int | None = None
+    # Calculated from the above work totals / total work views. These are
+    # derived metrics, not private platform analytics.
+    calculated_engagement_rate: float | None = None
+    calculated_like_rate: float | None = None
+    calculated_comment_rate: float | None = None
+    calculated_share_rate: float | None = None
+    calculated_favorite_rate: float | None = None
+    content_total_view_count: int | None = None
     # Account-level totals captured from the platform profile (e.g. TikTok's
     # lifetime "likes"), when the adapter obtained them. These are the
     # authoritative account-wide figures; ``total_interactions`` is the sum of
-    # synced-content interactions and is only a partial subset for accounts with
-    # more videos than were synced. The UI prefers these for the 总互动量 /
-    # 总播放量 cards.
+    # synced-content interactions and is only a partial subset for accounts
+    # with more videos than were synced. The UI labels these separately from
+    # the work-level interaction breakdown.
     account_total_likes: int | None = None
     account_total_views: int | None = None
     traffic_source_split: dict[str, float | None] = Field(
         default_factory=_default_traffic_source_split
     )
     recent_24h_view_growth: int | None = None
+    recent_24h_view_growth_estimated: bool = False
+    recent_24h_view_growth_sample_size: int | None = None
+    recent_24h_view_growth_actual_window_hours: float | None = None
     top_content_id: UUID | None = None
     top_content_title: str | None = None
     top_content_views: int | None = None

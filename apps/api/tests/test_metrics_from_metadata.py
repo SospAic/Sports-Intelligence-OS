@@ -6,7 +6,13 @@ synthesize path harvests those into ``ContentSnapshot`` rows so #61/#62 are not
 blank. These tests lock in the alias normalisation (digg->like, play->view,
 ...).
 """
-from app.adapters.platforms.base import parse_compact_count
+from datetime import UTC, datetime
+
+from app.adapters.platforms.base import (
+    PlatformContentData,
+    PlatformMetricsData,
+    parse_compact_count,
+)
 from app.services.sync import PlatformSyncExecutor
 
 
@@ -71,6 +77,47 @@ def test_favorite_count_is_preserved() -> None:
 def test_missing_metadata_yields_empty() -> None:
     assert PlatformSyncExecutor._metrics_from_metadata(None) == {}
     assert PlatformSyncExecutor._metrics_from_metadata({}) == {}
+
+
+def test_public_catalogue_metrics_are_not_labelled_missing() -> None:
+    content = PlatformContentData(
+        external_id="post-1",
+        account_external_id="creator",
+        content_type="video",
+        title="Public post",
+        description=None,
+        published_at=None,
+        duration_seconds=None,
+        canonical_url="https://example.com/post-1",
+        cover_url=None,
+        language="en",
+        status="public",
+        source_kind="live",
+        provider="tiktok_browser",
+        fetched_at=datetime.now(UTC),
+        metadata={"view_count": 1200, "like_count": 80},
+    )
+    empty_analytics = PlatformMetricsData(
+        external_id="post-1",
+        captured_at=content.fetched_at,
+        metrics={},
+        source_kind="live",
+        provider="tiktok_browser",
+        fetched_at=content.fetched_at,
+        unavailable_metrics=("view_count", "like_count"),
+    )
+    assert (
+        PlatformSyncExecutor._content_metrics_state(
+            content, empty_analytics, analytics_failed=False
+        )
+        == "partial"
+    )
+    assert (
+        PlatformSyncExecutor._content_metrics_state(
+            content, None, analytics_failed=True
+        )
+        == "partial"
+    )
 
 
 def test_bool_values_are_ignored() -> None:

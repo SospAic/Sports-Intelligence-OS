@@ -33,6 +33,20 @@ def test_subtitle_language_mismatch_is_called_out() -> None:
     assert "ja.*" in reason
 
 
+def test_tiktok_browser_empty_reason_does_not_surface_yt_dlp_parser_error() -> None:
+    reason = explain_empty_download(
+        {"download_video": False, "write_subtitles": True},
+        [
+            {
+                "extractor": "tiktok_browser",
+                "_sio_empty_reason": "TikTok 公开页未提供所选字幕轨道。",
+            }
+        ],
+    )
+    assert reason == "TikTok 公开页未提供所选字幕轨道。"
+    assert "Unexpected response from webpage request" not in reason
+
+
 def test_video_run_points_at_quality_settings() -> None:
     reason = explain_empty_download(
         {"download_video": True, "video_quality": "2160p"},

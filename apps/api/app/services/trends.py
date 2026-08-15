@@ -22,7 +22,7 @@ from app.schemas.trends import (
 )
 
 # 支持的平台列表
-PLATFORMS = ("youtube", "tiktok", "douyin", "bilibili")
+PLATFORMS = ("youtube", "tiktok", "douyin", "bilibili", "web")
 
 
 class TrendService:
@@ -36,15 +36,38 @@ class TrendService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cutoff() -> datetime:
-        return datetime.now(UTC) - timedelta(hours=24)
+    def _cutoff(window_hours: int = 24) -> datetime:
+        """Return a bounded freshness cutoff for the hotspot dashboard."""
+        safe_hours = max(24, min(int(window_hours), 72))
+        return datetime.now(UTC) - timedelta(hours=safe_hours)
+
+    @staticmethod
+    def _row_is_in_window(row: Any, cutoff: datetime, *, topic: bool = False) -> bool:
+        """Use publication evidence when available, not collection time alone.
+
+        Older rows created before the publication metadata was introduced fall
+        back to ``observed_at`` so the migration remains backward compatible.
+        """
+        metadata = row.metadata_json or {}
+        key = "source_published_at" if topic else "content_published_at"
+        raw = metadata.get(key)
+        if isinstance(raw, str):
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")) >= cutoff
+            except ValueError:
+                pass
+        return bool(row.observed_at >= cutoff)
 
     async def _latest_topics(
-        self, workspace_id: UUID, platform: str | None = None
+        self,
+        workspace_id: UUID,
+        platform: str | None = None,
+        *,
+        window_hours: int = 24,
     ) -> list[TrendTopic]:
         stmt = select(TrendTopic).where(
             TrendTopic.workspace_id == workspace_id,
-            TrendTopic.observed_at >= self._cutoff(),
+            TrendTopic.observed_at >= self._cutoff(window_hours),
         )
         if platform:
             stmt = stmt.where(TrendTopic.platform == platform)
@@ -53,8 +76,11 @@ class TrendService:
         ).all()
         latest: list[TrendTopic] = []
         seen: set[tuple[str, str]] = set()
+        cutoff = self._cutoff(window_hours)
         for row in rows:
-            if row.metadata_json.get("source_kind") != "live":
+            if row.metadata_json.get("source_kind") != "live" or not self._row_is_in_window(
+                row, cutoff, topic=True
+            ):
                 continue
             identity = (row.platform, row.title.casefold())
             if identity not in seen:
@@ -63,11 +89,15 @@ class TrendService:
         return latest
 
     async def _latest_videos(
-        self, workspace_id: UUID, platform: str | None = None
+        self,
+        workspace_id: UUID,
+        platform: str | None = None,
+        *,
+        window_hours: int = 24,
     ) -> list[TrendVideo]:
         stmt = select(TrendVideo).where(
             TrendVideo.workspace_id == workspace_id,
-            TrendVideo.observed_at >= self._cutoff(),
+            TrendVideo.observed_at >= self._cutoff(window_hours),
         )
         if platform:
             stmt = stmt.where(TrendVideo.platform == platform)
@@ -76,8 +106,11 @@ class TrendService:
         ).all()
         latest: list[TrendVideo] = []
         seen: set[tuple[str, str]] = set()
+        cutoff = self._cutoff(window_hours)
         for row in rows:
-            if row.metadata_json.get("source_kind") != "live":
+            if row.metadata_json.get("source_kind") != "live" or not self._row_is_in_window(
+                row, cutoff
+            ):
                 continue
             identity = (row.platform, row.external_id)
             if identity not in seen:
@@ -85,10 +118,13 @@ class TrendService:
                 latest.append(row)
         return latest
 
-    async def get_dashboard(self, workspace_id: UUID) -> TrendDashboard:
-        """Return de-duplicated latest observations from the last 24 hours."""
-        topics = await self._latest_topics(workspace_id)
-        videos = await self._latest_videos(workspace_id)
+    async def get_dashboard(
+        self, workspace_id: UUID, *, window_hours: int = 24
+    ) -> TrendDashboard:
+        """Return de-duplicated live observations inside a 24–72h window."""
+        safe_hours = max(24, min(int(window_hours), 72))
+        topics = await self._latest_topics(workspace_id, window_hours=safe_hours)
+        videos = await self._latest_videos(workspace_id, window_hours=safe_hours)
         top_topics = sorted(topics, key=lambda item: item.heat_score, reverse=True)[:15]
         breakout_videos = sorted(
             (item for item in videos if item.breakout_score is not None),
@@ -128,6 +164,8 @@ class TrendService:
             top_topics=[TrendTopicRead.model_validate(item) for item in top_topics],
             breakout_videos=[TrendVideoRead.model_validate(item) for item in breakout_videos],
             platform_summary=platform_summary,
+            window_hours=safe_hours,
+            generated_at=datetime.now(UTC),
         )
 
     async def list_topics(
@@ -135,10 +173,11 @@ class TrendService:
         workspace_id: UUID,
         *,
         platform: str | None = None,
+        window_hours: int = 24,
         page: int = 1,
         page_size: int = 20,
     ) -> TrendTopicPage:
-        rows = await self._latest_topics(workspace_id, platform)
+        rows = await self._latest_topics(workspace_id, platform, window_hours=window_hours)
         rows.sort(key=lambda item: item.heat_score, reverse=True)
         start = (page - 1) * page_size
         items = rows[start : start + page_size]
@@ -155,10 +194,11 @@ class TrendService:
         *,
         platform: str | None = None,
         sort_by: str = "breakout_score",
+        window_hours: int = 24,
         page: int = 1,
         page_size: int = 20,
     ) -> TrendVideoPage:
-        rows = await self._latest_videos(workspace_id, platform)
+        rows = await self._latest_videos(workspace_id, platform, window_hours=window_hours)
         allowed_sort_fields = {
             "breakout_score",
             "view_count",
@@ -187,10 +227,11 @@ class TrendService:
         *,
         keyword: str | None = None,
         platform: str | None = None,
+        window_hours: int = 24,
     ) -> list[TrendKeywordSnapshotRead]:
         stmt = select(TrendKeywordSnapshot).where(
             TrendKeywordSnapshot.workspace_id == workspace_id,
-            TrendKeywordSnapshot.observed_at >= self._cutoff(),
+            TrendKeywordSnapshot.observed_at >= self._cutoff(window_hours),
         )
         if keyword:
             stmt = stmt.where(TrendKeywordSnapshot.keyword.ilike(f"%{keyword}%"))

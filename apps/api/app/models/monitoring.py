@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -23,6 +24,7 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+from app.models.artifact import MediaArtifact
 
 if TYPE_CHECKING:
     from app.models.workspace import Workspace
@@ -271,6 +273,9 @@ class ContentItem(TimestampMixin, Base):
     comments: Mapped[list[Comment]] = relationship(
         back_populates="content_item", cascade="all, delete-orphan"
     )
+    artifacts: Mapped[list[MediaArtifact]] = relationship(
+        back_populates="content_item", cascade="all, delete-orphan"
+    )
 
 
 class Comment(Base):
@@ -297,12 +302,60 @@ class Comment(Base):
     )
     platform_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
     author_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    author_avatar_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    parent_comment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    source_provider: Mapped[str] = mapped_column(String(120), nullable=False, default="yt_dlp")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
     content_item: Mapped[ContentItem] = relationship(back_populates="comments")
+    snapshots: Mapped[list[CommentSnapshot]] = relationship(
+        back_populates="comment", cascade="all, delete-orphan"
+    )
+
+
+class CommentSnapshot(Base):
+    """Append-only observation of a ranked comment during a collection run."""
+
+    __tablename__ = "comment_snapshots"
+    __table_args__ = (
+        UniqueConstraint("comment_id", "captured_at"),
+        Index("ix_comment_snapshots_content_captured", "content_item_id", "captured_at"),
+        Index("ix_comment_snapshots_platform_id", "content_item_id", "platform_comment_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    comment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("comments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    source_provider: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    comment: Mapped[Comment] = relationship(back_populates="snapshots")
 
 
 class ContentSnapshot(Base):

@@ -1,4 +1,4 @@
-export const ANALYTICS_PLATFORMS = ["youtube", "tiktok", "douyin", "bilibili"] as const;
+export const ANALYTICS_PLATFORMS = ["youtube", "tiktok", "douyin", "bilibili", "web"] as const;
 export const ANALYTICS_DAY_OPTIONS = [7, 30, 90] as const;
 export const ANALYTICS_MODES = ["timeline", "ranking", "index", "matrix"] as const;
 

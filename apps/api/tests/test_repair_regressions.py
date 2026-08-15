@@ -44,6 +44,19 @@ def test_failed_operation_keeps_actionable_error_hint() -> None:
     assert "youtube_browser" in hint
 
 
+def test_degraded_operation_without_code_has_no_generic_failure_hint() -> None:
+    assert (
+        _operation_error_hint(
+            "degraded",
+            code=None,
+            message="作品列表仍有后续分页，已保存游标，将在下一次同步继续",
+            detail=None,
+            adapter_key="youtube_ytdlp",
+        )
+        is None
+    )
+
+
 def test_generic_open_source_feeds_are_opt_in() -> None:
     enabled_by_default = {
         spec["name"]: spec.get("enabled", True) for spec in EXPANDED_SOURCE_EXAMPLES
@@ -89,6 +102,15 @@ def test_profile_url_gets_compact_account_label() -> None:
 
     assert _display_name_from_locator("https://www.tiktok.com/@creator") == "@creator"
     assert _display_name_from_locator("creator", username="creator") == "@creator"
+
+
+def test_browser_discovered_video_can_use_yt_dlp_comment_enrichment() -> None:
+    from app.services.monitoring import _supports_yt_dlp_comments
+
+    assert _supports_yt_dlp_comments("https://www.youtube.com/watch?v=abc")
+    assert _supports_yt_dlp_comments("https://www.tiktok.com/@creator/video/123")
+    assert not _supports_yt_dlp_comments("https://www.bilibili.com/video/BV1xx")
+    assert not _supports_yt_dlp_comments("not-a-url")
 
 
 def test_metadata_sync_preserves_archived_media_manifest() -> None:

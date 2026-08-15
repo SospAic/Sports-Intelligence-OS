@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any
 from uuid import UUID
 
+from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
@@ -34,15 +35,21 @@ from app.schemas.trends import (
 from app.services.derivative_engine import DerivativeService
 from app.services.search_analysis import SearchAnalysisService
 from app.services.trends import TrendService
+from app.tasks.celery_app import celery_app
 
 router = APIRouter(prefix="/trends", tags=["trends"])
 Page = Annotated[int, Query(ge=1)]
 PageSize = Annotated[int, Query(ge=1, le=100)]
+WindowHours = Annotated[int, Query(ge=24, le=72)]
 
 
 @router.get("/dashboard", response_model=TrendDashboard)
-async def get_dashboard(workspace: CurrentWorkspace, db: DatabaseSession) -> TrendDashboard:
-    return await TrendService(db).get_dashboard(workspace.workspace_id)
+async def get_dashboard(
+    workspace: CurrentWorkspace, db: DatabaseSession, window_hours: WindowHours = 24
+) -> TrendDashboard:
+    return await TrendService(db).get_dashboard(
+        workspace.workspace_id, window_hours=window_hours
+    )
 
 
 @router.get("/stream")
@@ -51,6 +58,7 @@ async def stream_dashboard(
     db: DatabaseSession,
     request: Request,
     interval: Annotated[float, Query(ge=1.0, le=60.0)] = 5.0,
+    window_hours: WindowHours = 24,
 ) -> StreamingResponse:
     """Server-Sent Events stream of the live trend dashboard.
 
@@ -71,7 +79,9 @@ async def stream_dashboard(
             while True:
                 if await request.is_disconnected():
                     break
-                dashboard = await service.get_dashboard(workspace.workspace_id)
+                dashboard = await service.get_dashboard(
+                    workspace.workspace_id, window_hours=window_hours
+                )
                 yield f"data: {dashboard.model_dump_json()}\n\n"
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -93,12 +103,14 @@ async def list_topics(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
     platform: str | None = None,
+    window_hours: WindowHours = 24,
     page: Page = 1,
     page_size: PageSize = 20,
 ) -> TrendTopicPage:
     return await TrendService(db).list_topics(
         workspace.workspace_id,
         platform=platform,
+        window_hours=window_hours,
         page=page,
         page_size=page_size,
     )
@@ -110,6 +122,7 @@ async def list_videos(
     db: DatabaseSession,
     platform: str | None = None,
     sort_by: str = "breakout_score",
+    window_hours: WindowHours = 24,
     page: Page = 1,
     page_size: PageSize = 20,
 ) -> TrendVideoPage:
@@ -117,6 +130,7 @@ async def list_videos(
         workspace.workspace_id,
         platform=platform,
         sort_by=sort_by,
+        window_hours=window_hours,
         page=page,
         page_size=page_size,
     )
@@ -128,11 +142,13 @@ async def list_keywords(
     db: DatabaseSession,
     keyword: str | None = None,
     platform: str | None = None,
+    window_hours: WindowHours = 24,
 ) -> list[TrendKeywordSnapshotRead]:
     return await TrendService(db).list_keywords(
         workspace.workspace_id,
         keyword=keyword,
         platform=platform,
+        window_hours=window_hours,
     )
 
 
@@ -200,6 +216,58 @@ async def collect_trends(
         "task_id": task.id,
         "message": "trend collection queued",
     }
+
+
+@router.get("/collect/{task_id}", response_model=dict[str, Any])
+async def get_collection_status(
+    task_id: str,
+    workspace: CurrentWorkspace,
+) -> dict[str, Any]:
+    """Return the bounded live log for one trend collection task."""
+    _ = workspace
+    result = AsyncResult(task_id, app=celery_app)
+    raw_state = str(result.state or "PENDING").upper()
+    state_map = {
+        "PENDING": "queued",
+        "STARTED": "running",
+        "PROGRESS": "running",
+        "RETRY": "running",
+        "SUCCESS": "success",
+        "FAILURE": "failed",
+        "REVOKED": "cancelled",
+    }
+    state = state_map.get(raw_state, "running")
+    info = result.info if isinstance(result.info, dict) else {}
+    task_workspace_id = info.get("workspace_id")
+    if task_workspace_id and str(task_workspace_id) != str(workspace.workspace_id):
+        raise HTTPException(status_code=404, detail="采集任务不存在")
+    payload: dict[str, Any] = {
+        "task_id": task_id,
+        "state": state,
+        "stage": info.get("stage", "queued" if state == "queued" else state),
+        "message": info.get("message", "等待后台任务开始执行"),
+        "log": info.get("log", []),
+        "updated_at": info.get("updated_at"),
+    }
+    if raw_state == "SUCCESS" and isinstance(result.result, dict):
+        completion_meta = result.result.get("_progress")
+        if isinstance(completion_meta, dict):
+            payload.update(
+                {
+                    "stage": completion_meta.get("stage", payload["stage"]),
+                    "message": completion_meta.get("message", payload["message"]),
+                    "log": completion_meta.get("log", payload["log"]),
+                    "updated_at": completion_meta.get(
+                        "updated_at", payload["updated_at"]
+                    ),
+                }
+            )
+        payload["result"] = {
+            key: value for key, value in result.result.items() if key != "_progress"
+        }
+    if raw_state == "FAILURE":
+        payload["error"] = str(result.result or "热点情报采集失败")
+    return payload
 
 
 # ---------------------------------------------------------------------------

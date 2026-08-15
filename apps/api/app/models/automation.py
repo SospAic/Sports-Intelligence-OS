@@ -178,6 +178,9 @@ class NotificationDelivery(TimestampMixin, Base):
     rule_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("automation_rules.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    subscription_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("subscription_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     entity_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)

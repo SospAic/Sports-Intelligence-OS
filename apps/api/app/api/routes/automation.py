@@ -26,8 +26,10 @@ from app.schemas.automation import (
     NotificationChannelCreate,
     NotificationChannelRead,
     NotificationChannelUpdate,
+    NotificationChannelValidationRead,
     NotificationDeliveryPage,
     NotificationDeliveryRead,
+    NotificationHealthSummaryRead,
     NotificationProviderRead,
     NotificationTestRequest,
 )
@@ -237,6 +239,23 @@ async def list_channels(
     return await service(request, db).list_channels(workspace.workspace_id)
 
 
+@router.post(
+    "/notification-channels/{channel_id}/configuration-check",
+    response_model=NotificationChannelValidationRead,
+)
+async def validate_notification_channel(
+    channel_id: UUID,
+    request: Request,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> NotificationChannelValidationRead:
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await service(request, db).validate_channel_configuration(
+        workspace.workspace_id, channel_id
+    )
+
+
 @router.post("/notification-channels", response_model=NotificationChannelRead, status_code=201)
 async def create_channel(
     payload: NotificationChannelCreate,
@@ -306,4 +325,16 @@ async def list_deliveries(
         page_size=page_size,
         status=status,
         channel_id=channel_id,
+    )
+
+
+@router.get("/notification-health", response_model=NotificationHealthSummaryRead)
+async def notification_health(
+    request: Request,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    window_minutes: int = Query(1440, ge=1, le=10_080),
+) -> NotificationHealthSummaryRead:
+    return await service(request, db).notification_health(
+        workspace.workspace_id, window_minutes=window_minutes
     )

@@ -6,7 +6,7 @@ import mimetypes
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -79,7 +79,7 @@ def _extract_json(value: str) -> dict[str, Any]:
 
 def _output_text(payload: dict[str, Any]) -> str:
     if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
+        return str(payload["output_text"])
     chunks: list[str] = []
     for step in payload.get("steps", []):
         if not isinstance(step, dict):
@@ -440,9 +440,9 @@ def build_video_content_analyzer(
         if requested_key not in {None, "gemini_video"}:
             return None
         analyzer = GeminiVideoAnalyzer(settings)
-        return analyzer if analyzer.configured else None
+        return cast(VideoContentAnalyzer, analyzer) if analyzer.configured else None
     if settings.video_search_analyzer == "mock" and settings.environment != "production":
         if requested_key not in {None, "mock", "mock_video"}:
             return None
-        return MockVideoContentAnalyzer()
+        return cast(VideoContentAnalyzer, MockVideoContentAnalyzer())
     return None

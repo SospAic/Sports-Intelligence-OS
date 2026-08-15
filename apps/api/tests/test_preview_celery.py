@@ -8,7 +8,7 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.download import _youtube_video_id, build_download_preview
+from app.services.download import _tiktok_video_id, _youtube_video_id, build_download_preview
 from app.tasks.monitoring import _run_preview
 
 
@@ -17,6 +17,11 @@ def test_youtube_video_id_variants() -> None:
     assert _youtube_video_id("https://youtu.be/xyz789") == "xyz789"
     assert _youtube_video_id("https://www.youtube.com/shorts/abc123") == "abc123"
     assert _youtube_video_id("https://www.tiktok.com/@u/video/1") is None
+    assert (
+        _tiktok_video_id("https://www.tiktok.com/@u/video/7666080726214774029")
+        == "7666080726214774029"
+    )
+    assert _tiktok_video_id("https://www.tiktok.com/@u") is None
 
 
 def test_run_preview_passthrough() -> None:
@@ -151,3 +156,47 @@ async def test_build_preview_generic_error() -> None:
         result = await build_download_preview("https://www.tiktok.com/@u/video/1", ws, settings)
     assert result["status"] == "error"
     assert result["error_code"] == 422
+
+
+async def test_build_preview_tiktok_uses_public_browser_media() -> None:
+    ws = uuid.uuid4()
+    settings = MagicMock()
+    settings.notification_encryption_key.get_secret_value.return_value = "test-secret-key-1234"
+    session = AsyncMock()
+    browser = MagicMock()
+    browser.return_value.download_public_media = AsyncMock(
+        return_value={
+            "id": "7666080726214774029",
+            "title": "Public TikTok work",
+            "extractor": "tiktok_browser_direct",
+            "thumbnail": "https://v16.tiktokcdn.com/cover.jpg",
+            "automatic_captions": {"en": [{}]},
+        }
+    )
+    browser.return_value.aclose = AsyncMock()
+    with (
+        patch(
+            "app.db.session.create_engine_and_session",
+            return_value=_fake_engine_session(session),
+        ),
+        patch(
+            "app.repositories.sync.SyncRepository",
+            MagicMock(**{"return_value.get_sync_settings_config": AsyncMock(return_value={})}),
+        ),
+        patch(
+            "app.services.platform_detect.detect_platform_key_from_url",
+            return_value="tiktok",
+        ),
+        patch(
+            "app.services.platform_credentials.PlatformCredentialService.resolve",
+            new=AsyncMock(return_value=(None, {})),
+        ),
+        patch("app.adapters.platforms.tiktok_browser.TikTokBrowserAdapter", browser),
+    ):
+        result = await build_download_preview(
+            "https://www.tiktok.com/@u/video/7666080726214774029", ws, settings
+        )
+    assert result["status"] == "ok"
+    assert result["preview"]["platform"] == "tiktok"
+    assert result["preview"]["subtitle_languages"] == ["en"]
+    assert result["preview"]["subtitle_tracks"] == [{"language": "en", "kind": "automatic"}]

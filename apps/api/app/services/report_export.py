@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from html import escape
+from typing import Any
 
 #: Snippets are evidence excerpts, not full transcripts - keep the report short.
 MAX_SNIPPET_CHARS = 600
@@ -54,7 +55,7 @@ def _score_text(value: object) -> str:
     if value is None:
         return "—"
     try:
-        return f"{round(float(value) * 100)}%"
+        return f"{round(float(str(value)) * 100)}%"
     except (TypeError, ValueError):
         return "—"
 
@@ -71,7 +72,7 @@ def _engine_label(value: object) -> str:
     return ENGINE_LABELS.get(key, key or "未知引擎")
 
 
-def _source_line(item: dict) -> str:
+def _source_line(item: dict[str, Any]) -> str:
     platform = _clean(item.get("platform")) or "未知平台"
     account = _clean(item.get("account"))
     return f"{platform} · {account}" if account else platform
@@ -85,7 +86,7 @@ def build_filename(generated_at: datetime) -> str:
     return f"intelligence-report-{generated_at.strftime('%Y%m%d-%H%M%S')}.md"
 
 
-def render_markdown(payload: dict, *, now: datetime | None = None) -> str:
+def render_markdown(payload: dict[str, Any], *, now: datetime | None = None) -> str:
     """Render the report payload as a Markdown document."""
     generated_at = _timestamp(now)
     items = list(payload.get("items") or [])
@@ -135,7 +136,7 @@ def render_markdown(payload: dict, *, now: datetime | None = None) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def render_html(payload: dict, *, now: datetime | None = None) -> str:
+def render_html(payload: dict[str, Any], *, now: datetime | None = None) -> str:
     """Render a standalone printable HTML document (browser print-to-PDF)."""
     generated_at = _timestamp(now)
     items = list(payload.get("items") or [])
@@ -193,7 +194,7 @@ def render_html(payload: dict, *, now: datetime | None = None) -> str:
     )
 
 
-def build_report(payload: dict, *, now: datetime | None = None) -> dict:
+def build_report(payload: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     """Build every artefact the export endpoint returns."""
     generated_at = _timestamp(now)
     return {

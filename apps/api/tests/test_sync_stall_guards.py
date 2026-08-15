@@ -299,6 +299,15 @@ async def test_recover_stale_runs_reaps_a_crashed_run_within_the_budget_window()
             assert run is not None
             assert run.status == "error"
             assert run.lock_key is None
+            account = await session.get(Account, account_id)
+            assert account is not None
+            assert account.last_sync_error_code == "stale_task_recovered"
+            assert account.next_sync_at is not None
+            # Recovery must cool down automatic scheduling.  Without this,
+            # beat's due-account sweep immediately redelivers the same stuck
+            # task after the stale sweep releases its lock.
+            assert account.next_sync_at >= now + timedelta(seconds=299)
+            assert await service.repository.due_accounts(now) == []
     finally:
         await engine.dispose()
 

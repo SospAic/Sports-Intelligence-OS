@@ -148,6 +148,8 @@ class TrendDashboard(BaseModel):
     top_topics: list[TrendTopicRead] = Field(default_factory=list)
     breakout_videos: list[TrendVideoRead] = Field(default_factory=list)
     platform_summary: list[PlatformSummary] = Field(default_factory=list)
+    window_hours: int = 24
+    generated_at: datetime | None = None
 
 
 # ---------------------------------------------------------------------------

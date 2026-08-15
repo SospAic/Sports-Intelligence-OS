@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -139,11 +139,14 @@ class VideoContentSearchService:
         return plan
 
     async def get_plan(self, workspace_id: UUID, plan_id: UUID) -> VideoSearchPlan | None:
-        return await self.db.scalar(
-            select(VideoSearchPlan).where(
-                VideoSearchPlan.id == plan_id,
-                VideoSearchPlan.workspace_id == workspace_id,
-            )
+        return cast(
+            VideoSearchPlan | None,
+            await self.db.scalar(
+                select(VideoSearchPlan).where(
+                    VideoSearchPlan.id == plan_id,
+                    VideoSearchPlan.workspace_id == workspace_id,
+                )
+            ),
         )
 
     async def list_plans(
@@ -193,11 +196,19 @@ class VideoContentSearchService:
         )
         if active_run is not None:
             return active_run
+        now = datetime.now(UTC)
         run = VideoSearchRun(
             plan_id=plan.id,
             workspace_id=workspace_id,
             task_id=task_id,
             status="queued",
+            # Populate both timestamp fields in memory before dispatching the
+            # Celery task.  Relying only on server defaults leaves ``updated_at``
+            # expired on the async ORM instance; serializing it in the same
+            # request can then trigger MissingGreenlet instead of returning the
+            # accepted run response.
+            created_at=now,
+            updated_at=now,
         )
         self.db.add(run)
         await self.db.flush()

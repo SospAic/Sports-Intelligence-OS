@@ -315,6 +315,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
         """
         mid = re.sub(r"[^\d]", "", external_account_id)
         page_num = int(cursor) if cursor else 1
+        requested_page_size = max(1, min(int(page_size), 50))
         context, page = await self._new_page(ctx)
         try:
             # Set up API response interception before navigation.
@@ -335,7 +336,8 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
 
             url = (
                 f"{BILIBILI_SPACE_URL.format(mid=mid)}/video"
-                f"?tid=0&pn={page_num}&keyword=&order=pubdate"
+                f"?tid=0&pn={page_num}&ps={requested_page_size}"
+                f"&keyword=&order=pubdate"
             )
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             # Give the SPA time to fire its XHR calls.
@@ -358,7 +360,7 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
             total = api_data.get("data", {}).get("page", {}).get("count", 0)
 
             items: list[PlatformContentData] = []
-            for v in vlist[:page_size]:
+            for v in vlist[:requested_page_size]:
                 bvid = v.get("bvid", "")
                 title = v.get("title", "").strip() or bvid or "未命名视频"
                 cover = v.get("pic", "")
@@ -393,7 +395,15 @@ class BilibiliBrowserAdapter(BrowserPlatformAdapter):
                     )
                 )
 
-            next_cursor = str(page_num + 1) if page_num * page_size < total else None
+            # Request the same page size that is used in the termination
+            # calculation. The old code omitted ``ps`` (Bilibili defaulted to
+            # 30) but compared against the caller's size (often 50), which
+            # stopped at page 2 and silently omitted the rest of large spaces.
+            has_more_by_total = bool(total) and page_num * requested_page_size < int(total)
+            has_more_by_page = len(vlist) >= requested_page_size
+            next_cursor = (
+                str(page_num + 1) if has_more_by_total or has_more_by_page else None
+            )
             return AdapterPage(items=tuple(items), next_cursor=next_cursor)
         except Exception as exc:
             reraise_if_terminal(exc)

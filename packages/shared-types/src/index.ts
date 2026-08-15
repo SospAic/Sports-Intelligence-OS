@@ -369,6 +369,8 @@ export interface YtDlpDownloadSettings {
   download_video: boolean;
   video_format: string;
   write_info_json: boolean;
+  /** Opt-in: persist the current Top 20 hot comments per work. */
+  fetch_comments: boolean;
 }
 
 export interface SyncSettingsConfig {
@@ -602,11 +604,24 @@ export interface AccountContentSummary {
   avg_completion_rate: number | null;
   avg_watch_time_seconds: number | null;
   avg_engagement_rate: number | null;
+  total_like_count: number | null;
+  total_comment_count: number | null;
+  total_share_count: number | null;
+  total_favorite_count: number | null;
   total_interactions: number | null;
+  calculated_engagement_rate: number | null;
+  calculated_like_rate: number | null;
+  calculated_comment_rate: number | null;
+  calculated_share_rate: number | null;
+  calculated_favorite_rate: number | null;
+  content_total_view_count: number | null;
   account_total_likes: number | null;
   account_total_views: number | null;
   traffic_source_split: Record<string, number | null>;
   recent_24h_view_growth: number | null;
+  recent_24h_view_growth_estimated: boolean;
+  recent_24h_view_growth_sample_size: number | null;
+  recent_24h_view_growth_actual_window_hours: number | null;
   top_content_id: string | null;
   top_content_title: string | null;
   top_content_views: number | null;
@@ -664,6 +679,26 @@ export interface ContentRecord {
   latest_snapshot: ContentSnapshot | null;
   view_growth_24h: number | null;
   media: ContentMedia | null;
+  artifacts?: MediaArtifactRecord[];
+}
+
+export interface MediaArtifactRecord {
+  id: string;
+  content_item_id: string | null;
+  download_id: string | null;
+  artifact_kind: string;
+  language: string | null;
+  format: string | null;
+  file_name: string;
+  relative_path: string;
+  status: "pending" | "ready" | "missing" | "corrupt" | "failed" | "stale";
+  size_bytes: number | null;
+  sha256: string | null;
+  mime_type: string | null;
+  source_kind: SourceKind;
+  source_provider: string;
+  checked_at: string | null;
+  error_detail: string | null;
 }
 
 /** Local media archived during a sync (thumbnail / video / subtitles / info-json). */
@@ -672,7 +707,23 @@ export interface ContentMedia {
   thumbnail?: string | null;
   video?: string | null;
   info_json?: string | null;
-  subtitles?: { lang: string; file: string }[] | null;
+  subtitles?: {
+    lang: string;
+    file: string;
+    source?: "platform" | "asr" | "local_translation" | string;
+    word_timed?: boolean;
+    source_language?: string;
+    model?: string;
+  }[] | null;
+  subtitle_artifacts?: { lang?: string; file: string; kind?: string; source?: string }[] | null;
+  subtitle_exports?: {
+    lang: string;
+    file: string;
+    format?: string;
+    bilingual?: boolean;
+    show_timestamps?: boolean;
+  }[] | null;
+  subtitle_show_timestamps?: boolean;
 }
 
 export interface ContentRecordPage {

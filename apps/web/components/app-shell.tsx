@@ -53,6 +53,7 @@ import { apiRequest } from "@/lib/browser-api";
 import { accountDisplayName } from "@/lib/account-label";
 import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import { Tooltip } from "@/components/ui";
 
 type WorkspaceValue = {
@@ -611,6 +612,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
             <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
             <ThemeToggle />
+            <LanguageSwitcher />
             <div className="relative hidden shrink-0 md:block">
               <button
                 aria-label={`同步状态：${queueHealth.label}`}

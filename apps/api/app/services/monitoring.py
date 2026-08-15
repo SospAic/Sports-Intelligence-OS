@@ -1,5 +1,6 @@
 import csv
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from typing import Any, Literal, cast
@@ -16,6 +17,7 @@ from app.models.monitoring import (
     Account,
     AccountSnapshot,
     Comment,
+    CommentSnapshot,
     ContentItem,
     ContentSnapshot,
 )
@@ -44,6 +46,7 @@ from app.schemas.monitoring import (
     AccountSyncStatus,
     AccountUpdate,
     CommentRead,
+    CommentSnapshotRead,
     ContentCalendarBucket,
     ContentCalendarResponse,
     ContentCreate,
@@ -54,11 +57,13 @@ from app.schemas.monitoring import (
     ContentUpdate,
     DerivedMetricPage,
     DerivedMetricRead,
+    MediaArtifactRead,
     PlatformRead,
     SourceKind,
     SyncIntervalResponse,
 )
 from app.services.adaptive_sync import compute_adaptive_interval
+from app.services.artifact_registry import list_content_artifacts, reconcile_manifest
 from app.services.audit import build_audit_entry
 from app.services.platform_detect import detect_platform_key_from_url
 
@@ -71,6 +76,33 @@ RESERVED_METADATA_KEYS = {
     "is_mock",
     "demo",
 }
+
+_COMMENT_EXTRACTION_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "douyin.com",
+)
+
+
+def _supports_yt_dlp_comments(url: str | None) -> bool:
+    """Return whether the URL belongs to a yt-dlp comment-capable platform.
+
+    The stored ``source_provider`` describes how the work was discovered
+    (often ``youtube_browser``), not whether yt-dlp can enrich it later. The
+    comment worker is intentionally URL-based so browser-discovered YouTube
+    and TikTok works do not get rejected before the real capability check.
+    """
+    if not url:
+        return False
+    try:
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _COMMENT_EXTRACTION_HOSTS
+    )
 MAX_METADATA_BYTES = 65_536
 MAX_CSV_EXPORT_ROWS = 10_000
 
@@ -731,7 +763,75 @@ class MonitoringService:
         rows = await self._repository.list_content_comments(content_item_id, limit=limit)
         return [CommentRead.model_validate(row) for row in rows]
 
-    async def collect_content_comments(self, content_item_id: UUID) -> int:
+    async def list_content_comment_snapshots(
+        self, workspace_id: UUID, content_item_id: UUID, limit: int = 100
+    ) -> list[CommentSnapshotRead]:
+        await self.get_content(workspace_id, content_item_id)
+        rows = await self._repository.list_content_comment_snapshots(
+            content_item_id, limit=limit
+        )
+        return [CommentSnapshotRead.model_validate(row) for row in rows]
+
+    async def queue_content_comments(self, workspace_id: UUID, content_item_id: UUID) -> bool:
+        """Mark a content item for asynchronous comment enrichment.
+
+        The API must expose a queued state before dispatching the Celery task;
+        otherwise the detail page can poll once, observe an old terminal state,
+        and stop before the worker has even started.
+        """
+        content = await self._session.scalar(
+            select(ContentItem).where(
+                ContentItem.id == content_item_id,
+                ContentItem.workspace_id == workspace_id,
+            )
+        )
+        if content is None:
+            raise MonitoringNotFoundError("content item was not found")
+        url = content.source_url or content.canonical_url
+        provider = content.source_provider or ""
+        if not url or not _supports_yt_dlp_comments(url):
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unsupported" if url else "unavailable",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": provider or "unknown",
+                    "source_url": url,
+                    "notice": (
+                        "当前作品适配器未提供评论采集能力"
+                        if url
+                        else "作品没有可用的公开来源地址"
+                    ),
+                },
+            }
+            await self._session.commit()
+            return False
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": {
+                "status": "queued",
+                "count": 0,
+                "limit": 20,
+                "queued_at": datetime.now(UTC).isoformat(),
+                "fetched_at": None,
+                "source_kind": "live",
+                "source_provider": provider,
+                "source_url": url,
+                "notice": "评论采集已排队，不阻塞作品详情页",
+            },
+        }
+        await self._session.commit()
+        return True
+
+    async def collect_content_comments(
+        self,
+        content_item_id: UUID,
+        *,
+        config: Mapping[str, Any] | None = None,
+    ) -> int:
         """Fetch & store hot comments for a content item (yt-dlp backed).
 
         Best-effort: returns the number of comments stored. When the platform
@@ -743,40 +843,205 @@ class MonitoringService:
         workspace_id = content.workspace_id
         url = content.source_url or content.canonical_url
         if not url:
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unavailable",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": content.source_provider or "unknown",
+                    "source_url": None,
+                    "notice": "作品没有可用的公开来源地址",
+                },
+            }
+            await self._session.commit()
             return 0
-        if "yt_dlp" not in (content.source_provider or ""):
+        if not _supports_yt_dlp_comments(url):
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unsupported",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": content.source_provider or "unknown",
+                    "source_url": url,
+                    "notice": "当前作品适配器未提供评论采集能力",
+                },
+            }
+            await self._session.commit()
             return 0
-        raw = await YtDlpAdapter.extract_comments(url)
-        if not raw:
-            return 0
-        stored = 0
-        for item in raw:
-            existing = await self._session.scalar(
-                select(Comment).where(
-                    Comment.content_item_id == content_item_id,
-                    Comment.platform_comment_id == item["platform_comment_id"],
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": {
+                **dict((content.metadata_json or {}).get("comment_sync") or {}),
+                "status": "running",
+                "limit": 20,
+                "source_kind": "live",
+                "source_provider": content.source_provider,
+                "source_url": url,
+                "notice": "正在读取平台公开评论",
+            },
+        }
+        await self._session.commit()
+        now = datetime.now(UTC)
+        raw: list[dict[str, Any]] = []
+        comment_provider = content.source_provider
+        browser_attempted = False
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+        if hostname == "tiktok.com" or hostname.endswith(".tiktok.com"):
+            browser_attempted = True
+            try:
+                from app.adapters.platforms.base import AdapterCallContext
+                from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
+
+                browser_config = (
+                    dict(config.get("yt_dlp") or {})
+                    if isinstance(config, Mapping)
+                    and isinstance(config.get("yt_dlp"), Mapping)
+                    else dict(config or {})
                 )
+                browser_adapter = TikTokBrowserAdapter()
+                try:
+                    raw = await browser_adapter.extract_public_comments(
+                        AdapterCallContext(
+                            config=browser_config,
+                            observed_at=now,
+                            request_id=f"comments:{content_item_id}",
+                        ),
+                        url,
+                        limit=20,
+                    )
+                finally:
+                    await browser_adapter.aclose()
+                if raw:
+                    comment_provider = "tiktok_browser_comments"
+            except Exception:
+                # Keep the authorized yt-dlp route as a fallback when the
+                # public JSON endpoint itself is unavailable.
+                raw = []
+        raw_yt_config = config.get("yt_dlp") if isinstance(config, Mapping) else None
+        has_authorized_session = isinstance(raw_yt_config, Mapping) and bool(
+            raw_yt_config.get("cookies_netscape")
+            or raw_yt_config.get("cookies_from_browser")
+        )
+        if not raw and (not browser_attempted or has_authorized_session):
+            raw = await YtDlpAdapter.extract_comments(
+                url,
+                config=config,
+                limit=20,
+                timeout_seconds=60,
             )
+            if raw:
+                comment_provider = content.source_provider
+        status = "success" if raw else "empty"
+        comment_meta = {
+            "status": status,
+            "count": len(raw),
+            "limit": 20,
+            "fetched_at": now.isoformat(),
+            "source_kind": "live",
+            "source_provider": comment_provider,
+            "source_url": url,
+            "notice": (
+                None
+                if raw
+                else "公开页面或当前授权会话未返回可读评论；未用估算值填充。"
+            ),
+        }
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": comment_meta,
+        }
+        stored = 0
+        existing_rows = list(
+            (
+                await self._session.scalars(
+                    select(Comment).where(Comment.content_item_id == content_item_id)
+                )
+            ).all()
+        )
+        existing_by_id = {row.platform_comment_id: row for row in existing_rows}
+        ranked_rows: list[tuple[int, Comment]] = []
+        for rank, item in enumerate(raw, start=1):
+            existing = existing_by_id.get(str(item["platform_comment_id"]))
             if existing:
-                existing.like_count = item["like_count"]
-                existing.reply_count = item["reply_count"]
-                existing.text = item["text"]
+                if item.get("author_name"):
+                    existing.author_name = str(item["author_name"])
+                for field in ("author_url", "author_avatar_url", "text"):
+                    value = item.get(field)
+                    if value not in (None, ""):
+                        setattr(existing, field, str(value))
+                for field in ("like_count", "reply_count", "published_at"):
+                    value = item.get(field)
+                    if value is not None:
+                        setattr(existing, field, value)
+                if item.get("parent_comment_id") is not None:
+                    existing.parent_comment_id = item["parent_comment_id"]
+                if "is_reply" in item:
+                    existing.is_reply = bool(item["is_reply"])
+                existing.fetched_at = now
+                existing.source_kind = "live"
+                existing.source_provider = comment_provider
+                existing.source_url = url
+                ranked_rows.append((rank, existing))
                 continue
+            created_comment = Comment(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                content_item_id=content_item_id,
+                platform_comment_id=item["platform_comment_id"],
+                author_name=item["author_name"],
+                author_url=item.get("author_url"),
+                author_avatar_url=item.get("author_avatar_url"),
+                text=item["text"],
+                like_count=item["like_count"],
+                reply_count=item["reply_count"],
+                parent_comment_id=item.get("parent_comment_id"),
+                is_reply=bool(item.get("is_reply")),
+                published_at=item["published_at"],
+                fetched_at=now,
+                source_kind="live",
+                source_provider=comment_provider,
+                source_url=url,
+                metadata_json={"ranked_by": "like_count + 3 * reply_count"},
+            )
+            self._session.add(created_comment)
+            existing_by_id[created_comment.platform_comment_id] = created_comment
+            ranked_rows.append((rank, created_comment))
+            stored += 1
+        # This endpoint stores ranked/top-N enrichment, not a complete comment
+        # snapshot. Empty responses are common during throttling and a later
+        # top-20 response may legitimately omit older comments. Never interpret
+        # omission as deletion during sync; preserve historical evidence until
+        # an explicit cleanup action is requested.
+        await self._session.flush()
+        collection_id = str(uuid4())
+        for rank, comment in ranked_rows:
             self._session.add(
-                Comment(
+                CommentSnapshot(
                     id=uuid4(),
                     workspace_id=workspace_id,
                     content_item_id=content_item_id,
-                    platform_comment_id=item["platform_comment_id"],
-                    author_name=item["author_name"],
-                    text=item["text"],
-                    like_count=item["like_count"],
-                    reply_count=item["reply_count"],
-                    published_at=item["published_at"],
-                    fetched_at=datetime.now(UTC),
+                    comment_id=comment.id,
+                    platform_comment_id=comment.platform_comment_id,
+                    rank=rank,
+                    like_count=comment.like_count,
+                    reply_count=comment.reply_count,
+                    published_at=comment.published_at,
+                    captured_at=now,
+                    source_kind="live",
+                    source_provider=comment_provider,
+                    source_url=url,
+                    metadata_json={
+                        "collection_id": collection_id,
+                        "ranked_by": "like_count + 3 * reply_count",
+                    },
                 )
             )
-            stored += 1
         await self._session.commit()
         return stored
 
@@ -848,7 +1113,21 @@ class MonitoringService:
         row = await self._repository.get_content(workspace_id, content_id)
         if row is None:
             raise MonitoringNotFoundError("content item was not found")
-        return content_read(row)
+        content = row[0]
+        if content.media:
+            await reconcile_manifest(
+                self._session,
+                workspace_id=workspace_id,
+                content_item_id=content.id,
+                media=content.media,
+                source_kind=content.source_kind,
+                source_provider=content.source_provider,
+                source_url=content.source_url,
+            )
+        artifacts = await list_content_artifacts(self._session, workspace_id, content.id)
+        return content_read(row).model_copy(
+            update={"artifacts": [MediaArtifactRead.model_validate(item) for item in artifacts]}
+        )
 
     async def content_snapshots(
         self, workspace_id: UUID, content_id: UUID, *, page: int, page_size: int

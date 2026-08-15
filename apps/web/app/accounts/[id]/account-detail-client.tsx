@@ -34,6 +34,7 @@ import { ExternalImage } from "@/components/external-image";
 import { SyncSettingsModal } from "@/components/sync-settings-modal";
 import {
   NeedsConditionBadge,
+  AccountInteractionBreakdown,
   TrafficSourceBreakdown,
   metricCardNode,
 } from "@/components/metric-availability";
@@ -56,6 +57,10 @@ import {
 import { apiRequest } from "@/lib/browser-api";
 import { buildAccountDetailPaths } from "@/lib/admin-queries";
 import { contentCoverUrl } from "@/lib/media";
+import {
+  readSyncContentProgress,
+  SyncContentProgressCard,
+} from "@/components/sync-content-progress";
 import {
   metricConditionText,
   metricAvailability,
@@ -133,10 +138,22 @@ function SyncProgressPanel({
   // stage transitions (all platforms) interleaved with adapter output (yt-dlp
   // stderr, browser navigation/scroll steps). `yt_dlp_tail` is the legacy key
   // kept so runs recorded before the rename still render.
-  const syncLogTail =
-    (currentRun?.metadata?.sync_log_tail as string[] | undefined) ??
-    (currentRun?.metadata?.yt_dlp_tail as string[] | undefined) ??
-    [];
+  const syncLogTail = useMemo(
+    () =>
+      (currentRun?.metadata?.sync_log_tail as string[] | undefined) ??
+      (currentRun?.metadata?.yt_dlp_tail as string[] | undefined) ??
+      [],
+    [currentRun?.metadata],
+  );
+  const contentProgress = readSyncContentProgress(currentRun?.metadata);
+  const catalogueTotal =
+    typeof currentRun?.metadata?.catalogue_total === "number"
+      ? currentRun.metadata.catalogue_total
+      : 0;
+  const incrementalProbeItems =
+    typeof currentRun?.metadata?.incremental_probe_items === "number"
+      ? currentRun.metadata.incremental_probe_items
+      : 0;
   const syncLogRef = useRef<HTMLPreElement>(null);
   useEffect(() => {
     const el = syncLogRef.current;
@@ -226,6 +243,13 @@ function SyncProgressPanel({
                 {currentRun.progress_message}
               </p>
             )}
+            {catalogueTotal > 0 && incrementalProbeItems > 0 && (
+              <p className="mt-1 text-xs text-cyan-300/80">
+                当前目录已入库 {formatNumber(catalogueTotal)} 条；本次增量检查了{" "}
+                {formatNumber(incrementalProbeItems)} 条，均已存在，因此没有重复重抓旧作品。
+              </p>
+            )}
+            {contentProgress && <SyncContentProgressCard progress={contentProgress} />}
             {syncLogTail.length > 0 && (
               <div className="mt-2">
                 <div className="mb-1 flex items-center gap-1.5 text-[11px] text-slate-500">
@@ -309,24 +333,66 @@ function SyncProgressPanel({
           </div>
 
           {currentRun.error_message && (
-            <div className="mt-4 space-y-3 rounded-lg border border-rose-900/60 bg-rose-950/30 p-3 text-xs text-rose-300">
+            <div
+              className={`mt-4 space-y-3 rounded-lg border p-3 text-xs ${
+                currentRun.status === "degraded"
+                  ? "border-amber-900/60 bg-amber-950/20 text-amber-300"
+                  : "border-rose-900/60 bg-rose-950/30 text-rose-300"
+              }`}
+            >
               <div className="flex flex-wrap items-center gap-2">
                 {currentRun.error_code && (
-                  <Badge tone={adapterErrorCodeTone(currentRun.error_code)}>
+                  <Badge
+                    tone={
+                      currentRun.status === "degraded"
+                        ? "warning"
+                        : adapterErrorCodeTone(currentRun.error_code)
+                    }
+                  >
                     {currentRun.error_code}
                   </Badge>
                 )}
-                <span className="font-medium text-rose-200">同步失败</span>
+                <span
+                  className={
+                    currentRun.status === "degraded"
+                      ? "font-medium text-amber-200"
+                      : "font-medium text-rose-200"
+                  }
+                >
+                  {currentRun.status === "degraded" ? "同步已降级" : "同步失败"}
+                </span>
               </div>
               {currentRun.error_hint && (
                 <div>
-                  <p className="mb-1 font-medium text-rose-200">业务层说明与处置建议</p>
+                  <p
+                    className={`mb-1 font-medium ${
+                      currentRun.status === "degraded"
+                        ? "text-amber-200"
+                        : "text-rose-200"
+                    }`}
+                  >
+                    {currentRun.status === "degraded" ? "降级说明" : "业务层说明与处置建议"}
+                  </p>
                   <p className="whitespace-pre-wrap leading-relaxed">{currentRun.error_hint}</p>
                 </div>
               )}
               <div>
-                <p className="mb-1 font-medium text-rose-200">代码级错误详情</p>
-                <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed text-rose-300/90">
+                <p
+                  className={`mb-1 font-medium ${
+                    currentRun.status === "degraded"
+                      ? "text-amber-200"
+                      : "text-rose-200"
+                  }`}
+                >
+                  {currentRun.status === "degraded" ? "状态详情" : "代码级错误详情"}
+                </p>
+                <pre
+                  className={`max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed ${
+                    currentRun.status === "degraded"
+                      ? "text-amber-300/90"
+                      : "text-rose-300/90"
+                  }`}
+                >
 {currentRun.error_detail || currentRun.error_message}
                 </pre>
               </div>
@@ -446,10 +512,16 @@ function ContentTable({
             <ExternalImage
               src={cover}
               alt=""
-              className="h-12 w-20 shrink-0 rounded-md object-cover ring-1 ring-slate-700"
+              className="h-12 w-20 min-w-20 max-w-none shrink-0 rounded-md object-cover ring-1 ring-slate-700"
+              fallback={
+                <span className="grid h-12 w-20 min-w-20 place-items-center rounded-md bg-slate-800 text-slate-600">
+                  <Film size={16} />
+                </span>
+              }
+              loading="eager"
             />
           ) : (
-            <span className="grid h-12 w-20 place-items-center rounded-md bg-slate-800 text-slate-600">
+            <span className="grid h-12 w-20 min-w-20 place-items-center rounded-md bg-slate-800 text-slate-600">
               <Film size={16} />
             </span>
           );
@@ -624,6 +696,13 @@ export function AccountDetailClient({ id }: { id: string }) {
   const [contentPageSize, setContentPageSize] = useState(20);
   const [cancelling, setCancelling] = useState(false);
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
+  const [clockNow, setClockNow] = useState(0);
+  useEffect(() => {
+    const updateClock = () => setClockNow(Date.now());
+    updateClock();
+    const timer = window.setInterval(updateClock, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
   const paths = buildAccountDetailPaths(id);
   const contentsPath = buildAccountDetailPaths(id, {
     sort: contentSort,
@@ -791,7 +870,7 @@ export function AccountDetailClient({ id }: { id: string }) {
       latestRun.status,
     ) &&
     latestRun.finished_at != null &&
-    Date.now() - new Date(latestRun.finished_at).getTime() < 90_000;
+    clockNow - new Date(latestRun.finished_at).getTime() < 90_000;
   const showSyncPanel =
     activeRun != null ||
     terminalFresh ||
@@ -802,11 +881,31 @@ export function AccountDetailClient({ id }: { id: string }) {
     history,
     (point) => point.follower_count,
   );
-  const totalViews =
-    latestObservedValue(history, (point) => point.total_view_count) ??
-    contentSummary.data?.account_total_views ??
-    snapshot?.total_view_count;
-  const videoCount = latestObservedValue(history, (point) => point.video_count);
+  const snapshotMetadata = (snapshot?.metadata ?? {}) as Record<string, unknown>;
+  const totalViewsDerivedFromContent =
+    snapshotMetadata["total_view_count_derived_from_content"] === true;
+  // The platform work total is an account-level observation. It must not fall
+  // back to the number of works currently synchronized into this workspace;
+  // that is a different metric and can be much smaller than the platform total.
+  const totalViews = totalViewsDerivedFromContent
+    ? (contentSummary.data?.content_total_view_count ??
+      latestObservedValue(history, (point) => point.total_view_count) ??
+      contentSummary.data?.account_total_views ??
+      snapshot?.total_view_count)
+    : (latestObservedValue(history, (point) => point.total_view_count) ??
+      contentSummary.data?.account_total_views ??
+      snapshot?.total_view_count ??
+      contentSummary.data?.content_total_view_count);
+  const totalViewsDerivedCount = totalViewsDerivedFromContent
+    ? (contentSummary.data?.content_count ??
+      snapshotMetadata["derived_from_content_count"])
+    : undefined;
+  const observedVideoCount = latestObservedValue(
+    history,
+    (point) => point.video_count,
+  );
+  const videoCount = observedVideoCount ?? snapshot?.video_count;
+  const syncedContentCount = contentSummary.data?.content_count;
   const engagementRate = latestObservedValue(
     history,
     (point) => point.engagement_rate,
@@ -945,12 +1044,12 @@ export function AccountDetailClient({ id }: { id: string }) {
               label="总播放量"
               value={formatNumber(totalViews ?? snapshot?.total_view_count ?? contentSummary.data?.account_total_views)}
               hint={
-                snapshot?.metadata &&
-                (snapshot.metadata as Record<string, unknown>)[
+                totalViewsDerivedFromContent &&
+                (snapshot?.metadata as Record<string, unknown>)[
                   "total_view_count_derived_from_content"
                 ]
                   ? `由已同步作品播放量合计（${(
-                      snapshot.metadata as Record<string, unknown>
+                      ({ derived_from_content_count: totalViewsDerivedCount } as Record<string, unknown>)
                     )["derived_from_content_count"] ?? "?"} 个作品）推算`
                   : undefined
               }
@@ -958,10 +1057,19 @@ export function AccountDetailClient({ id }: { id: string }) {
             <MetricCard
               label="平台作品总数"
               value={formatNumber(videoCount ?? snapshot?.video_count)}
+              hint={
+                videoCount == null
+                  ? `平台未返回公开总数；当前已同步作品 ${formatNumber(syncedContentCount)} 条`
+                  : undefined
+              }
             />
             <MetricCard
               label="互动率"
-              value={formatPercent(engagementRate ?? snapshot?.engagement_rate)}
+              value={formatPercent(
+                engagementRate ??
+                  snapshot?.engagement_rate ??
+                  contentSummary.data?.calculated_engagement_rate,
+              )}
             />
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -992,26 +1100,54 @@ export function AccountDetailClient({ id }: { id: string }) {
                     : "—"}
                 </span>
               }
+              hint={
+                contentSummary.data?.recent_24h_view_growth_estimated
+                  ? `按 ${formatNumber(contentSummary.data.recent_24h_view_growth_sample_size)} 个作品、${contentSummary.data.recent_24h_view_growth_actual_window_hours ?? "?"} 小时观测外推 24 小时`
+                  : undefined
+              }
             />
             <MetricCard
               label="总互动量"
               value={
                 <span className="text-2xl font-semibold text-white">
-                  {(() => {
-                    const v =
-                      contentSummary.data?.account_total_likes ??
-                      contentSummary.data?.total_interactions;
-                    return v != null ? formatNumber(v) : "—";
-                  })()}
+                  {formatNumber(contentSummary.data?.total_interactions)}
                 </span>
               }
-              hint={
-                contentSummary.data?.account_total_likes != null
-                  ? "账号级累计互动（平台公开资料）"
-                  : "已同步作品的互动合计"
-              }
+              hint="已同步作品的点赞、评论、分享、收藏合计"
             />
           </div>
+          <Panel className="p-5">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h2 className="font-medium text-white">作品互动拆分与测算</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  合计来自每个已同步作品的最新快照；互动率 = 互动合计 ÷ 作品播放量。
+                </p>
+              </div>
+              {contentSummary.data?.account_total_likes != null && (
+                <span className="text-xs text-slate-500">
+                  平台累计点赞 {formatNumber(contentSummary.data.account_total_likes)}
+                </span>
+              )}
+            </div>
+            <div className="mt-4">
+              <AccountInteractionBreakdown
+                summary={contentSummary.data}
+                format={formatPercent}
+              />
+            </div>
+            <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-t border-slate-800 pt-3 text-xs text-slate-400">
+              <span>
+                作品互动率{" "}
+                <strong className="text-cyan-300">
+                  {formatPercent(contentSummary.data?.calculated_engagement_rate)}
+                </strong>
+              </span>
+              <span>
+                作品播放量 {formatNumber(contentSummary.data?.content_total_view_count)}
+              </span>
+            </div>
+          </Panel>
           <Panel className="p-5">
             <h2 className="font-medium text-white">
               流量来源占比（账号作品平均）
@@ -1271,22 +1407,62 @@ export function AccountDetailClient({ id }: { id: string }) {
                       </strong>
                     </span>
                     {run.error_message && (
-                      <div className="space-y-2 rounded-md border border-rose-900/50 bg-rose-950/20 p-2 text-rose-300">
+                      <div
+                        className={`space-y-2 rounded-md border p-2 ${
+                          run.status === "degraded"
+                            ? "border-amber-900/50 bg-amber-950/20 text-amber-300"
+                            : "border-rose-900/50 bg-rose-950/20 text-rose-300"
+                        }`}
+                      >
                         <div className="flex flex-wrap items-center gap-2">
                           {run.error_code && (
-                            <Badge tone={adapterErrorCodeTone(run.error_code)}>
+                            <Badge
+                              tone={
+                                run.status === "degraded"
+                                  ? "warning"
+                                  : adapterErrorCodeTone(run.error_code)
+                              }
+                            >
                               {run.error_code}
                             </Badge>
                           )}
-                          <span className="text-rose-200">同步失败</span>
+                          <span
+                            className={
+                              run.status === "degraded"
+                                ? "text-amber-200"
+                                : "text-rose-200"
+                            }
+                          >
+                            {run.status === "degraded" ? "同步已降级" : "同步失败"}
+                          </span>
                         </div>
                         {run.error_hint && (
-                          <p className="whitespace-pre-wrap leading-relaxed text-rose-300/90">
-                            <span className="font-medium text-rose-200">业务层说明：</span>
+                          <p
+                            className={`whitespace-pre-wrap leading-relaxed ${
+                              run.status === "degraded"
+                                ? "text-amber-300/90"
+                                : "text-rose-300/90"
+                            }`}
+                          >
+                            <span
+                              className={
+                                run.status === "degraded"
+                                  ? "font-medium text-amber-200"
+                                  : "font-medium text-rose-200"
+                              }
+                            >
+                              {run.status === "degraded" ? "降级说明：" : "业务层说明："}
+                            </span>
                             {run.error_hint}
                           </p>
                         )}
-                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed text-rose-300/90">
+                        <pre
+                          className={`max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-relaxed ${
+                            run.status === "degraded"
+                              ? "text-amber-300/90"
+                              : "text-rose-300/90"
+                          }`}
+                        >
 {run.error_detail || run.error_message}
                         </pre>
                       </div>

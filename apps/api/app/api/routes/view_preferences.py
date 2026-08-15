@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from typing import Literal
+
+from fastapi import APIRouter, Query
 from sqlalchemy import select
 
 from app.api.dependencies import (
@@ -16,13 +18,14 @@ router = APIRouter(prefix="/accounts/view-preferences", tags=["monitoring"])
 async def get_view_preferences(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    view: Literal["accounts", "contents"] = Query("accounts"),
 ) -> ViewPreferenceRead | None:
     """Return the current user's account-list view preferences for this workspace."""
     result = await db.execute(
         select(UserViewPreference).where(
             UserViewPreference.workspace_id == workspace.workspace_id,
             UserViewPreference.user_id == workspace.auth.user.id,
-            UserViewPreference.view_key == "accounts",
+            UserViewPreference.view_key == view,
         )
     )
     row = result.scalar_one_or_none()
@@ -37,13 +40,14 @@ async def update_view_preferences(
     workspace: CurrentWorkspace,
     auth: CsrfProtectedAuth,
     db: DatabaseSession,
+    view: Literal["accounts", "contents"] = Query("accounts"),
 ) -> ViewPreferenceRead:
     """Create or update the current user's account-list view preferences."""
     result = await db.execute(
         select(UserViewPreference).where(
             UserViewPreference.workspace_id == workspace.workspace_id,
             UserViewPreference.user_id == auth.user.id,
-            UserViewPreference.view_key == "accounts",
+            UserViewPreference.view_key == view,
         )
     )
     row = result.scalar_one_or_none()
@@ -51,7 +55,7 @@ async def update_view_preferences(
         row = UserViewPreference(
             workspace_id=workspace.workspace_id,
             user_id=auth.user.id,
-            view_key="accounts",
+            view_key=view,
             preferences=payload.preferences,
         )
         db.add(row)

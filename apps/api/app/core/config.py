@@ -115,6 +115,24 @@ class Settings(BaseSettings):
         le=5000,
         description="Safety cap so one very long transcript cannot dominate a backfill run.",
     )
+    # Subtitle processing runs on a dedicated Celery queue. Normal account sync
+    # remains independent of model loading and CPU/GPU contention.
+    subtitle_asr_enabled: bool = True
+    subtitle_asr_backend: Literal["none", "faster_whisper"] = "faster_whisper"
+    subtitle_asr_model: str = Field(default="small", min_length=1, max_length=120)
+    subtitle_asr_device: Literal["auto", "cpu", "cuda"] = "auto"
+    subtitle_asr_compute_type: Literal["int8", "int8_float16", "float16", "float32"] = "int8"
+    subtitle_asr_model_dir: str = Field(default="/workspace/models/whisper", max_length=2048)
+    subtitle_asr_max_file_bytes: int = Field(default=4_000_000_000, ge=1_000_000, le=20_000_000_000)
+    subtitle_asr_max_duration_seconds: int = Field(default=7200, ge=60, le=86_400)
+    subtitle_asr_beam_size: int = Field(default=5, ge=1, le=10)
+    subtitle_translation_backend: Literal["none", "http"] = "http"
+    subtitle_translation_base_url: str | None = Field(
+        default="http://translation:5000", max_length=2048
+    )
+    subtitle_translation_api_key: SecretStr | None = None
+    subtitle_translation_timeout_seconds: float = Field(default=120.0, ge=5.0, le=900.0)
+    subtitle_translation_max_segments: int = Field(default=2000, ge=1, le=20_000)
     rerank_enabled: bool = Field(
         default=False,
         description=(
@@ -147,7 +165,43 @@ class Settings(BaseSettings):
     )
     platform_request_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     platform_request_max_attempts: int = Field(default=3, ge=1, le=5)
+    hotspot_feed_max_sources: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum enabled public RSS/Atom sources sampled by one hotspot run.",
+    )
+    hotspot_feed_items_per_source: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Maximum fresh entries read from each public hotspot feed.",
+    )
+    hotspot_feed_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="Bounded concurrency for independent public feed reads.",
+    )
     sync_task_max_retries: int = Field(default=3, ge=0, le=10)
+    sync_global_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Maximum number of account-sync runs across all workers.",
+    )
+    sync_platform_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        description="Maximum simultaneous account-sync runs for one platform.",
+    )
+    sync_lease_wait_seconds: int = Field(
+        default=30,
+        ge=1,
+        le=300,
+        description="Bounded wait before a busy sync budget is retried by Celery.",
+    )
     task_stale_after_seconds: int = Field(default=2100, ge=1860, le=86_400)
     task_dispatch_timeout_seconds: int = Field(
         default=180,
@@ -159,16 +213,68 @@ class Settings(BaseSettings):
             "locked by a task the worker failed to dispatch."
         ),
     )
+    download_stale_after_seconds: int = Field(
+        default=900,
+        ge=120,
+        le=86_400,
+        description=(
+            "A queued/running download with no progress update beyond this window "
+            "is closed as failed so a dead worker cannot leave a permanent spinner."
+        ),
+    )
+    media_storage_quota_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        le=10_000_000_000_000,
+        description=(
+            "Optional soft quota for the media volume; health reporting never deletes files."
+        ),
+    )
+    media_storage_scan_max_files: int = Field(
+        default=100_000,
+        ge=100,
+        le=2_000_000,
+        description="Maximum files inspected by one storage health scan.",
+    )
+    media_lifecycle_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable destructive media lifecycle cleanup. Keep disabled until a "
+            "retention policy has been reviewed and a backup is available."
+        ),
+    )
+    media_lifecycle_dry_run: bool = Field(
+        default=True,
+        description="Plan lifecycle cleanup without deleting physical files.",
+    )
+    media_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Retention window for explicitly temporary tracked artifacts.",
+    )
+    media_orphan_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=3650,
+        description="Grace period before an untracked workspace media file is eligible.",
+    )
+    media_lifecycle_batch_size: int = Field(
+        default=200,
+        ge=1,
+        le=10_000,
+        description="Maximum physical files considered by one lifecycle execution.",
+    )
     sync_page_limit: int = Field(
-        default=5,
+        default=40,
         ge=1,
         le=200,
         description=(
-            "How many content-list pages a single account sync ingests. Account "
-            "monitoring only needs recent works, so this is deliberately small: a "
-            "large value forced pathological channels to page for 20+ rounds and "
-            "starved the worker. 5 pages (~250 recent videos) is plenty for a "
-            "periodic monitor."
+            "How many content-list pages a single account sync may ingest. The "
+            "engine still stops at the wall-clock budget, max_contents, or the "
+            "incremental known-work boundary. 40 pages is needed because TikTok "
+            "currently returns only 15 works per browser page; a lower default "
+            "silently truncated new-account backfills after a few pages."
         ),
     )
     sync_stale_grace_seconds: int = Field(
@@ -185,7 +291,7 @@ class Settings(BaseSettings):
         ),
     )
     sync_page_fetch_timeout_seconds: int = Field(
-        default=120,
+        default=60,
         ge=20,
         le=600,
         description=(
@@ -348,6 +454,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "production requires a unique SIO_NOTIFICATION_ENCRYPTION_KEY "
                 "of at least 32 characters"
+            )
+        if self.llm_fallback_base_url:
+            raise ValueError("production must not enable the experimental LLM fallback")
+        if any(host == "llm-experimental" for host in self.llm_internal_hosts_allowlist):
+            raise ValueError("production must not allow the experimental LLM host")
+        if self.media_lifecycle_enabled and self.media_storage_quota_bytes is None:
+            raise ValueError(
+                "production media lifecycle cleanup requires an explicit storage quota"
             )
         return self
 

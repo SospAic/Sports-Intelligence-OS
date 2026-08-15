@@ -461,6 +461,30 @@ class NewsService:
         row = await self.repository.article(workspace_id, article_id)
         return article_read(row)  # type: ignore[arg-type]
 
+    async def bookmark_article(
+        self, workspace_id: UUID, article_id: UUID, actor_id: UUID, bookmarked: bool
+    ) -> ArticleRead:
+        """Toggle an article bookmark from the news table/card views."""
+
+        row = await self.repository.article(workspace_id, article_id)
+        if row is None:
+            raise NewsNotFoundError("article was not found")
+        article = row[0]
+        article.is_bookmarked = bookmarked
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.article.bookmark_changed",
+            "article",
+            article.id,
+            {"bookmarked": bookmarked},
+        )
+        await self.session.commit()
+        refreshed = await self.repository.article(workspace_id, article_id)
+        if refreshed is None:
+            raise RuntimeError("bookmarked article could not be reloaded")
+        return article_read(refreshed)
+
     async def delete_article(self, workspace_id: UUID, actor_id: UUID, article_id: UUID) -> None:
         row = await self.repository.article(workspace_id, article_id)
         if row is None:
@@ -848,11 +872,11 @@ class NewsService:
                 items = await self._fetch_provider_items(provider, ctx, run)
                 if items is None:
                     return
-            except NewsProviderError as exc:
-                last_error = exc
-                has_retryable_error = has_retryable_error or exc.retryable
+            except NewsProviderError as provider_exc:
+                last_error = provider_exc
+                has_retryable_error = has_retryable_error or provider_exc.retryable
                 strategy_attempts.append(
-                    {"provider": provider_key, "status": "failed", "code": exc.code}
+                    {"provider": provider_key, "status": "failed", "code": provider_exc.code}
                 )
                 self._record_external_attempt(
                     run,
@@ -861,20 +885,20 @@ class NewsService:
                     attempt_number,
                     provider_key=provider_key,
                     status="failed",
-                    error_code=exc.code,
-                    error_detail=str(exc),
-                    retryable=exc.retryable,
+                    error_code=provider_exc.code,
+                    error_detail=str(provider_exc),
+                    retryable=provider_exc.retryable,
                 )
                 attempt_number += 1
                 continue
             except Exception as raw_exc:  # noqa: BLE001 - try the next acquisition strategy
-                exc = NewsProviderTransientError(
+                fallback_exc = NewsProviderTransientError(
                     f"{provider_key} failed unexpectedly: {type(raw_exc).__name__}"
                 )
-                last_error = exc
+                last_error = fallback_exc
                 has_retryable_error = True
                 strategy_attempts.append(
-                    {"provider": provider_key, "status": "failed", "code": exc.code}
+                    {"provider": provider_key, "status": "failed", "code": fallback_exc.code}
                 )
                 self._record_external_attempt(
                     run,
@@ -883,7 +907,7 @@ class NewsService:
                     attempt_number,
                     provider_key=provider_key,
                     status="failed",
-                    error_code=exc.code,
+                    error_code=fallback_exc.code,
                     error_detail=str(raw_exc),
                     retryable=True,
                 )
@@ -911,26 +935,28 @@ class NewsService:
             "selected_provider": selected_provider_key,
         }
         if selected_items is None:
-            exc = last_error or NewsProviderContractError("all news acquisition strategies failed")
+            final_error = last_error or NewsProviderContractError(
+                "all news acquisition strategies failed"
+            )
             message = "多策略采集均失败：" + "; ".join(
                 f"{item['provider']}={item.get('code', 'unknown')}" for item in strategy_attempts
             )
             if has_retryable_error:
                 run.status = "queued"
-                run.error_code = exc.code
+                run.error_code = final_error.code
                 run.error_message = message[:2000]
-                run.error_detail = str(exc)[:2000]
-                run.error_hint = business_hint_for(exc.code, category="news_sync")
+                run.error_detail = str(final_error)[:2000]
+                run.error_hint = business_hint_for(final_error.code, category="news_sync")
                 run.metadata_json = {
                     **run.metadata_json,
                     "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
                 }
-                source.last_error_code = exc.code
+                source.last_error_code = final_error.code
                 source.last_error_message = message[:2000]
                 self._schedule_source_backoff(source)
                 await self.session.commit()
-                raise RetryableNewsSyncError(message) from exc
-            await self._sync_error(run, source, exc.code, message)
+                raise RetryableNewsSyncError(message) from final_error
+            await self._sync_error(run, source, final_error.code, message)
             return
 
         try:
@@ -939,11 +965,11 @@ class NewsService:
                 created += int(was_created)
                 updated += int(not was_created)
                 duplicates += int(duplicate)
-        except NewsProviderError as exc:
-            await self._sync_error(run, source, exc.code, str(exc))
+        except NewsProviderError as ingest_exc:
+            await self._sync_error(run, source, ingest_exc.code, str(ingest_exc))
             return
-        except Exception as exc:  # noqa: BLE001 - keep already-fetched items durable
-            await self._sync_error(run, source, "unexpected_news_sync_error", str(exc))
+        except Exception as ingest_exc:  # noqa: BLE001 - keep already-fetched items durable
+            await self._sync_error(run, source, "unexpected_news_sync_error", str(ingest_exc))
             return
         await self.session.refresh(run)
         if run.status == "cancelled":

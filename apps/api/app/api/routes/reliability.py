@@ -7,10 +7,11 @@ dashboard statistics, and cross-entity search.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
 
 from app.api.dependencies import (
@@ -20,8 +21,9 @@ from app.api.dependencies import (
     require_workspace_role,
 )
 from app.core.problems import problem_response
+from app.models.artifact import MediaArtifact
 from app.models.automation import NotificationDeliveryAttempt
-from app.models.operations import ExternalCallAttempt
+from app.models.operations import AuditEntry, ExternalCallAttempt
 from app.schemas.reliability import (
     DashboardStatsRead,
     DeadLetterPage,
@@ -39,6 +41,12 @@ from app.schemas.reliability import (
     RollbackRequest,
     SearchPage,
 )
+from app.schemas.storage import (
+    StorageHealthRead,
+    StorageLifecycleExecuteRequest,
+    StorageLifecycleRead,
+    StorageRetentionUpdateRequest,
+)
 from app.services.dashboard_stats import DashboardStatsService
 from app.services.notification_template import (
     NotificationTemplateError,
@@ -46,6 +54,7 @@ from app.services.notification_template import (
 )
 from app.services.outbox import OutboxError, OutboxService
 from app.services.search import SearchService
+from app.services.storage import media_health, media_lifecycle
 
 router = APIRouter(tags=["reliability"])
 Page = Annotated[int, Query(ge=1)]
@@ -400,6 +409,116 @@ async def get_dashboard_stats(
     """Return cached dashboard statistics for the current workspace."""
     stats = await DashboardStatsService(db).get_stats(workspace.workspace_id)
     return DashboardStatsRead(stats=stats)
+
+
+@router.get("/storage/health", response_model=StorageHealthRead)
+async def get_storage_health(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> StorageHealthRead:
+    """Inspect media usage and artifact integrity without mutating files."""
+
+    from app.core.config import get_settings
+
+    return await media_health(db, get_settings(), workspace.workspace_id)
+
+
+@router.get("/storage/lifecycle", response_model=StorageLifecycleRead)
+async def preview_storage_lifecycle(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> StorageLifecycleRead:
+    """Preview bounded media cleanup; this endpoint never deletes files."""
+
+    from app.core.config import get_settings
+
+    return await media_lifecycle(
+        db,
+        get_settings(),
+        workspace.workspace_id,
+        dry_run=True,
+        confirm=False,
+        actor_id=workspace.auth.user.id,
+        actor_type="user",
+    )
+
+
+@router.post("/storage/lifecycle", response_model=StorageLifecycleRead)
+async def execute_storage_lifecycle(
+    payload: StorageLifecycleExecuteRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> StorageLifecycleRead:
+    """Run or preview media lifecycle cleanup with an explicit confirmation."""
+
+    require_workspace_role(workspace, {"owner", "admin"})
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if not payload.dry_run and not payload.confirm:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "storage_lifecycle_confirmation_required",
+                "detail": "物理删除必须显式确认；请先查看预览结果",
+            },
+        )
+    return await media_lifecycle(
+        db,
+        settings,
+        workspace.workspace_id,
+        dry_run=payload.dry_run,
+        confirm=payload.confirm,
+        actor_id=auth.user.id,
+        actor_type="user",
+        max_files=payload.max_files,
+    )
+
+
+@router.patch("/storage/artifacts/{artifact_id}/retention", response_model=dict[str, str | None])
+async def update_storage_artifact_retention(
+    artifact_id: UUID,
+    payload: StorageRetentionUpdateRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> dict[str, str | None]:
+    """Mark one artifact as managed, temporary or protected for cleanup policy."""
+
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    artifact = await db.scalar(
+        select(MediaArtifact).where(
+            MediaArtifact.id == artifact_id,
+            MediaArtifact.workspace_id == workspace.workspace_id,
+        )
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail={"code": "artifact_not_found"})
+    artifact.retention_class = payload.retention_class
+    artifact.retain_until = payload.retain_until
+    audit = AuditEntry(
+        id=uuid4(),
+        workspace_id=workspace.workspace_id,
+        actor_type="user",
+        actor_id=auth.user.id,
+        action="storage.artifact_retention.updated",
+        resource_type="media_artifact",
+        resource_id=artifact.id,
+        change_summary_json={
+            "retention_class": payload.retention_class,
+            "retain_until": payload.retain_until.isoformat() if payload.retain_until else None,
+        },
+        trace_id=uuid4(),
+        created_at=datetime.now(UTC),
+    )
+    db.add(audit)
+    await db.flush()
+    return {
+        "artifact_id": str(artifact.id),
+        "retention_class": artifact.retention_class,
+        "retain_until": artifact.retain_until.isoformat() if artifact.retain_until else None,
+    }
 
 
 @router.post("/dashboard/stats/refresh", response_model=DashboardStatsRead)

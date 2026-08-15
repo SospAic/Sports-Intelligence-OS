@@ -186,6 +186,26 @@ async def test_successful_first_attempt_does_not_retry(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_extraction_attempt_cap_stops_duplicate_recovery(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    _install_fake_exec(
+        monkeypatch,
+        [(b"", REHYDRATION_ERROR.encode(), 1)],
+        calls,
+    )
+
+    with pytest.raises(LoginRequiredError):
+        await YtDlpAdapter()._run_yt_dlp(
+            TIKTOK_URL,
+            download={},
+            playlist_end=1,
+            structured={"extraction_attempts": 1, "retries": 0},
+        )
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_timeout_is_never_retried(monkeypatch) -> None:
     """A hung subprocess must fail fast — retrying would double the wall clock."""
 

@@ -12,6 +12,7 @@ type ExternalImageProps = {
   className?: string;
   containerClassName?: string;
   children?: ReactNode;
+  fallback?: ReactNode;
   loading?: "eager" | "lazy";
   onError?: () => void;
 };
@@ -22,6 +23,7 @@ export function ExternalImage({
   className,
   containerClassName,
   children,
+  fallback = null,
   loading = "lazy",
   onError,
 }: ExternalImageProps) {
@@ -30,7 +32,7 @@ export function ExternalImage({
 
   if (!normalized || failedSource === normalized) {
     if (failedSource === normalized) onError?.();
-    return null;
+    return fallback;
   }
 
   const image = (

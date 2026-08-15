@@ -5,11 +5,13 @@ export function PageHeader({
   eyebrow,
   title,
   description,
+  status,
   actions,
 }: {
   eyebrow?: string;
   title: string;
   description?: string;
+  status?: ReactNode;
   actions?: ReactNode;
 }) {
   return (
@@ -31,6 +33,7 @@ export function PageHeader({
             {description}
           </p>
         )}
+        {status && <div className="mt-3">{status}</div>}
       </div>
       {actions && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 lg:flex-nowrap">

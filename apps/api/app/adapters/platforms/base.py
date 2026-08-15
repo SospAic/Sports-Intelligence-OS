@@ -87,6 +87,19 @@ class AdapterCallContext:
     # Maximum number of concurrent per-video extractions. 1 keeps the strictly
     # sequential behaviour; higher values trade anti-bot risk for wall clock.
     fetch_concurrency: int = 1
+    # Optional wall-clock budget for the current external call. The sync
+    # executor refreshes this before profile, page and analytics calls so an
+    # adapter cannot spend a stale global timeout after the run budget is
+    # nearly exhausted.
+    timeout_seconds: float | None = None
+    # True while the sync executor is draining a durable historical catalogue
+    # checkpoint. Adapters may use this to prefer catalogue completeness over
+    # expensive per-item enrichment on deep pages.
+    sync_backfill: bool = False
+    # Mutable per-run cache shared by successive paged adapter calls. It is
+    # intentionally carried on the call context, never on the shared adapter,
+    # so concurrent account syncs cannot mix catalogues.
+    catalogue_cache: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

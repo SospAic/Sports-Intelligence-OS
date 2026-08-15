@@ -17,6 +17,10 @@ import { buildAccountDetailPaths } from "@/lib/admin-queries";
 import { adapterErrorCodeTone } from "@/lib/adapter-errors";
 import { formatDate, formatNumber } from "@/lib/format";
 import {
+  readSyncContentProgress,
+  SyncContentProgressCard,
+} from "@/components/sync-content-progress";
+import {
   SyncRunDetail,
   SyncRunEventLevel,
 } from "@sio/shared-types";
@@ -74,10 +78,15 @@ export function SyncRunDetailClient({
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.run.status;
+      return status === "queued" || status === "running" ? 3000 : false;
+    },
   });
 
   const run = detail.data?.run;
   const events = detail.data?.events ?? [];
+  const contentProgress = readSyncContentProgress(run?.metadata);
 
   return (
     <div className="space-y-6">
@@ -163,20 +172,62 @@ export function SyncRunDetailClient({
           </div>
 
           {run.error_message && (
-            <div className="space-y-2 border-t border-slate-800 p-5">
+            <div
+              className={`space-y-2 border-t p-5 ${
+                run.status === "degraded"
+                  ? "border-amber-900/60 bg-amber-950/10"
+                  : "border-slate-800"
+              }`}
+            >
               <div className="flex flex-wrap items-center gap-2">
                 {run.error_code && (
-                  <Badge tone={adapterErrorCodeTone(run.error_code)}>{run.error_code}</Badge>
+                  <Badge
+                    tone={
+                      run.status === "degraded"
+                        ? "warning"
+                        : adapterErrorCodeTone(run.error_code)
+                    }
+                  >
+                    {run.error_code}
+                  </Badge>
                 )}
-                <span className="text-rose-200">同步失败</span>
+                <span
+                  className={
+                    run.status === "degraded"
+                      ? "text-amber-200"
+                      : "text-rose-200"
+                  }
+                >
+                  {run.status === "degraded" ? "同步已降级" : "同步失败"}
+                </span>
               </div>
               {run.error_hint && (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-rose-300/90">
-                  <span className="font-medium text-rose-200">业务层说明：</span>
+                <p
+                  className={`whitespace-pre-wrap text-sm leading-relaxed ${
+                    run.status === "degraded"
+                      ? "text-amber-300/90"
+                      : "text-rose-300/90"
+                  }`}
+                >
+                  <span
+                    className={
+                      run.status === "degraded"
+                        ? "font-medium text-amber-200"
+                        : "font-medium text-rose-200"
+                    }
+                  >
+                    {run.status === "degraded" ? "降级说明：" : "业务层说明："}
+                  </span>
                   {run.error_hint}
                 </p>
               )}
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-rose-300/90">
+              <pre
+                className={`max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-3 font-mono text-[11px] leading-relaxed ${
+                  run.status === "degraded"
+                    ? "text-amber-300/90"
+                    : "text-rose-300/90"
+                }`}
+              >
 {run.error_detail || run.error_message}
               </pre>
             </div>
@@ -185,6 +236,11 @@ export function SyncRunDetailClient({
           {run.progress_message && !run.error_message && (
             <div className="border-t border-slate-800 p-5 text-sm text-slate-400">
               {run.progress_message}
+            </div>
+          )}
+          {contentProgress && (
+            <div className="border-t border-slate-800 px-5 pb-5">
+              <SyncContentProgressCard progress={contentProgress} />
             </div>
           )}
         </Panel>

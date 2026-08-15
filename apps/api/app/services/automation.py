@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,10 +52,13 @@ from app.schemas.automation import (
     ConditionValidateRequest,
     ConditionValidateResult,
     NotificationChannelCreate,
+    NotificationChannelHealthRead,
     NotificationChannelRead,
     NotificationChannelUpdate,
+    NotificationChannelValidationRead,
     NotificationDeliveryPage,
     NotificationDeliveryRead,
+    NotificationHealthSummaryRead,
     NotificationTestRequest,
 )
 from app.schemas.generation import GenerationCreate
@@ -749,6 +752,187 @@ class AutomationService:
             NotificationChannelRead.model_validate(item)
             for item in await self.repo.list_channels(workspace_id)
         ]
+
+    async def validate_channel_configuration(
+        self, workspace_id: UUID, channel_id: UUID
+    ) -> NotificationChannelValidationRead:
+        """Validate one channel locally without contacting its destination."""
+
+        channel = await self._channel(workspace_id, channel_id)
+        checked_at = datetime.now(UTC)
+        provider = self._notification_provider(channel.provider_key)
+        if not channel.enabled:
+            return NotificationChannelValidationRead(
+                channel_id=channel.id,
+                provider_key=channel.provider_key,
+                status="disabled",
+                is_mock=provider.is_mock,
+                checked_at=checked_at,
+                detail="Channel is disabled; no external request was made.",
+            )
+        try:
+            await provider.validate_config(self.cipher.decrypt(channel.config_encrypted))
+        except (NotificationProviderError, ValueError) as exc:
+            return NotificationChannelValidationRead(
+                channel_id=channel.id,
+                provider_key=channel.provider_key,
+                status="invalid",
+                is_mock=provider.is_mock,
+                checked_at=checked_at,
+                detail=str(exc)[:500],
+            )
+        return NotificationChannelValidationRead(
+            channel_id=channel.id,
+            provider_key=channel.provider_key,
+            status="configured",
+            is_mock=provider.is_mock,
+            checked_at=checked_at,
+            detail="Provider configuration is locally valid; no external request was made.",
+        )
+
+    async def notification_health(
+        self, workspace_id: UUID, *, window_minutes: int
+    ) -> NotificationHealthSummaryRead:
+        """Return a bounded notification SLO snapshot for the workspace."""
+
+        channels = await self.repo.list_channels(workspace_id)
+        cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+        delivery_rows = list(
+            (
+                await self.session.execute(
+                    select(
+                        NotificationDelivery.channel_id,
+                        NotificationDelivery.status,
+                        func.count().label("count"),
+                    )
+                    .where(
+                        NotificationDelivery.workspace_id == workspace_id,
+                        NotificationDelivery.created_at >= cutoff,
+                    )
+                    .group_by(NotificationDelivery.channel_id, NotificationDelivery.status)
+                )
+            ).all()
+        )
+        attempt_rows = list(
+            (
+                await self.session.execute(
+                    select(
+                        NotificationDeliveryAttempt.channel_id,
+                        func.count().label("attempts"),
+                        func.sum(
+                            case((NotificationDeliveryAttempt.status == "success", 1), else_=0)
+                        ).label("successful_attempts"),
+                        func.sum(
+                            case(
+                                (NotificationDeliveryAttempt.status.in_(("failed", "timeout")), 1),
+                                else_=0,
+                            )
+                        ).label("failed_attempts"),
+                        func.avg(NotificationDeliveryAttempt.duration_ms).label("average_latency"),
+                    )
+                    .where(
+                        NotificationDeliveryAttempt.workspace_id == workspace_id,
+                        NotificationDeliveryAttempt.started_at >= cutoff,
+                    )
+                    .group_by(NotificationDeliveryAttempt.channel_id)
+                )
+            ).all()
+        )
+        latest_attempts = list(
+            (
+                await self.session.scalars(
+                    select(NotificationDeliveryAttempt)
+                    .where(
+                        NotificationDeliveryAttempt.workspace_id == workspace_id,
+                        NotificationDeliveryAttempt.started_at >= cutoff,
+                    )
+                    .order_by(NotificationDeliveryAttempt.started_at.desc())
+                    .limit(1000)
+                )
+            ).all()
+        )
+        latest_by_channel: dict[UUID, NotificationDeliveryAttempt] = {}
+        for attempt in latest_attempts:
+            if attempt.channel_id is not None:
+                latest_by_channel.setdefault(attempt.channel_id, attempt)
+
+        stats: dict[UUID, dict[str, Any]] = {}
+        for channel_id, status, count in delivery_rows:
+            stats.setdefault(channel_id, {})[str(status)] = int(count or 0)
+        for row in attempt_rows:
+            channel_stats = stats.setdefault(row.channel_id, {})
+            channel_stats.update(
+                {
+                    "attempts": int(row.attempts or 0),
+                    "successful_attempts": int(row.successful_attempts or 0),
+                    "failed_attempts": int(row.failed_attempts or 0),
+                    "average_latency": (
+                        float(row.average_latency) if row.average_latency is not None else None
+                    ),
+                }
+            )
+
+        channel_reads: list[NotificationChannelHealthRead] = []
+        for channel in channels:
+            current = stats.get(channel.id, {})
+            deliveries = sum(
+                int(current.get(key, 0))
+                for key in ("delivered", "failed", "queued", "sending")
+            )
+            attempts = int(current.get("attempts", 0))
+            successful = int(current.get("successful_attempts", 0))
+            last = latest_by_channel.get(channel.id)
+            channel_reads.append(
+                NotificationChannelHealthRead(
+                    channel_id=channel.id,
+                    name=channel.name,
+                    provider_key=channel.provider_key,
+                    enabled=channel.enabled,
+                    health_status=channel.health_status,
+                    deliveries=deliveries,
+                    delivered=int(current.get("delivered", 0)),
+                    failed=int(current.get("failed", 0)),
+                    queued=int(current.get("queued", 0)),
+                    sending=int(current.get("sending", 0)),
+                    attempts=attempts,
+                    successful_attempts=successful,
+                    failed_attempts=int(current.get("failed_attempts", 0)),
+                    success_rate=round(successful / attempts, 4) if attempts else None,
+                    average_latency_ms=current.get("average_latency"),
+                    last_delivery_at=last.started_at if last else None,
+                    last_error_code=(
+                        last.error_code if last and last.status != "success" else None
+                    ),
+                )
+            )
+
+        total_deliveries = sum(item.deliveries for item in channel_reads)
+        total_delivered = sum(item.delivered for item in channel_reads)
+        total_failed = sum(item.failed for item in channel_reads)
+        total_queued = sum(item.queued for item in channel_reads)
+        total_sending = sum(item.sending for item in channel_reads)
+        total_attempts = sum(item.attempts for item in channel_reads)
+        total_successful = sum(item.successful_attempts for item in channel_reads)
+        total_failed_attempts = sum(item.failed_attempts for item in channel_reads)
+        latency_values = [
+            item.average_latency_ms for item in channel_reads if item.average_latency_ms is not None
+        ]
+        return NotificationHealthSummaryRead(
+            window_minutes=window_minutes,
+            generated_at=datetime.now(UTC),
+            channels=channel_reads,
+            deliveries=total_deliveries,
+            delivered=total_delivered,
+            failed=total_failed,
+            queued=total_queued,
+            sending=total_sending,
+            successful_attempts=total_successful,
+            failed_attempts=total_failed_attempts,
+            success_rate=round(total_successful / total_attempts, 4) if total_attempts else None,
+            average_latency_ms=(
+                round(sum(latency_values) / len(latency_values), 2) if latency_values else None
+            ),
+        )
 
     async def create_channel(
         self, workspace_id: UUID, actor_id: UUID, payload: NotificationChannelCreate

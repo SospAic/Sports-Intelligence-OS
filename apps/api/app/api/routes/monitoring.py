@@ -32,6 +32,7 @@ from app.schemas.monitoring import (
     AccountSyncSettingsOverride,
     AccountUpdate,
     CommentRead,
+    CommentSnapshotRead,
     ContentCalendarResponse,
     ContentCreate,
     ContentPage,
@@ -634,7 +635,7 @@ async def list_content_comments(
     content_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
-    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    limit: Annotated[int, Query(ge=1, le=20)] = 20,
 ) -> list[CommentRead]:
     """Ranked hot comments for a content item (top ``limit``, default 20).
 
@@ -662,9 +663,31 @@ async def collect_content_comments(
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     from app.tasks.monitoring import collect_content_comments as collect_task
 
-    await MonitoringService(db).get_content(workspace.workspace_id, content_id)
+    monitoring = MonitoringService(db)
+    accepted = await monitoring.queue_content_comments(workspace.workspace_id, content_id)
+    if not accepted:
+        return {"status": "unsupported", "detail": "当前作品适配器未提供评论采集能力"}
     collect_task.delay(str(content_id))
     return {"status": "accepted", "detail": "评论采集中，稍后刷新查看"}
+
+
+# -- Comment history -------------------------------------------------------
+
+
+@router.get(
+    "/contents/{content_id}/comments/snapshots",
+    response_model=list[CommentSnapshotRead],
+)
+async def list_content_comment_snapshots(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[CommentSnapshotRead]:
+    """Return append-only ranked comment observations for trend analysis."""
+    return await MonitoringService(db).list_content_comment_snapshots(
+        workspace.workspace_id, content_id, limit=limit
+    )
 
 
 # -- Content CRUD (manual) -------------------------------------------------

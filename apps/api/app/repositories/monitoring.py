@@ -5,12 +5,13 @@ from uuid import UUID
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
     Comment,
+    CommentSnapshot,
     ContentItem,
     ContentSnapshot,
     DerivedMetric,
@@ -288,7 +289,10 @@ class MonitoringRepository:
             select(ContentItem, ContentSnapshot, view_growth.label("view_growth_24h"))
             .join(Platform, ContentItem.platform_id == Platform.id)
             .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
-            .options(joinedload(ContentItem.platform))
+            .options(
+                joinedload(ContentItem.platform),
+                selectinload(ContentItem.artifacts),
+            )
             .where(*conditions)
         )
         sort_columns: dict[str, Any] = {
@@ -355,6 +359,18 @@ class MonitoringRepository:
             select(Comment)
             .where(Comment.content_item_id == content_item_id)
             .order_by(score.desc(), Comment.like_count.desc().nullslast())
+            .limit(limit)
+        )
+        result = await self._session.scalars(statement)
+        return list(result.all())
+
+    async def list_content_comment_snapshots(
+        self, content_item_id: UUID, limit: int = 100
+    ) -> list[CommentSnapshot]:
+        statement = (
+            select(CommentSnapshot)
+            .where(CommentSnapshot.content_item_id == content_item_id)
+            .order_by(CommentSnapshot.captured_at.desc(), CommentSnapshot.rank.asc())
             .limit(limit)
         )
         result = await self._session.scalars(statement)
@@ -427,7 +443,10 @@ class MonitoringRepository:
                 func.avg(interactions / func.nullif(ContentSnapshot.view_count, 0)).label(
                     "avg_engagement_rate"
                 ),
-                func.sum(interactions).label("total_interactions"),
+                func.sum(ContentSnapshot.like_count).label("total_like_count"),
+                func.sum(ContentSnapshot.comment_count).label("total_comment_count"),
+                func.sum(ContentSnapshot.share_count).label("total_share_count"),
+                func.sum(ContentSnapshot.favorite_count).label("total_favorite_count"),
                 func.sum(
                     ContentSnapshot.view_count
                     * func.coalesce(ContentSnapshot.recommendation_traffic_rate, 0)
@@ -456,6 +475,33 @@ class MonitoringRepository:
         content_count = int(mapping["content_count"] or 0)
         view_sum = float(mapping["view_sum"] or 0)
 
+        def integer_total(column: str) -> int | None:
+            value = mapping[column]
+            return int(value) if value is not None else None
+
+        total_like_count = integer_total("total_like_count")
+        total_comment_count = integer_total("total_comment_count")
+        total_share_count = integer_total("total_share_count")
+        total_favorite_count = integer_total("total_favorite_count")
+        available_interactions = [
+            value
+            for value in (
+                total_like_count,
+                total_comment_count,
+                total_share_count,
+                total_favorite_count,
+            )
+            if value is not None
+        ]
+        total_interactions = (
+            sum(available_interactions) if available_interactions else None
+        )
+
+        def calculated_rate(value: int | None) -> float | None:
+            if value is None or view_sum <= 0:
+                return None
+            return value / view_sum
+
         def weighted(column: str) -> float | None:
             value = mapping[column]
             if value is None or view_sum <= 0:
@@ -467,6 +513,80 @@ class MonitoringRepository:
             "search": weighted("search_weighted"),
             "profile": weighted("profile_weighted"),
         }
+
+        recent_24h_view_growth = (
+            int(mapping["recent_view_growth"])
+            if mapping["recent_view_growth"] is not None
+            else None
+        )
+        recent_24h_view_growth_estimated = False
+        recent_24h_view_growth_sample_size: int | None = None
+        recent_24h_view_growth_actual_window_hours: float | None = None
+        if recent_24h_view_growth is None:
+            # A fresh sync often observes the same works again after a short
+            # interval (for example 2–3 hours), while the strict 24h derived
+            # metric intentionally waits for an 18–36h baseline. Use that
+            # shorter real observation only as a transparent 24h extrapolation;
+            # never turn the missing value into a made-up zero.
+            snapshot_rows = (
+                await self._session.execute(
+                    select(
+                        ContentSnapshot.content_item_id,
+                        ContentSnapshot.captured_at,
+                        ContentSnapshot.view_count,
+                    )
+                    .join(ContentItem, ContentItem.id == ContentSnapshot.content_item_id)
+                    .where(
+                        ContentItem.workspace_id == workspace_id,
+                        ContentItem.account_id == account_id,
+                    )
+                    .order_by(
+                        ContentSnapshot.content_item_id,
+                        ContentSnapshot.captured_at.desc(),
+                        ContentSnapshot.id.desc(),
+                    )
+                )
+            ).all()
+            snapshots_by_content: dict[UUID, list[tuple[datetime, int | None]]] = {}
+            for content_item_id, captured_at, view_count in snapshot_rows:
+                snapshots_by_content.setdefault(content_item_id, []).append(
+                    (captured_at, view_count)
+                )
+
+            estimated_growth = 0.0
+            observed_intervals: list[float] = []
+            for snapshots in snapshots_by_content.values():
+                if len(snapshots) < 2:
+                    continue
+                latest_at, latest_views = snapshots[0]
+                if latest_views is None:
+                    continue
+                candidates: list[tuple[float, datetime, int]] = []
+                for prior_at, prior_views in snapshots[1:]:
+                    if prior_views is None:
+                        continue
+                    elapsed_hours = (
+                        latest_at - prior_at
+                    ).total_seconds() / 3600
+                    if 1 <= elapsed_hours <= 36:
+                        candidates.append((elapsed_hours, prior_at, prior_views))
+                if not candidates:
+                    continue
+                truthful = [item for item in candidates if 18 <= item[0] <= 36]
+                elapsed_hours, _prior_at, prior_views = min(
+                    truthful or candidates,
+                    key=lambda item: abs(item[0] - 24),
+                )
+                estimated_growth += (latest_views - prior_views) * 24 / elapsed_hours
+                observed_intervals.append(elapsed_hours)
+
+            if observed_intervals:
+                recent_24h_view_growth = int(round(estimated_growth))
+                recent_24h_view_growth_estimated = True
+                recent_24h_view_growth_sample_size = len(observed_intervals)
+                recent_24h_view_growth_actual_window_hours = round(
+                    sum(observed_intervals) / len(observed_intervals), 2
+                )
 
         top_statement = (
             select(ContentItem.id, ContentItem.title, ContentSnapshot.view_count)
@@ -497,18 +617,25 @@ class MonitoringRepository:
             "avg_completion_rate": mapping["avg_completion_rate"],
             "avg_watch_time_seconds": mapping["avg_watch_time"],
             "avg_engagement_rate": mapping["avg_engagement_rate"],
-            "total_interactions": (
-                int(mapping["total_interactions"])
-                if mapping["total_interactions"] is not None
-                else None
-            ),
+            "total_like_count": total_like_count,
+            "total_comment_count": total_comment_count,
+            "total_share_count": total_share_count,
+            "total_favorite_count": total_favorite_count,
+            "total_interactions": total_interactions,
+            "calculated_engagement_rate": calculated_rate(total_interactions),
+            "calculated_like_rate": calculated_rate(total_like_count),
+            "calculated_comment_rate": calculated_rate(total_comment_count),
+            "calculated_share_rate": calculated_rate(total_share_count),
+            "calculated_favorite_rate": calculated_rate(total_favorite_count),
+            "content_total_view_count": int(view_sum) if mapping["view_sum"] is not None else None,
             "account_total_likes": account_total_likes,
             "account_total_views": account_total_views,
             "traffic_source_split": traffic_split,
-            "recent_24h_view_growth": (
-                int(mapping["recent_view_growth"])
-                if mapping["recent_view_growth"] is not None
-                else None
+            "recent_24h_view_growth": recent_24h_view_growth,
+            "recent_24h_view_growth_estimated": recent_24h_view_growth_estimated,
+            "recent_24h_view_growth_sample_size": recent_24h_view_growth_sample_size,
+            "recent_24h_view_growth_actual_window_hours": (
+                recent_24h_view_growth_actual_window_hours
             ),
             "top_content_id": top_row[0] if top_row else None,
             "top_content_title": top_row[1] if top_row else None,
@@ -521,7 +648,10 @@ class MonitoringRepository:
         statement = (
             select(ContentItem, ContentSnapshot, view_growth)
             .outerjoin(ContentSnapshot, ContentSnapshot.id == latest_snapshot_id)
-            .options(joinedload(ContentItem.platform))
+            .options(
+                joinedload(ContentItem.platform),
+                selectinload(ContentItem.artifacts),
+            )
             .where(ContentItem.id == content_id, ContentItem.workspace_id == workspace_id)
         )
         row = (await self._session.execute(statement)).one_or_none()

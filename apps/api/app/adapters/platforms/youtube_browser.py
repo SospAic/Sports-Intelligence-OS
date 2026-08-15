@@ -357,14 +357,30 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
     ) -> AdapterPage:
         """Scrape the video list from the channel's Videos tab."""
         handle = external_account_id.lstrip("@")
+        try:
+            offset = int(cursor) if cursor else 0
+        except (TypeError, ValueError) as exc:
+            raise AdapterContractError("YouTube browser cursor must be numeric") from exc
+        if offset < 0:
+            raise AdapterContractError("YouTube browser cursor cannot be negative")
+        requested_page_size = max(1, int(page_size))
         context, page = await self._new_page(ctx)
         try:
-            url = f"{YT_CHANNEL_URL.format(handle=handle)}/videos"
+            # The channel root is the canonical public uploads catalogue. Some
+            # channels (for example Shorts-only channels) do not expose a
+            # /videos tab at all; navigating there returns an empty shell even
+            # though the root page exposes every upload.
+            url = YT_CHANNEL_URL.format(handle=handle)
             await page.goto(url, wait_until="domcontentloaded", timeout=self.page_load_timeout_ms)
             await self._polite_delay(2.0)
             # Anonymous-first: stop before scrolling a page that will never load.
             await self._check_login_required(page, "YouTube")
-            await self._scroll_page(page, times=3, ctx=ctx)
+            # Browser fallback has no stable continuation token. Rebuild the
+            # public Videos tab and scroll far enough to materialize the prefix
+            # needed for this offset, then slice locally. This prevents every
+            # page after the first from silently repeating page one.
+            scroll_rounds = min(30, 3 + (offset // requested_page_size) * 3)
+            await self._scroll_page(page, times=scroll_rounds, ctx=ctx)
 
             # Wait for video renderers.
             try:
@@ -375,10 +391,19 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             except Exception:
                 return AdapterPage(items=(), next_cursor=None)
 
-            items = await self._extract_video_renderers(page, ctx, handle, page_size)
+            all_items = await self._extract_video_renderers(
+                page,
+                ctx,
+                handle,
+                offset + requested_page_size,
+            )
+            items = all_items[offset : offset + requested_page_size]
 
-            # YouTube uses infinite scroll; no simple cursor pagination.
-            next_cursor = None
+            next_cursor = (
+                str(offset + requested_page_size)
+                if len(all_items) >= offset + requested_page_size
+                else None
+            )
             return AdapterPage(items=tuple(items), next_cursor=next_cursor)
         except Exception as exc:
             reraise_if_terminal(exc)
@@ -431,7 +456,9 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
             title = (d.get("title") or "").strip()
             if not title:
                 title = f"Video {i + 1}"
-            cover_url = d.get("cover") or None
+            cover_url = d.get("cover") or (
+                f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg" if video_id else None
+            )
             text = d.get("text") or ""
             view_count = _parse_views_from_text(text)
             published_at = _parse_relative_date(text, ctx.observed_at)
@@ -484,6 +511,8 @@ class YouTubeBrowserAdapter(BrowserPlatformAdapter):
                 cover_url = await og_img.get_attribute("content")
             except Exception:
                 pass
+            if not cover_url:
+                cover_url = f"https://i.ytimg.com/vi/{external_id}/hqdefault.jpg"
 
             return PlatformContentData(
                 external_id=external_id,

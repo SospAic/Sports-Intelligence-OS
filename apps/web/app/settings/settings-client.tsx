@@ -22,6 +22,9 @@ import {
   Play,
   Square,
   Database,
+  Languages,
+  HardDrive,
+  Bell,
 } from "lucide-react";
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
@@ -44,6 +47,8 @@ import { LLMSettingsPanel } from "./llm-settings-panel";
 import { RuntimeSettingsPanel } from "./runtime-settings-panel";
 import { SyncSettingsPanel } from "./sync-settings-panel";
 import { SemanticSearchSettingsPanel } from "./semantic-search-settings-panel";
+import { StorageLifecyclePanel } from "./storage-lifecycle-panel";
+import { SubscriptionsPanel } from "./subscriptions-panel";
 
 type SourcePage = {
   items: NewsSourceRecord[];
@@ -68,7 +73,10 @@ type SettingsTab =
   | "sources"
   | "platforms"
   | "sync"
-  | "search";
+  | "search"
+  | "subtitles"
+  | "storage"
+  | "subscriptions";
 
 const TABS: Array<{
   key: SettingsTab;
@@ -78,8 +86,11 @@ const TABS: Array<{
   { key: "overview", label: "概览", icon: HeartPulse },
   { key: "platforms", label: "平台管理", icon: Plug },
   { key: "sync", label: "同步设置", icon: RefreshCw },
+  { key: "subtitles", label: "字幕翻译", icon: Languages },
   { key: "llm", label: "LLM API", icon: Sparkles },
   { key: "search", label: "语义检索", icon: Database },
+  { key: "storage", label: "存储治理", icon: HardDrive },
+  { key: "subscriptions", label: "订阅告警", icon: Bell },
   { key: "notifications", label: "通知 Provider", icon: Send },
   { key: "sources", label: "新闻源", icon: Newspaper },
 ];
@@ -99,6 +110,9 @@ export function SettingsClient() {
       "platforms",
       "sync",
       "search",
+      "subtitles",
+      "storage",
+      "subscriptions",
     ].includes(initialTab)
       ? initialTab
       : "overview",
@@ -712,7 +726,14 @@ export function SettingsClient() {
           <RuntimeSettingsPanel sectionKeys={["media_runtime"]} />
         </>
       )}
+      {tab === "subtitles" && (
+        <RuntimeSettingsPanel sectionKeys={["subtitle_runtime"]} />
+      )}
       {tab === "search" && <SemanticSearchSettingsPanel />}
+      {tab === "storage" && workspaceId && (
+        <StorageLifecyclePanel workspaceId={workspaceId} role={role} />
+      )}
+      {tab === "subscriptions" && <SubscriptionsPanel />}
     </main>
   );
 }
@@ -910,6 +931,13 @@ const PLATFORM_LOGIN_FIELDS = [
     placeholder: "仅发送到后端加密保存",
   },
 ];
+
+const DEFAULT_SESSION_EXPIRY = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 30);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+})();
 
 function SecurePlatformCredentialCard({
   platform,
@@ -1119,12 +1147,9 @@ function SecurePlatformCredentialCard({
   );
 
   // 会话过期时间默认 +30 天（仅在从未保存过有效期时给出），避免误选成临近此刻导致保存后立刻失效。
-  const defaultSessionExpiry = (() => {
-    if (setting?.config_masked?.session_expires_at) return undefined;
-    const d = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-    const pad = (n: number) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  })();
+  const defaultSessionExpiry = setting?.config_masked?.session_expires_at
+    ? undefined
+    : DEFAULT_SESSION_EXPIRY;
 
   return (
     <Panel className="p-5">

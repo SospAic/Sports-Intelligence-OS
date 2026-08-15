@@ -45,6 +45,11 @@ def _operation_error_hint(
     has_error_fields = any((code, message, detail))
     if not has_error_fields and status not in _TERMINAL_ERROR_STATUSES:
         return None
+    # ``degraded`` is a truthful partial result, not an execution failure.
+    # When it has no concrete error code, the run's own progress/status text
+    # is the complete explanation; do not append a generic red failure hint.
+    if status == "degraded" and not code:
+        return existing
     return existing or business_hint_for(code, adapter_key=adapter_key, category=category)
 
 

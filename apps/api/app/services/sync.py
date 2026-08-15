@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import logging
 import os
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -30,11 +31,13 @@ from app.adapters.platforms.profile_helpers import (
     is_invalid_display_name,
     should_update_display_name,
 )
+from app.adapters.platforms.yt_dlp import YtDlpAdapter
 from app.api.routes.media import cache_avatar_for_account
 from app.core.config import Settings
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
+    Comment,
     ContentItem,
     ContentSnapshot,
     DerivedMetric,
@@ -142,6 +145,12 @@ class RetryableSyncError(Exception):
 # absolute: below this floor we close the run instead of pretending to work.
 _MIN_ATTEMPT_BUDGET_SECONDS = 5.0
 
+# Persist several item updates together. A commit for every work would make a
+# detailed progress panel itself slow down the sync; batching keeps the UI
+# granular while limiting database round-trips.
+_SYNC_ITEM_PROGRESS_COMMIT_INTERVAL = 5
+_SYNC_RECENT_ITEM_LIMIT = 8
+
 
 def _as_int(value: int | float | None) -> int | None:
     return int(value) if value is not None else None
@@ -155,11 +164,54 @@ def merge_media_manifest(
     existing: Mapping[str, Any] | None,
     discovered: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Merge newly archived files without erasing older media on metadata syncs."""
+    """Merge partial media observations without erasing archived artifacts.
 
+    A catalogue pass may have no download artifacts, and a subtitle probe may
+    return an empty list after a transient platform response. Treating those
+    observations as a shallow replacement makes existing video, covers,
+    info-json, or subtitle tracks disappear. Sync is additive by default;
+    explicit deletion belongs to media-management APIs.
+    """
+
+    if not existing and not discovered:
+        return None
     if not discovered:
         return dict(existing) if existing else None
-    return {**(existing or {}), **dict(discovered)}
+
+    merged = dict(existing or {})
+    list_keys = {"subtitles", "subtitle_exports"}
+    for key, value in dict(discovered).items():
+        if key == "base" and merged.get("base"):
+            # Keep the directory containing older files. The on-demand download
+            # path copies files before choosing a target base.
+            continue
+        if key in list_keys and isinstance(value, list):
+            previous = merged.get(key)
+            previous_items = list(previous) if isinstance(previous, list) else []
+            by_file: dict[str, int] = {
+                str(item["file"]): index
+                for index, item in enumerate(previous_items)
+                if isinstance(item, Mapping) and item.get("file")
+            }
+            for item in value:
+                if not isinstance(item, Mapping) or not item.get("file"):
+                    continue
+                file_key = str(item["file"])
+                index = by_file.get(file_key)
+                if index is None:
+                    by_file[file_key] = len(previous_items)
+                    previous_items.append(dict(item))
+                else:
+                    previous_items[index] = {**dict(previous_items[index]), **dict(item)}
+            if previous_items:
+                merged[key] = previous_items
+            continue
+        # False is meaningful for preferences such as timestamp display; only
+        # None/blank/empty containers represent no observation.
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        merged[key] = value
+    return merged or None
 
 
 def _utc(value: datetime) -> datetime:
@@ -472,7 +524,17 @@ class SyncService:
                 account.sync_status = "error"
                 account.last_sync_error_code = run.error_code
                 account.last_sync_error_message = run.error_message
-                account.next_sync_at = now
+                # Do not make the just-recovered account immediately due again.
+                # The beat scheduler runs the stale sweep and the due-account
+                # sweep independently; setting this to ``now`` lets the latter
+                # redeliver the same stuck platform task in the same minute,
+                # creating an endless recover -> retry -> recover loop.  Use the
+                # account cadence as a cooldown, with a small lower bound for
+                # legacy/test rows that may contain an unrealistically short
+                # interval.  Manual sync remains available because this only
+                # moves the next automatic due time.
+                recovery_cooldown = max(300, int(account.sync_interval_seconds or 0))
+                account.next_sync_at = now + timedelta(seconds=recovery_cooldown)
 
 
 class PlatformSyncExecutor:
@@ -489,6 +551,11 @@ class PlatformSyncExecutor:
         # Set when a run hits its wall-clock budget mid-pagination so the success
         # path can label the result as truncated rather than a full sync.
         self._budget_exceeded = False
+        # Set when the configured per-run page budget ends while the adapter
+        # still returns a continuation cursor. The cursor is persisted on the
+        # account so the next scheduled/manual run resumes the backfill instead
+        # of silently restarting at page one or declaring the catalogue complete.
+        self._content_truncated = False
         # Live scrolling log for the run currently being executed (set in
         # execute_account_run). ``None`` for code paths that have no run yet.
         # The annotation is never evaluated at runtime (it sits in a function
@@ -510,6 +577,41 @@ class PlatformSyncExecutor:
         # page commit (see ``_flush_pending_indexing``), so the dispatch always
         # happens against an already-committed row.
         self._pending_index_ids: list[UUID] = []
+        # A provider can return the same work more than once in one catalogue
+        # window, and a retry can reuse the same observed_at timestamp. Keep
+        # snapshot writes idempotent within this executor.
+        self._pending_content_snapshots: dict[tuple[UUID, datetime], ContentSnapshot] = {}
+        # Set only when a backfill reaches the real end of an unfiltered
+        # catalogue. This is a truthful public upload count and must not be
+        # confused with the number of rows currently stored under a capped or
+        # date-filtered sync.
+        self._catalogue_total: int | None = None
+
+    @staticmethod
+    def _is_incrementally_complete_content_row(
+        metadata: Any,
+        published_at: datetime | None,
+        duration_seconds: Any,
+        cover_url: str | None,
+    ) -> bool:
+        """Return whether a stored row may safely skip full detail extraction.
+
+        ``skip_existing`` is a performance policy, not permission to preserve a
+        catalogue-only row forever.  Flat yt-dlp entries intentionally carry a
+        real title/cover/view count but omit fields such as publish time,
+        duration and description.  Those rows must re-enter the detail queue on
+        the next run.  An empty description is valid platform data, so it is
+        not used as a completeness gate.
+        """
+        payload = dict(metadata) if isinstance(metadata, dict) else {}
+        detail_level = str(payload.get("detail_level") or "full")
+        return (
+            not bool(payload.get("partial"))
+            and detail_level == "full"
+            and published_at is not None
+            and duration_seconds is not None
+            and bool(cover_url)
+        )
 
     def _remaining_budget_seconds(self, run: SyncRun) -> float:
         """Return the remaining wall-clock budget for an external call.
@@ -744,6 +846,35 @@ class PlatformSyncExecutor:
             ) = await self._sync_contents(account, adapter, ctx, run)
             created += content_created
             updated += content_updated
+            # Some public channel extractors expose no lifetime ``video_count``
+            # (YouTube Shorts-only channels are a common example). Once the
+            # content paginator itself has reached the unfiltered catalogue
+            # end, use that independently observed count for the pending
+            # account snapshot instead of leaving the platform-total card blank.
+            if self._pending_account_snapshot is not None:
+                catalogue_total = self._catalogue_total
+                if catalogue_total is None:
+                    raw_catalogue_total = (account.metadata_json or {}).get(
+                        "content_sync_catalogue_total"
+                    )
+                    try:
+                        catalogue_total = (
+                            max(0, int(raw_catalogue_total))
+                            if raw_catalogue_total is not None
+                            else None
+                        )
+                    except (TypeError, ValueError):
+                        catalogue_total = None
+                if (
+                    catalogue_total is not None
+                    and self._pending_account_snapshot.video_count is None
+                ):
+                    self._pending_account_snapshot.video_count = catalogue_total
+                    self._pending_account_snapshot.metadata_json = {
+                        **(self._pending_account_snapshot.metadata_json or {}),
+                        "video_count_derived_from_complete_catalogue": True,
+                        "catalogue_total": catalogue_total,
+                    }
             # Insert the account snapshot now that content views are known, so a
             # derived total_view_count (platforms that omit lifetime views) can
             # ride on this new append-only row.
@@ -829,6 +960,7 @@ class PlatformSyncExecutor:
                 or content_analytics_failed
                 or metrics_calc_failed
                 or profile_degraded
+                or self._content_truncated
             )
             else "success"
         )
@@ -851,6 +983,7 @@ class PlatformSyncExecutor:
                 "metrics_degraded": metrics_degraded,
                 "content_analytics_failed": content_analytics_failed,
                 "metrics_calc_failed": metrics_calc_failed,
+                "content_truncated": self._content_truncated,
             },
         )
         run.status = final_status
@@ -863,6 +996,8 @@ class PlatformSyncExecutor:
             if (metrics_degraded or content_analytics_failed or metrics_calc_failed)
             else None
         )
+        if self._content_truncated:
+            run.error_message = "作品列表仍有后续分页，已保存游标，将在下一次同步继续"
         # Always clear any stale error surface on a successful run. A prior
         # stale-recovery pass can stamp a "worker crashed / timeout" hint on a run
         # that was still progressing and later finished fine; leaving it would
@@ -872,14 +1007,15 @@ class PlatformSyncExecutor:
         run.lock_key = None
         run.progress_percent = 100
         run.progress_stage = "completed"
-        if self._budget_exceeded:
+        if self._budget_exceeded or self._content_truncated:
             run.progress_message = (
                 f"同步已按时间预算截断，已入库 {run.items_processed} 条；"
                 "可在账号设置中调大抓取上限或再次手动同步以获取更多历史。"
             )
             run.metadata_json = {
                 **run.metadata_json,
-                "truncated_by_budget": True,
+                "truncated_by_budget": self._budget_exceeded,
+                "content_truncated": self._content_truncated,
             }
         else:
             run.progress_message = (
@@ -894,6 +1030,7 @@ class PlatformSyncExecutor:
             "account_metrics_degraded": metrics_degraded,
             "content_analytics_failed": content_analytics_failed,
             "metrics_calc_failed": metrics_calc_failed,
+            "content_truncated": self._content_truncated,
         }
         self._emit(
             run,
@@ -923,8 +1060,13 @@ class PlatformSyncExecutor:
         # rhythm so active accounts are refreshed often and dormant ones rarely.
         interval, _ = await compute_adaptive_interval(self.session, account.id)
         account.sync_interval_seconds = interval
-        account.next_sync_at = finished + timedelta(seconds=interval)
-        if metrics_degraded or content_analytics_failed or metrics_calc_failed:
+        account.next_sync_at = finished + timedelta(
+            seconds=min(interval, 300) if self._content_truncated else interval
+        )
+        if self._content_truncated:
+            account.last_sync_error_code = "content_list_truncated"
+            account.last_sync_error_message = "作品列表已分批保存游标，将在下一次同步继续"
+        elif metrics_degraded or content_analytics_failed or metrics_calc_failed:
             account.last_sync_error_code = "account_metrics_extraction_failed"
             account.last_sync_error_message = "指标提取失败，仅更新了账号资料"
         else:
@@ -1094,21 +1236,20 @@ class PlatformSyncExecutor:
         # fails this stage via asyncio.wait_for (caught just below as a retryable
         # outage, bounded by the run budget) instead of hanging inside the
         # adapter's extract-retry loop for minutes. Directly serves "no stalls".
-        # Clamped to a positive floor: a wait_for driven by a negative timeout
-        # fires before the coroutine runs, which reads as a transient outage and
-        # sends the run straight back into the retry loop without ever calling
-        # the adapter. execute_account_run refuses to start an attempt without
-        # budget, so the floor here is a second line of defence only.
-        profile_fetch_timeout = max(
-            _MIN_ATTEMPT_BUDGET_SECONDS,
-            min(
-                self._remaining_budget_seconds(run),
-                float(self.settings.sync_page_fetch_timeout_seconds),
-            ),
+        profile_remaining = self._remaining_budget_seconds(run)
+        if profile_remaining <= 0:
+            raise TransientAdapterError("sync budget exhausted before account profile fetch")
+        # Never give the adapter a timeout larger than the absolute run budget;
+        # otherwise the final profile call could outlive the run deadline even
+        # though the outer wait_for itself is bounded.
+        profile_fetch_timeout = min(
+            profile_remaining,
+            float(self.settings.sync_page_fetch_timeout_seconds),
         )
         try:
+            profile_ctx = dataclasses.replace(ctx, timeout_seconds=profile_fetch_timeout)
             data = await asyncio.wait_for(
-                adapter.resolve_account(ctx, account.external_id),
+                adapter.resolve_account(profile_ctx, account.external_id),
                 timeout=profile_fetch_timeout,
             )
         except TimeoutError:
@@ -1200,9 +1341,10 @@ class PlatformSyncExecutor:
                 remaining_budget,
             )
             try:
+                metrics_ctx = dataclasses.replace(ctx, timeout_seconds=metrics_timeout)
                 metrics = await asyncio.wait_for(
-                    adapter.fetch_account_analytics(ctx, data.external_id),
-                    timeout=max(0.25, metrics_timeout),
+                    adapter.fetch_account_analytics(metrics_ctx, data.external_id),
+                    timeout=metrics_timeout,
                 )
                 if not isinstance(metrics, PlatformMetricsData):
                     raise AdapterContractError(
@@ -1369,6 +1511,463 @@ class PlatformSyncExecutor:
                 }
         self.session.add(snap)
 
+    @staticmethod
+    def _content_metric_values(data: PlatformMetricsData | None) -> dict[str, int | float]:
+        if data is None:
+            return {}
+        return {
+            key: value
+            for key, value in data.metrics.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+
+    @classmethod
+    def _content_metrics_state(
+        cls,
+        data: PlatformContentData,
+        metrics_data: PlatformMetricsData | None,
+        *,
+        analytics_failed: bool,
+    ) -> str:
+        """Classify metrics without hiding public catalogue observations.
+
+        Browser list endpoints often expose card-level engagement counts while
+        their separate analytics endpoint exposes only private/unsupported
+        fields. Those public values are real and are synthesized into a
+        snapshot later in the page pipeline, so they must not be rendered as
+        ``missing`` merely because the analytics response is empty.
+        """
+
+        catalogue_values = cls._metrics_from_metadata(data.metadata)
+        metric_values = cls._content_metric_values(metrics_data) or catalogue_values
+        if analytics_failed:
+            return "partial" if metric_values else "failed"
+        if metrics_data is None:
+            return "available" if metric_values else "missing"
+        if metric_values and not metrics_data.unavailable_metrics:
+            return "available"
+        return "partial" if metric_values else "missing"
+
+    @classmethod
+    def _content_progress_payload(
+        cls,
+        data: PlatformContentData,
+        *,
+        item_index: int,
+        page_index: int,
+        page_item_index: int,
+        page_total: int,
+        listed_total: int,
+        processed_total: int,
+        status: str,
+        action: str | None = None,
+        error: str | None = None,
+        metrics_data: PlatformMetricsData | None = None,
+        metrics_state: str = "pending",
+        counts: Mapping[str, int] | None = None,
+    ) -> dict[str, Any]:
+        metadata = dict(data.metadata or {})
+        detail_level = str(metadata.get("detail_level") or "full")
+        media = dict(data.media or {})
+        cover_status = (
+            "archived"
+            if media.get("thumbnail")
+            else "available"
+            if data.cover_url
+            else "missing"
+        )
+        catalogue_metrics = {
+            key.removeprefix("yt_"): value
+            for key, value in metadata.items()
+            if key.startswith("yt_")
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        }
+        metric_values = cls._content_metric_values(metrics_data) or catalogue_metrics
+        unavailable = list(metrics_data.unavailable_metrics) if metrics_data else []
+        if metrics_data is not None and metrics_state == "pending":
+            metrics_state = (
+                "available"
+                if metric_values and not unavailable
+                else "partial"
+                if metric_values
+                else "missing"
+            )
+        return {
+            "kind": "content_progress",
+            "item_index": item_index,
+            "page_index": page_index,
+            "page_item_index": page_item_index,
+            "page_total": page_total,
+            "listed_total": listed_total,
+            "processed_total": processed_total,
+            "counts": dict(counts or {}),
+            "external_id": data.external_id,
+            "title": (data.title or data.external_id)[:240],
+            "status": status,
+            "action": action,
+            "error": error[:500] if error else None,
+            "elements": {
+                "title": "available" if data.title else "missing",
+                "content": "partial" if detail_level != "full" else "available",
+                "cover": cover_status,
+                "metrics": metrics_state,
+            },
+            "detail_level": detail_level,
+            "metric_values": metric_values,
+            "unavailable_metrics": unavailable,
+            "source_kind": data.source_kind,
+            "provider": data.provider,
+        }
+
+    @staticmethod
+    def _content_progress_message(payload: Mapping[str, Any]) -> str:
+        elements = payload.get("elements")
+        elements = elements if isinstance(elements, Mapping) else {}
+        status_labels = {
+            "available": "已获取",
+            "archived": "已归档",
+            "partial": "部分获取",
+            "pending": "待获取",
+            "missing": "缺失",
+            "failed": "失败",
+        }
+        phase_labels = {
+            "processing": "正在处理",
+            "stored": "已入库",
+            "metrics": "指标已处理",
+            "failed": "失败",
+            "rejected": "已跳过",
+        }
+        title = str(payload.get("title") or payload.get("external_id") or "未知作品")
+        item_index = payload.get("item_index", "?")
+        page_item_index = payload.get("page_item_index", "?")
+        page_total = payload.get("page_total", "?")
+        processed_total = payload.get("processed_total", "?")
+        title_status = status_labels.get(
+            str(elements.get("title")), str(elements.get("title") or "待获取")
+        )
+        cover_status = status_labels.get(
+            str(elements.get("cover")), str(elements.get("cover") or "待获取")
+        )
+        metrics_status = status_labels.get(
+            str(elements.get("metrics")), str(elements.get("metrics") or "待获取")
+        )
+        phase_status = phase_labels.get(
+            str(payload.get("status")), str(payload.get("status") or "正在处理")
+        )
+        return (
+            f"作品 {item_index}（本页 {page_item_index}/{page_total}，"
+            f"累计已处理 {processed_total}）"
+            f"《{title[:80]}》 · "
+            f"标题{title_status} · "
+            f"封面{cover_status} · "
+            f"数据{metrics_status} · "
+            f"{phase_status}"
+        )
+
+    def _set_content_progress(
+        self,
+        run: SyncRun,
+        payload: dict[str, Any],
+        *,
+        message: str,
+        add_to_recent: bool = False,
+    ) -> None:
+        """Update the structured live item state and the human log tail.
+
+        The structured state is consumed by the frontend; the text line keeps
+        older clients and the scrolling console useful. Both are updated in
+        memory and persisted by the existing batched sync commits.
+        """
+
+        run.progress_stage = "content_metrics"
+        run.progress_message = message[:500]
+        metadata = dict(run.metadata_json or {})
+        metadata["content_progress"] = payload
+        if add_to_recent:
+            recent = metadata.get("content_progress_recent")
+            recent_items = list(recent) if isinstance(recent, list) else []
+            recent_items.append(payload)
+            metadata["content_progress_recent"] = recent_items[-_SYNC_RECENT_ITEM_LIMIT:]
+        run.metadata_json = metadata
+        sink = self._log_sink
+        if sink is not None:
+            sink.push(message)
+
+    async def _collect_page_comments(
+        self,
+        account: Account,
+        adapter: PlatformAdapter,
+        ctx: AdapterCallContext,
+        page_items: list[ContentItem],
+        run: "SyncRun",
+        page_index: int,
+    ) -> list[UUID]:
+        """Optionally queue Top 20 comment enrichment for this page.
+
+        Comment extraction is intentionally outside the normal sync path. It
+        is an operator opt-in and is dispatched as independent worker tasks so
+        a slow comment wall cannot hold the account lock or delay content and
+        metrics persistence.
+        """
+        config = ctx.config if isinstance(ctx.config, Mapping) else {}
+        download = config.get("download")
+        if not isinstance(download, Mapping) or not download.get("fetch_comments"):
+            return []
+        if not page_items:
+            self._emit(
+                run,
+                "comments",
+                "warn",
+                "当前适配器不支持评论采集；作品与指标已保留",
+                {"page_index": page_index, "status": "unsupported"},
+            )
+            return []
+
+        now = datetime.now(UTC)
+        eligible: list[ContentItem] = []
+        for content in page_items:
+            state = (content.metadata_json or {}).get("comment_sync")
+            last_fetched = state.get("fetched_at") if isinstance(state, Mapping) else None
+            stale = True
+            if isinstance(last_fetched, str):
+                try:
+                    parsed = datetime.fromisoformat(last_fetched.replace("Z", "+00:00"))
+                    stale = (now - parsed.astimezone(UTC)) >= timedelta(hours=24)
+                except ValueError:
+                    stale = True
+            if ctx.sync_backfill or stale:
+                eligible.append(content)
+        if not eligible:
+            self._emit(
+                run,
+                "comments",
+                "info",
+                f"第 {page_index + 1} 页评论均在 24 小时缓存内，跳过重复请求",
+                {"page_index": page_index, "status": "fresh_cache"},
+            )
+            return []
+
+        queued_ids: list[UUID] = []
+        for index, content in enumerate(eligible, start=1):
+            url = content.source_url or content.canonical_url
+            if not url:
+                content.metadata_json = {
+                    **dict(content.metadata_json or {}),
+                    "comment_sync": {
+                        "status": "unavailable",
+                        "count": 0,
+                        "limit": 20,
+                        "fetched_at": None,
+                        "source_kind": "live",
+                        "source_provider": adapter.key,
+                        "source_url": None,
+                        "notice": "作品没有可用的公开来源地址",
+                    },
+                }
+                self._emit(
+                    run,
+                    "comments",
+                    "warn",
+                    f"评论采集 {index}/{len(eligible)}：{content.title[:60]} 无可用来源地址",
+                    {
+                        "page_index": page_index,
+                        "content_id": str(content.id),
+                        "status": "unavailable",
+                    },
+                )
+                continue
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "queued",
+                    "count": 0,
+                    "limit": 20,
+                    "queued_at": datetime.now(UTC).isoformat(),
+                    "fetched_at": None,
+                    "source_kind": "live",
+                    "source_provider": adapter.key,
+                    "source_url": url,
+                    "notice": "评论采集已排队，不阻塞账号同步",
+                },
+            }
+            queued_ids.append(content.id)
+            self._emit(
+                run,
+                "comments",
+                "info",
+                f"评论采集排队 {index}/{len(eligible)}：{content.title[:60]}",
+                {
+                    "page_index": page_index,
+                    "content_id": str(content.id),
+                    "status": "queued",
+                    "limit": 20,
+                },
+            )
+
+        run.metadata_json = {
+            **run.metadata_json,
+            "comments": {
+                "enabled": True,
+                "limit": 20,
+                "works_requested": len(eligible),
+                "works_queued": len(queued_ids),
+                "last_page": page_index,
+                "mode": "async_worker_tasks",
+            },
+        }
+        await self.session.flush()
+        return queued_ids
+
+        # The legacy inline implementation is intentionally kept below while
+        # old deployments roll forward; the return above makes it unreachable.
+        # It can be removed after the next schema/runtime rollout.
+        concurrency = 2 if adapter.platform == "youtube" else 1
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def collect_one(
+            content: ContentItem,
+        ) -> tuple[ContentItem, list[dict[str, Any]], str | None]:
+            url = content.source_url or content.canonical_url
+            if not url:
+                return content, [], "作品没有可用来源地址"
+            async with semaphore:
+                try:
+                    comments = await asyncio.wait_for(
+                        YtDlpAdapter.extract_comments(
+                            url,
+                            config=config,
+                            limit=20,
+                            timeout_seconds=60,
+                        ),
+                        timeout=65,
+                    )
+                    return content, comments, None
+                except Exception as exc:  # noqa: BLE001 - per-item isolation
+                    return content, [], str(exc)[:500]
+
+        results = await asyncio.gather(*(collect_one(content) for content in eligible))
+        content_ids = [content.id for content in eligible]
+        existing_rows = list(
+            (
+                await self.session.scalars(
+                    select(Comment).where(Comment.content_item_id.in_(content_ids))
+                )
+            ).all()
+        )
+        existing_by_content: dict[UUID, dict[str, Comment]] = {}
+        for row in existing_rows:
+            existing_by_content.setdefault(row.content_item_id, {})[row.platform_comment_id] = row
+
+        successes = 0
+        failures = 0
+        total_stored = 0
+        for index, (content, comments, error) in enumerate(results, start=1):
+            url = content.source_url or content.canonical_url
+            fetched_at = datetime.now(UTC)
+            status = "failed" if error else "success" if comments else "empty"
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": status,
+                    "count": len(comments),
+                    "limit": 20,
+                    "fetched_at": fetched_at.isoformat(),
+                    "source_kind": "live",
+                    "source_provider": adapter.key,
+                    "source_url": url,
+                    "notice": error
+                    or (
+                        None
+                        if comments
+                        else "公开页面或当前授权会话未返回可读评论；未用估算值填充。"
+                    ),
+                },
+            }
+            if error:
+                failures += 1
+            else:
+                successes += 1
+            existing = existing_by_content.get(content.id, {})
+            for item in comments:
+                comment_id = str(item.get("platform_comment_id"))
+                row = existing.get(comment_id)
+                if row is None:
+                    self.session.add(
+                        Comment(
+                            id=uuid4(),
+                            workspace_id=account.workspace_id,
+                            content_item_id=content.id,
+                            platform_comment_id=comment_id,
+                            author_name=str(item.get("author_name") or "未知用户"),
+                            author_url=item.get("author_url"),
+                            author_avatar_url=item.get("author_avatar_url"),
+                            text=str(item.get("text") or ""),
+                            like_count=item.get("like_count"),
+                            reply_count=item.get("reply_count"),
+                            parent_comment_id=item.get("parent_comment_id"),
+                            is_reply=bool(item.get("is_reply")),
+                            published_at=item.get("published_at"),
+                            fetched_at=fetched_at,
+                            source_kind="live",
+                            source_provider=adapter.key,
+                            source_url=url,
+                            metadata_json={"ranked_by": "like_count + 3 * reply_count"},
+                        )
+                    )
+                    total_stored += 1
+                else:
+                    if item.get("author_name"):
+                        row.author_name = str(item["author_name"])
+                    for field in ("author_url", "author_avatar_url", "text"):
+                        value = item.get(field)
+                        if value not in (None, ""):
+                            setattr(row, field, str(value))
+                    for field in ("like_count", "reply_count", "published_at"):
+                        value = item.get(field)
+                        if value is not None:
+                            setattr(row, field, value)
+                    if item.get("parent_comment_id") is not None:
+                        row.parent_comment_id = item["parent_comment_id"]
+                    if "is_reply" in item:
+                        row.is_reply = bool(item["is_reply"])
+                    row.fetched_at = fetched_at
+                    row.source_provider = adapter.key
+                    row.source_url = url
+            # This is a ranked/top-N enrichment, not an authoritative full
+            # snapshot. Public endpoints can return fewer rows or no rows after
+            # throttling. Keep historical comments instead of interpreting an
+            # omission as deletion; explicit cleanup remains a separate action.
+            self._emit(
+                run,
+                "comments",
+                "error" if error else "info",
+                f"评论采集 {index}/{len(results)}：{content.title[:60]} → "
+                f"{f'失败：{error}' if error else f'{len(comments)} 条已保存'}",
+                {
+                    "page_index": page_index,
+                    "content_id": str(content.id),
+                    "count": len(comments),
+                    "status": status,
+                    "error": error,
+                },
+            )
+        run.metadata_json = {
+            **run.metadata_json,
+            "comments": {
+                "enabled": True,
+                "limit": 20,
+                "concurrency": concurrency,
+                "works_requested": len(eligible),
+                "works_succeeded": successes,
+                "works_failed": failures,
+                "comments_stored": total_stored,
+                "last_page": page_index,
+            },
+        }
+        await self.session.flush()
+
     async def _sync_contents(
         self,
         account: Account,
@@ -1381,6 +1980,7 @@ class PlatformSyncExecutor:
         updated = 0
         skipped = 0
         failed = 0
+        listed_total = 0
         content_analytics_failed = False
         # ── Sync decomposition (anti-bot / 风控 posture) ──────────────────────
         # Account data (profile + analytics) lives in ``_sync_account`` and uses
@@ -1402,8 +2002,57 @@ class PlatformSyncExecutor:
         # bounds how many works a single sync ingests; ``skip_existing`` decides
         # whether already-known works are refreshed or left untouched.
         sync_cfg = await self.repository.get_sync_settings_config(account.workspace_id)
-        max_contents = sync_cfg.get("max_contents")
+        account_override = account.sync_settings_override
+        account_fetch = (
+            account_override.get("fetch") if isinstance(account_override, dict) else None
+        )
+        account_max_contents = (
+            account_fetch.get("max_contents") if isinstance(account_fetch, dict) else None
+        )
+        max_contents = (
+            int(account_max_contents)
+            if account_max_contents is not None
+            else sync_cfg.get("max_contents")
+        )
         skip_existing = bool(sync_cfg.get("skip_existing", True))
+        account_metadata = dict(account.metadata_json or {})
+        checkpoint = account_metadata.get("content_sync_checkpoint")
+        checkpoint_cursor = None
+        checkpoint_adapter = None
+        if isinstance(checkpoint, dict):
+            raw_cursor = checkpoint.get("cursor")
+            checkpoint_cursor = str(raw_cursor) if raw_cursor not in (None, "") else None
+            checkpoint_adapter = checkpoint.get("adapter_key")
+        content_sync_complete = account_metadata.get("content_sync_complete") is True
+        resume_backfill = not content_sync_complete
+        if checkpoint_adapter not in (None, adapter.key):
+            # A provider switch invalidates a provider-specific cursor. Restart
+            # that account's backfill from the head rather than mixing offsets
+            # from two pagination schemes.
+            checkpoint_cursor = None
+        # An operator-provided per-account start position is an explicit
+        # backfill command, not merely an adapter hint. Honour it at the sync
+        # engine level so a browser adapter cannot silently resume an old
+        # durable cursor and leave the requested prefix (including covers)
+        # untouched. The UI value is 1-based while adapter cursors are 0-based.
+        fetch_override = account_fetch
+        manual_start = (
+            fetch_override.get("playlist_start")
+            if isinstance(fetch_override, dict)
+            else None
+        )
+        if manual_start is not None:
+            try:
+                manual_offset = max(0, int(manual_start) - 1)
+            except (TypeError, ValueError):
+                manual_offset = 0
+            checkpoint_cursor = str(manual_offset)
+            resume_backfill = True
+        if resume_backfill:
+            cursor = checkpoint_cursor
+        catalogue_start_offset = (
+            int(cursor) if cursor is not None and str(cursor).isdigit() else 0
+        )
         latest_published_at = await self.session.scalar(
             select(func.max(ContentItem.published_at)).where(ContentItem.account_id == account.id)
         )
@@ -1413,19 +2062,51 @@ class PlatformSyncExecutor:
         # new works pay the per-video extraction cost.
         incremental_mode = False
         if self.settings.sync_fast_list_enabled:
+            stored_rows = (
+                await self.session.execute(
+                    select(
+                        ContentItem.external_id,
+                        ContentItem.metadata_json,
+                        ContentItem.published_at,
+                        ContentItem.duration_seconds,
+                        ContentItem.cover_url,
+                    ).where(ContentItem.account_id == account.id)
+                )
+            ).all()
             known_external_ids = frozenset(
-                await self.session.scalars(
-                    select(ContentItem.external_id).where(ContentItem.account_id == account.id)
+                str(external_id)
+                for external_id, metadata, published_at, duration_seconds, cover_url in stored_rows
+                if self._is_incrementally_complete_content_row(
+                    metadata,
+                    published_at,
+                    duration_seconds,
+                    cover_url,
                 )
             )
-            incremental_mode = skip_existing and bool(known_external_ids)
+            stored_external_ids = frozenset(str(row[0]) for row in stored_rows)
+            incomplete_external_ids = stored_external_ids - known_external_ids
+            incremental_mode = (
+                skip_existing and bool(known_external_ids) and not resume_backfill
+            )
+            run.metadata_json = {
+                **run.metadata_json,
+                "catalogue_total_before_sync": len(known_external_ids),
+                "catalogue_stored_before_sync": len(stored_external_ids),
+                "catalogue_incomplete_repair": len(incomplete_external_ids),
+                "sync_mode": "incremental" if incremental_mode else "backfill",
+            }
             ctx = dataclasses.replace(
                 ctx,
                 known_external_ids=known_external_ids,
-                skip_known=incremental_mode,
+                skip_known=skip_existing and bool(known_external_ids),
                 fetch_concurrency=self.settings.sync_fetch_concurrency,
+                sync_backfill=resume_backfill,
             )
-        incremental_since = latest_published_at - timedelta(days=7) if latest_published_at else None
+        incremental_since = (
+            latest_published_at - timedelta(days=7)
+            if latest_published_at and not resume_backfill
+            else None
+        )
         self._emit(
             run,
             "stage",
@@ -1434,7 +2115,14 @@ class PlatformSyncExecutor:
             {
                 "max_contents": max_contents,
                 "skip_existing": skip_existing,
-                "mode": "incremental" if incremental_since else "initial_catalogue",
+                "mode": (
+                    "resume_backfill"
+                    if resume_backfill and checkpoint_cursor
+                    else "initial_catalogue"
+                    if resume_backfill
+                    else "incremental"
+                ),
+                "resume_cursor": cursor,
                 "published_after": incremental_since.isoformat() if incremental_since else None,
             },
         )
@@ -1498,9 +2186,10 @@ class PlatformSyncExecutor:
                 remaining_budget, self.settings.sync_page_fetch_timeout_seconds
             )
             try:
+                page_ctx = dataclasses.replace(ctx, timeout_seconds=page_fetch_timeout)
                 page = await asyncio.wait_for(
                     adapter.list_contents(
-                        ctx,
+                        page_ctx,
                         account.external_id,
                         published_after=published_after,
                         cursor=cursor,
@@ -1522,7 +2211,7 @@ class PlatformSyncExecutor:
                 )
                 break
             except PlatformAdapterError as exc:
-                if run.items_processed == 0:
+                if run.items_processed == 0 and cursor is None:
                     raise
                 self._emit(
                     run,
@@ -1533,7 +2222,7 @@ class PlatformSyncExecutor:
                 )
                 break
             except Exception as exc:  # noqa: BLE001
-                if run.items_processed == 0:
+                if run.items_processed == 0 and cursor is None:
                     raise
                 logger.warning(
                     "sync_page_list_failed",
@@ -1547,7 +2236,21 @@ class PlatformSyncExecutor:
                     {"page_index": page_index, "error": str(exc)},
                 )
                 break
+            # Adapters are allowed to return a provider-sized page even when
+            # the operator's per-run cap is smaller. Enforce that cap here at
+            # the orchestration boundary so a platform cannot make a request
+            # for 45 works ingest 60 (or more) and make the UI promise false.
+            if max_contents is not None:
+                remaining_slots = max_contents - (created + updated + skipped + failed)
+                if remaining_slots <= 0:
+                    break
+                if len(page.items) > remaining_slots:
+                    page = dataclasses.replace(
+                        page,
+                        items=page.items[:remaining_slots],
+                    )
             batch_total = len(page.items)
+            listed_total += batch_total
             page_items: list[ContentItem] = []
             self._emit(
                 run,
@@ -1573,7 +2276,29 @@ class PlatformSyncExecutor:
             await self.session.commit()
             page_processed = 0
             page_skipped = 0
-            for data in page.items:
+            item_data_by_external_id: dict[str, PlatformContentData] = {}
+            item_context_by_external_id: dict[str, tuple[int, int]] = {}
+            # Incremental platform listings are expected to be newest-first.
+            # Remember whether this page has the safe shape
+            # ``newer works -> known works`` so a routine sync can stop at that
+            # boundary without paying for another full catalogue request. We
+            # only use the optimization when the entire suffix is known; a
+            # non-monotonic page (known -> new -> known) continues paging rather
+            # than risking a missed work.
+            page_new_to_known_boundary = False
+            if incremental_mode and page.items:
+                known_ids = [
+                    item.external_id in known_external_ids for item in page.items
+                ]
+                try:
+                    first_known = known_ids.index(True)
+                except ValueError:
+                    first_known = -1
+                page_new_to_known_boundary = (
+                    first_known > 0 and all(known_ids[first_known:])
+                )
+            for page_item_index, data in enumerate(page.items, start=1):
+                item_index = listed_total - batch_total + page_item_index
                 rejection = self._content_rejection_reason(data)
                 if rejection is not None:
                     rejected = list(run.metadata_json.get("rejected_items", []))
@@ -1590,6 +2315,33 @@ class PlatformSyncExecutor:
                         + 1,
                         "rejected_items": rejected,
                     }
+                    rejected_payload = self._content_progress_payload(
+                        data,
+                        item_index=item_index,
+                        page_index=page_index + 1,
+                        page_item_index=page_item_index,
+                        page_total=batch_total,
+                        listed_total=listed_total,
+                        processed_total=run.items_processed,
+                        status="rejected",
+                        action="rejected",
+                        error=rejection,
+                        metrics_state="missing",
+                        counts={
+                            "listed": listed_total,
+                            "processed": run.items_processed,
+                            "failed": failed,
+                            "skipped": skipped,
+                        },
+                    )
+                    rejected_message = self._content_progress_message(rejected_payload)
+                    self._set_content_progress(
+                        run,
+                        rejected_payload,
+                        message=rejected_message,
+                        add_to_recent=True,
+                    )
+                    self._emit(run, "item", "warn", rejected_message, rejected_payload)
                     continue
                 # Count every listed work (including rejected ones) so the live
                 # counter matches the per-page total, then drive a fine-grained
@@ -1597,6 +2349,30 @@ class PlatformSyncExecutor:
                 # upsert/analytics phase.
                 run.items_processed += 1
                 page_processed += 1
+                item_data_by_external_id[data.external_id] = data
+                item_context_by_external_id[data.external_id] = (item_index, page_item_index)
+                processing_payload = self._content_progress_payload(
+                    data,
+                    item_index=item_index,
+                    page_index=page_index + 1,
+                    page_item_index=page_item_index,
+                    page_total=batch_total,
+                    listed_total=listed_total,
+                    processed_total=run.items_processed,
+                    status="processing",
+                    action="upsert",
+                    counts={
+                        "listed": listed_total,
+                        "processed": run.items_processed,
+                        "failed": failed,
+                        "skipped": skipped,
+                    },
+                )
+                self._set_content_progress(
+                    run,
+                    processing_payload,
+                    message=self._content_progress_message(processing_payload),
+                )
                 # A single work that fails to upsert must not abort the whole
                 # sync. Record it, continue, and surface it in the tracklog.
                 try:
@@ -1608,6 +2384,8 @@ class PlatformSyncExecutor:
                     ) = await self._upsert_content(account, data, skip_existing=skip_existing)
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
+                    item_data_by_external_id.pop(data.external_id, None)
+                    item_context_by_external_id.pop(data.external_id, None)
                     logger.warning(
                         "sync_content_upsert_failed",
                         extra={
@@ -1616,18 +2394,33 @@ class PlatformSyncExecutor:
                             "external_id": data.external_id,
                         },
                     )
-                    self._emit(
-                        run,
-                        "item",
-                        "error",
-                        f"作品 {data.external_id} 入库失败：{exc}",
-                        {
-                            "external_id": data.external_id,
-                            "title": (data.title or "")[:200],
-                            "action": "failed",
-                            "error": str(exc),
+                    failed_payload = self._content_progress_payload(
+                        data,
+                        item_index=item_index,
+                        page_index=page_index + 1,
+                        page_item_index=page_item_index,
+                        page_total=batch_total,
+                        listed_total=listed_total,
+                        processed_total=run.items_processed,
+                        status="failed",
+                        action="failed",
+                        error=str(exc),
+                        metrics_state="failed",
+                        counts={
+                            "listed": listed_total,
+                            "processed": run.items_processed,
+                            "failed": failed,
+                            "skipped": skipped,
                         },
                     )
+                    failed_message = self._content_progress_message(failed_payload)
+                    self._set_content_progress(
+                        run,
+                        failed_payload,
+                        message=failed_message,
+                        add_to_recent=True,
+                    )
+                    self._emit(run, "item", "error", failed_message, failed_payload)
                     continue
                 page_items.append(content)
                 created += int(was_created)
@@ -1636,23 +2429,40 @@ class PlatformSyncExecutor:
                     page_skipped += 1
                 else:
                     updated += int(not was_created)
+                action = "skipped" if was_skipped else "created" if was_created else "updated"
+                stored_payload = self._content_progress_payload(
+                    data,
+                    item_index=item_index,
+                    page_index=page_index + 1,
+                    page_item_index=page_item_index,
+                    page_total=batch_total,
+                    listed_total=listed_total,
+                    processed_total=run.items_processed,
+                    status="stored",
+                    action=action,
+                    counts={
+                        "listed": listed_total,
+                        "processed": run.items_processed,
+                        "failed": failed,
+                        "skipped": skipped,
+                    },
+                )
+                stored_message = self._content_progress_message(stored_payload)
+                self._set_content_progress(
+                    run,
+                    stored_payload,
+                    message=stored_message,
+                    add_to_recent=True,
+                )
+                self._emit(run, "item", "info", stored_message, stored_payload)
                 # Text-affecting fields changed (or it's brand new) -> queue a
                 # fresh vector index so semantic search sees the latest text.
                 if indexable_changed:
                     self._pending_index_ids.append(content.id)
-                    action = "created" if was_created else "updated"
-                    self._emit(
-                        run,
-                        "item",
-                        "info",
-                        f"作品 {data.external_id} {action}",
-                        {
-                            "external_id": data.external_id,
-                            "title": (data.title or "")[:200],
-                            "action": action,
-                        },
-                    )
-                if page_processed % 25 == 0 or page_processed == batch_total:
+                if (
+                    page_processed % _SYNC_ITEM_PROGRESS_COMMIT_INTERVAL == 0
+                    or page_processed == batch_total
+                ):
                     self._set_progress(
                         run,
                         min(
@@ -1678,6 +2488,7 @@ class PlatformSyncExecutor:
             # must never discard the works already ingested this page.
             synthesized = 0
             analytics: Sequence[PlatformMetricsData] = ()
+            analytics_by_external_id: dict[str, PlatformMetricsData] = {}
             try:
                 remaining_budget = self._remaining_budget_seconds(run)
                 if remaining_budget <= 0:
@@ -1692,18 +2503,24 @@ class PlatformSyncExecutor:
                         {"page_index": page_index, "requested": len(page_items)},
                     )
                 else:
+                    analytics_ctx = dataclasses.replace(ctx, timeout_seconds=remaining_budget)
                     analytics = await asyncio.wait_for(
                         adapter.fetch_content_analytics(
-                            ctx, [item.external_id for item in page_items]
+                            analytics_ctx, [item.external_id for item in page_items]
                         ),
                         timeout=remaining_budget,
                     )
                 by_external_id = {item.external_id: item for item in page_items}
+                analytics_by_external_id = {
+                    analytics_data.external_id: analytics_data for analytics_data in analytics
+                }
                 for analytics_data in analytics:
                     matched_content = by_external_id.get(analytics_data.external_id)
                     if matched_content is not None and analytics_data.metrics:
-                        self.session.add(self._content_snapshot(matched_content.id, analytics_data))
-                synthesized = self._synthesize_content_snapshots(
+                        await self._upsert_content_snapshot(
+                            self._content_snapshot(matched_content.id, analytics_data)
+                        )
+                synthesized = await self._synthesize_content_snapshots(
                     adapter, ctx, page_items, analytics
                 )
             except TimeoutError:
@@ -1751,6 +2568,51 @@ class PlatformSyncExecutor:
                             "synthesized": synthesized,
                         },
                     )
+            for external_id, data in item_data_by_external_id.items():
+                item_index, page_item_index = item_context_by_external_id[external_id]
+                metrics_data = analytics_by_external_id.get(external_id)
+                metrics_state = self._content_metrics_state(
+                    data,
+                    metrics_data,
+                    analytics_failed=content_analytics_failed,
+                )
+                metric_payload = self._content_progress_payload(
+                    data,
+                    item_index=item_index,
+                    page_index=page_index + 1,
+                    page_item_index=page_item_index,
+                    page_total=batch_total,
+                    listed_total=listed_total,
+                    processed_total=run.items_processed,
+                    status="metrics",
+                    action="analytics",
+                    metrics_data=metrics_data,
+                    metrics_state=metrics_state,
+                    counts={
+                        "listed": listed_total,
+                        "processed": run.items_processed,
+                        "failed": failed,
+                        "skipped": skipped,
+                    },
+                )
+                self._set_content_progress(
+                    run,
+                    metric_payload,
+                    message=self._content_progress_message(metric_payload),
+                    add_to_recent=True,
+                )
+            # Optional enrichment is deliberately after content + analytics
+            # persistence. A comment wall can be unavailable or slow without
+            # making a healthy page of works disappear or turning the sync into
+            # an all-or-nothing transaction.
+            queued_comment_ids = await self._collect_page_comments(
+                account,
+                adapter,
+                ctx,
+                page_items,
+                run,
+                page_index,
+            )
             run.records_created = created
             # Field updates + browser-derived snapshots both count as updates.
             run.records_updated = updated + synthesized
@@ -1769,8 +2631,77 @@ class PlatformSyncExecutor:
             )
             if not page.next_cursor:
                 run.items_total = run.items_processed
+                account_metadata.pop("content_sync_checkpoint", None)
+                account_metadata["content_sync_complete"] = True
+                account.metadata_json = dict(account_metadata)
+            else:
+                account_metadata["content_sync_complete"] = False
+                account_metadata["content_sync_checkpoint"] = {
+                    "adapter_key": adapter.key,
+                    "cursor": str(page.next_cursor),
+                }
+                account.metadata_json = dict(account_metadata)
             await self.session.commit()
+            if queued_comment_ids:
+                dispatched_ids: list[UUID] = []
+                try:
+                    # Import lazily to avoid a module cycle during worker boot.
+                    from app.tasks.monitoring import collect_content_comments as collect_task
+
+                    for content_id in queued_comment_ids:
+                        collect_task.delay(str(content_id))
+                        dispatched_ids.append(content_id)
+                    run.metadata_json = {
+                        **run.metadata_json,
+                        "comments": {
+                            **dict(run.metadata_json.get("comments") or {}),
+                            "works_dispatched": len(dispatched_ids),
+                            "queue_status": "dispatched",
+                        },
+                    }
+                except Exception as exc:  # noqa: BLE001 - comment queue is optional
+                    logger.warning(
+                        "comment_enrichment_dispatch_failed",
+                        extra={"run_id": str(run.id), "error": str(exc)},
+                    )
+                    failed_ids = set(queued_comment_ids) - set(dispatched_ids)
+                    for content in page_items:
+                        if content.id not in failed_ids:
+                            continue
+                        state = dict((content.metadata_json or {}).get("comment_sync") or {})
+                        content.metadata_json = {
+                            **dict(content.metadata_json or {}),
+                            "comment_sync": {
+                                **state,
+                                "status": "queue_failed",
+                                "notice": "评论任务未能进入后台队列，作品同步不受影响",
+                            },
+                        }
+                    run.metadata_json = {
+                        **run.metadata_json,
+                        "comments": {
+                            **dict(run.metadata_json.get("comments") or {}),
+                            "works_dispatched": len(dispatched_ids),
+                            "queue_status": "partial" if dispatched_ids else "failed",
+                            "queue_error": str(exc)[:500],
+                        },
+                    }
+                self._emit(
+                    run,
+                    "comments",
+                    "warn" if len(dispatched_ids) < len(queued_comment_ids) else "info",
+                    (
+                        f"评论任务已派发 {len(dispatched_ids)}/{len(queued_comment_ids)}，"
+                        "不阻塞账号同步"
+                    ),
+                    {
+                        "queued": len(queued_comment_ids),
+                        "dispatched": len(dispatched_ids),
+                    },
+                )
+                await self.session.commit()
             if not page.next_cursor:
+                cursor = None
                 break
             # Early stop at the known-works boundary. Platform listings are
             # reverse-chronological, so once an entire page consists of works we
@@ -1779,16 +2710,97 @@ class PlatformSyncExecutor:
             # routine sync — the single largest source of wasted wall clock.
             if incremental_mode and batch_total > 0 and page_skipped == batch_total:
                 run.items_total = run.items_processed
+                catalogue_total = len(known_external_ids)
+                run.metadata_json = {
+                    **run.metadata_json,
+                    "catalogue_total": catalogue_total,
+                    "catalogue_complete": True,
+                    "incremental_probe_items": run.items_processed,
+                }
                 self._emit(
                     run,
                     "page",
                     "info",
-                    f"第 {page_index + 1} 页全部为已入库作品，已到达增量边界，提前结束翻页",
-                    {"page_index": page_index, "skipped": page_skipped},
+                    (
+                        f"第 {page_index + 1} 页 {page_skipped} 条作品均已入库；"
+                        f"当前目录已有 {catalogue_total} 条，增量探测到达边界，"
+                        "跳过后续旧作品"
+                    ),
+                    {
+                        "page_index": page_index,
+                        "skipped": page_skipped,
+                        "catalogue_total": catalogue_total,
+                        "incremental_probe": True,
+                    },
                 )
+                account_metadata.pop("content_sync_checkpoint", None)
+                account_metadata["content_sync_complete"] = True
+                account.metadata_json = dict(account_metadata)
                 await self.session.commit()
+                cursor = None
+                break
+            if page_new_to_known_boundary:
+                run.items_total = run.items_processed
+                self._emit(
+                    run,
+                    "page",
+                    "info",
+                    (
+                        f"绗?{page_index + 1} 椤靛湪鏂颁綔鍝佸悗閬囧埌宸插叆搴撹竟鐣岋紝"
+                        "鎻愬墠缁撴潫缈婚〉"
+                    ),
+                    {
+                        "page_index": page_index,
+                        "known_suffix": True,
+                        "boundary_index": next(
+                            index
+                            for index, known in enumerate(known_ids)
+                            if known
+                        ),
+                    },
+                )
+                account_metadata.pop("content_sync_checkpoint", None)
+                account_metadata["content_sync_complete"] = True
+                account.metadata_json = dict(account_metadata)
+                await self.session.commit()
+                cursor = None
                 break
             cursor = page.next_cursor
+        if cursor:
+            # The adapter still has a page to serve when this run reaches its
+            # bounded page/time budget. Keep the continuation durable and make
+            # the result visibly partial instead of silently reporting success.
+            self._content_truncated = True
+            account_metadata["content_sync_complete"] = False
+            account_metadata["content_sync_checkpoint"] = {
+                "adapter_key": adapter.key,
+                "cursor": str(cursor),
+            }
+            account.metadata_json = dict(account_metadata)
+            await self.session.commit()
+        else:
+            raw_yt_cfg = ctx.config.get("yt_dlp") if isinstance(ctx.config, dict) else None
+            has_catalogue_filter = isinstance(raw_yt_cfg, dict) and bool(
+                raw_yt_cfg.get("dateafter") or raw_yt_cfg.get("datebefore")
+            )
+            if (
+                resume_backfill
+                and max_contents is None
+                and incremental_since is None
+                and not has_catalogue_filter
+            ):
+                # ``listed_total`` includes every provider row in this run,
+                # while ``catalogue_start_offset`` accounts for a durable
+                # continuation cursor from an earlier bounded backfill.
+                self._catalogue_total = catalogue_start_offset + listed_total
+                account_metadata["content_sync_catalogue_total"] = self._catalogue_total
+                account.metadata_json = dict(account_metadata)
+                run.metadata_json = {
+                    **run.metadata_json,
+                    "catalogue_total": self._catalogue_total,
+                    "catalogue_complete": True,
+                }
+                await self.session.commit()
         self._emit(
             run,
             "stage",
@@ -1837,14 +2849,14 @@ class PlatformSyncExecutor:
                     out[canonical] = val
                     return
 
-        take("view_count", "view_count", "play_count", "view_text")
-        take("like_count", "like_count", "digg_count")
-        take("comment_count", "comment_count")
-        take("share_count", "share_count", "repost_count")
-        take("favorite_count", "favorite_count")
+        take("view_count", "view_count", "play_count", "view_text", "yt_view_count")
+        take("like_count", "like_count", "digg_count", "yt_like_count")
+        take("comment_count", "comment_count", "yt_comment_count")
+        take("share_count", "share_count", "repost_count", "yt_share_count")
+        take("favorite_count", "favorite_count", "yt_favorite_count")
         return out
 
-    def _synthesize_content_snapshots(
+    async def _synthesize_content_snapshots(
         self,
         adapter: PlatformAdapter,
         ctx: AdapterCallContext,
@@ -1867,7 +2879,7 @@ class PlatformSyncExecutor:
                 continue
             metrics = self._metrics_from_metadata(item.metadata_json)
             if metrics:
-                self.session.add(
+                await self._upsert_content_snapshot(
                     self._content_snapshot(
                         item.id,
                         PlatformMetricsData(
@@ -1882,6 +2894,88 @@ class PlatformSyncExecutor:
                 )
                 made += 1
         return made
+
+    async def _upsert_content_snapshot(self, snapshot: ContentSnapshot) -> ContentSnapshot:
+        """Insert a content snapshot without poisoning the session.
+
+        ``captured_at`` is shared by all works in a sync run. Duplicate
+        catalogue entries, repeated analytics rows, or a retry at the same
+        timestamp must reuse the existing immutable measurement rather than
+        mutating it and triggering the append-only guard.
+        """
+        key = (snapshot.content_item_id, snapshot.captured_at)
+        pending = self._pending_content_snapshots.get(key)
+        if pending is not None:
+            self._carry_forward_snapshot_metrics(pending, snapshot)
+            return pending
+
+        previous = await self.session.scalar(
+            select(ContentSnapshot)
+            .where(
+                ContentSnapshot.content_item_id == snapshot.content_item_id,
+                ContentSnapshot.captured_at < snapshot.captured_at,
+            )
+            .order_by(ContentSnapshot.captured_at.desc(), ContentSnapshot.id.desc())
+            .limit(1)
+        )
+        if previous is not None:
+            self._carry_forward_snapshot_metrics(snapshot, previous)
+
+        existing = await self.session.scalar(
+            select(ContentSnapshot).where(
+                ContentSnapshot.content_item_id == snapshot.content_item_id,
+                ContentSnapshot.captured_at == snapshot.captured_at,
+            )
+        )
+        if existing is None:
+            self.session.add(snapshot)
+            self._pending_content_snapshots[key] = snapshot
+            return snapshot
+
+        self._pending_content_snapshots[key] = existing
+        return existing
+
+    @staticmethod
+    def _carry_forward_snapshot_metrics(
+        target: ContentSnapshot,
+        source: ContentSnapshot,
+    ) -> None:
+        """Keep the last known metric when the current adapter response omits it.
+
+        A fast catalogue refresh can legitimately return a new view count while
+        omitting likes/comments.  Writing those omissions as ``NULL`` makes the
+        newest snapshot hide real values that were already captured, so the
+        works table appears to lose data.  Carrying forward is explicitly marked
+        in metadata; it is not presented as a newly observed platform value.
+        """
+        fields = (
+            "view_count",
+            "like_count",
+            "comment_count",
+            "share_count",
+            "favorite_count",
+            "follower_gain",
+            "average_watch_time",
+            "completion_rate",
+            "search_traffic_rate",
+            "recommendation_traffic_rate",
+            "profile_traffic_rate",
+            "revenue",
+            "rpm",
+        )
+        carried = [
+            field
+            for field in fields
+            if getattr(target, field) is None and getattr(source, field) is not None
+        ]
+        for field in carried:
+            setattr(target, field, getattr(source, field))
+        if carried:
+            target.metadata_json = {
+                **(target.metadata_json or {}),
+                "carried_forward_metrics": carried,
+                "carried_forward_from": source.captured_at.isoformat(),
+            }
 
     @staticmethod
     def _content_rejection_reason(data: PlatformContentData) -> str | None:
@@ -2000,12 +3094,47 @@ class PlatformSyncExecutor:
             # artifacts. Older runs often stored the work before thumbnails or
             # subtitles were available; skipping must not make that state permanent.
             content.last_seen_at = data.fetched_at
+            # Repair rows created by the old TikTok DOM mapper, which stored a
+            # card's numeric view label as the title. This is safe for manual
+            # edits because only an unambiguously metric-shaped existing title
+            # is replaced by the platform caption or stable video fallback.
+            existing_title = str(content.title or "").strip()
+            incoming_meta = dict(data.metadata)
+            if data.title and re.fullmatch(
+                r"[\d.,]+\s*[KMB]?\s*(?:views?|播放|次播放)?",
+                existing_title,
+                flags=re.IGNORECASE,
+            ):
+                content.title = data.title
             if not content.cover_url and data.cover_url:
                 content.cover_url = data.cover_url
             if not content.description and data.description:
                 content.description = data.description
+            if content.published_at is None and data.published_at is not None:
+                content.published_at = data.published_at
+            if content.duration_seconds is None and data.duration_seconds is not None:
+                content.duration_seconds = _as_decimal(data.duration_seconds)
             content.media = merge_media_manifest(content.media, data.media)
-            content.metadata_json = {**(content.metadata_json or {}), **dict(data.metadata)}
+            stored_meta = dict(content.metadata_json or {})
+            incoming_partial = bool(incoming_meta.get("partial"))
+            stored_complete_detail = (
+                not bool(stored_meta.get("partial"))
+                and str(stored_meta.get("detail_level") or "full") == "full"
+            )
+            if incoming_partial and stored_complete_detail:
+                # A transient detail failure must not downgrade a previously
+                # complete row merely because the fast catalogue still returns
+                # a truthful but partial entry.
+                incoming_meta.pop("partial", None)
+                incoming_meta.pop("detail_level", None)
+            merged_meta = {**stored_meta, **incoming_meta}
+            if not incoming_partial:
+                # A successful full extraction repairs rows created by an older
+                # catalogue-only run; remove the stale marker so the next
+                # incremental sync can safely skip this row.
+                merged_meta.pop("partial", None)
+                merged_meta.pop("detail_level", None)
+            content.metadata_json = merged_meta
             if data.tags:
                 content.tags = list(dict.fromkeys([*(content.tags or []), *data.tags]))[:30]
             skipped = True

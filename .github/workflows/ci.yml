@@ -63,8 +63,13 @@ jobs:
         working-directory: apps/api
         run: alembic upgrade head
       - name: Run backend tests
-        working-directory: apps/api
-        run: pytest
+        run: python scripts/run_api_test_shards.py --workdir apps/api --report artifacts/api-test-shards.txt
+      - name: Upload API shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-shards
+          path: artifacts/api-test-shards.txt
       - name: Run governance contract tests
         run: python -m unittest discover -s tests -v
 
@@ -99,3 +104,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate Docker Compose
         run: docker compose config --quiet
+      - name: Validate production configuration gate
+        env:
+          SIO_ENVIRONMENT: production
+          SIO_SECRET_KEY: ci-production-secret-that-is-never-used
+          SIO_DATABASE_URL: postgresql+asyncpg://sio:ci-production-password@db:5432/sports_intelligence
+          SIO_SESSION_COOKIE_SECURE: "true"
+          SIO_NOTIFICATION_ENCRYPTION_KEY: ci-production-notification-key-that-is-never-used
+          SIO_TRANSLATION_IMAGE: libretranslate/libretranslate@sha256:1de2d7056bb8ad607a412f4563d9abe324ff632b43b5be9428bcc8e213aebb32
+          SIO_LLM_INTERNAL_HOSTS_ALLOWLIST: '["llm-gateway"]'
+        run: python scripts/validate_production_config.py

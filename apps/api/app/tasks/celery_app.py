@@ -18,6 +18,7 @@ celery_app = Celery(
         "app.tasks.trends",
         "app.tasks.video_search",
         "app.tasks.embedding",
+        "app.tasks.subtitles",
     ],
 )
 celery_app.conf.update(
@@ -36,8 +37,10 @@ celery_app.conf.update(
     task_routes={
         "app.tasks.system.heartbeat": {"queue": "maintenance"},
         "app.tasks.system.cleanup_auth_records": {"queue": "maintenance"},
+        "app.tasks.system.cleanup_media_lifecycle": {"queue": "maintenance"},
         "app.tasks.monitoring.*": {"queue": "monitoring"},
         "app.tasks.monitoring.recover_stale_sync_runs": {"queue": "maintenance"},
+        "app.tasks.monitoring.recover_stale_downloads": {"queue": "maintenance"},
         "app.tasks.news.*": {"queue": "news"},
         "app.tasks.generation.recover_stale_generations": {"queue": "maintenance"},
         "app.tasks.generation.*": {"queue": "generation"},
@@ -49,6 +52,7 @@ celery_app.conf.update(
         "app.tasks.video_search.*": {"queue": "video-search"},
         # 复用既有队列，避免为一个新特性改 compose 的 worker -Q 列表。
         "app.tasks.embedding.*": {"queue": "video-search"},
+        "app.tasks.subtitles.*": {"queue": "subtitle"},
     },
     beat_schedule={
         "system-heartbeat": {
@@ -59,12 +63,20 @@ celery_app.conf.update(
             "task": "app.tasks.system.cleanup_auth_records",
             "schedule": 3600.0,
         },
+        "cleanup-media-lifecycle": {
+            "task": "app.tasks.system.cleanup_media_lifecycle",
+            "schedule": 3600.0,
+        },
         "sync-all-due-accounts": {
             "task": "app.tasks.monitoring.sync_all_due_accounts",
             "schedule": 60.0,
         },
         "recover-stale-sync-runs": {
             "task": "app.tasks.monitoring.recover_stale_sync_runs",
+            "schedule": 60.0,
+        },
+        "recover-stale-downloads": {
+            "task": "app.tasks.monitoring.recover_stale_downloads",
             "schedule": 60.0,
         },
         "sync-all-news-sources": {

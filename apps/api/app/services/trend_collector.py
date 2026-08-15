@@ -6,8 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -24,7 +26,10 @@ from app.models.monitoring import (
     DerivedMetric,
     Platform,
 )
+from app.models.news import Source
 from app.models.trends import TrendKeywordSnapshot, TrendTopic, TrendVideo
+from app.providers.news.base import NewsArticleData, NewsCallContext
+from app.providers.news.registry import build_news_provider_registry
 from app.services.metric_calculations import (
     freshness_score,
     percentile_rank,
@@ -35,6 +40,8 @@ from app.services.metric_calculations import (
 from app.services.platform_credentials import PlatformCredentialService
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[str, str], None]
 
 # Official API request headers.
 _DEFAULT_HEADERS: dict[str, str] = {
@@ -200,9 +207,22 @@ class TrendCollectorService:
     # 主入口
     # ------------------------------------------------------------------
 
-    async def collect_all(self, workspace_id: UUID) -> dict[str, Any]:
+    async def collect_all(
+        self,
+        workspace_id: UUID,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         """采集所有平台的趋势数据，返回各平台采集结果统计"""
-        results: dict[str, Any] = await self._collect_monitored_samples(workspace_id)
+        if progress:
+            progress("开始读取已监控账号的近 72 小时实时样本", "monitored_samples")
+        results: dict[str, Any] = await self._collect_monitored_samples(
+            workspace_id, window_hours=72
+        )
+        if progress:
+            sample_videos = sum(int(item.get("videos", 0)) for item in results.values())
+            progress(f"监控样本处理完成：{sample_videos} 条作品", "monitored_samples")
+            progress("正在检查 YouTube 官方 API 配置并采集公开趋势", "youtube")
         youtube = await self.collect_youtube_trends(workspace_id)
         youtube_result = results.setdefault(
             "youtube",
@@ -212,6 +232,12 @@ class TrendCollectorService:
             youtube_result[key] += youtube[key]
         if any(youtube.values()):
             youtube_result["status"] = "collected"
+        if progress:
+            progress("正在独立采集已启用的公开 RSS/Atom 热点源（最近 72 小时）", "public_sources")
+        public_sources = await self.collect_public_source_trends(
+            workspace_id, progress=progress, window_hours=72
+        )
+        results["web"] = public_sources
         for platform in ("tiktok", "douyin", "bilibili"):
             results.setdefault(
                 platform,
@@ -222,10 +248,265 @@ class TrendCollectorService:
                     "status": "no_authorized_samples",
                 },
             )
+        if progress:
+            for platform, summary in results.items():
+                progress(
+                    f"{platform}：作品 {int(summary.get('videos', 0))} 条，"
+                    f"话题 {int(summary.get('topics', 0))} 个，"
+                    f"状态 {summary.get('status', 'unknown')}",
+                    "platform_summary",
+                )
+            progress("正在提交趋势榜单、话题和关键词快照", "persist")
         await self.session.commit()
+        if progress:
+            total_videos = sum(int(item.get("videos", 0)) for item in results.values())
+            total_topics = sum(int(item.get("topics", 0)) for item in results.values())
+            progress(
+                f"采集完成：新增/更新作品 {total_videos} 条，话题 {total_topics} 个",
+                "completed",
+            )
         return results
 
-    async def _collect_monitored_samples(self, workspace_id: UUID) -> dict[str, Any]:
+    async def collect_public_source_trends(
+        self,
+        workspace_id: UUID,
+        *,
+        progress: ProgressCallback | None = None,
+        window_hours: int = 72,
+    ) -> dict[str, Any]:
+        """Collect fresh public RSS/Atom entries independently of monitored accounts.
+
+        The trend page must not depend on the account inventory being populated.
+        Only sources explicitly enabled in ``news_sources`` are read here; this
+        preserves source terms/attribution and makes the public-web boundary
+        auditable.  Feed metrics are intentionally left ``None`` because a feed
+        does not prove views or interactions.
+        """
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(hours=max(24, min(int(window_hours), 72)))
+        sources = list(
+            (
+                await self.session.scalars(
+                    select(Source)
+                    .where(
+                        Source.workspace_id == workspace_id,
+                        Source.enabled.is_(True),
+                        Source.source_type.in_(("rss", "atom")),
+                        Source.url.is_not(None),
+                    )
+                    .order_by(Source.priority.desc(), Source.reliability_score.desc())
+                    .limit(self._settings.hotspot_feed_max_sources)
+                )
+            ).all()
+        )
+        summary: dict[str, Any] = {
+            "topics": 0,
+            "videos": 0,
+            "keywords": 0,
+            "sources": 0,
+            "failed_sources": 0,
+            "status": "no_enabled_public_sources" if not sources else "running",
+        }
+        if not sources:
+            if progress:
+                progress("没有启用的公开 RSS/Atom 源，热点中心保留明确空状态", "public_sources")
+            return summary
+
+        registry = build_news_provider_registry(self._settings)
+        semaphore = asyncio.Semaphore(self._settings.hotspot_feed_concurrency)
+
+        async def fetch_source(
+            source: Source,
+        ) -> tuple[Source, list[NewsArticleData], str | None]:
+            provider_key = source.source_type
+            try:
+                provider = registry.get(provider_key)
+                config = dict(source.config_json or {})
+                config["url"] = source.url
+                context = NewsCallContext(
+                    config=config,
+                    fetched_at=now,
+                    request_id=f"hotspot:{workspace_id}:{source.id}",
+                )
+                async with semaphore:
+                    page = await provider.fetch_latest(
+                        context,
+                        cursor=None,
+                        limit=self._settings.hotspot_feed_items_per_source,
+                    )
+                fresh = [
+                    item
+                    for item in page.items
+                    if item.published_at is not None and item.published_at >= cutoff
+                ]
+                return source, fresh, None
+            except Exception as exc:  # noqa: BLE001 - isolate one public source
+                return source, [], f"{type(exc).__name__}: {str(exc)[:240]}"
+
+        fetched = await asyncio.gather(*(fetch_source(source) for source in sources))
+        for provider in registry.values():
+            close = getattr(provider, "aclose", None)
+            if close is not None:
+                await close()
+
+        topic_aggregates: dict[str, dict[str, Any]] = {}
+        collected_at = now.isoformat()
+        for source, items, error in fetched:
+            if error is not None:
+                summary["failed_sources"] += 1
+                if progress:
+                    progress(f"公开源 {source.name} 失败：{error}", "public_source_failed")
+                continue
+            summary["sources"] += 1
+            if progress:
+                progress(f"公开源 {source.name} 获取 {len(items)} 条最近文章", "public_source")
+            for rank, item in enumerate(items, start=1):
+                text = f"{item.title}\n{item.summary or ''}"
+                age_hours = max(
+                    0.0,
+                    (now - item.published_at.astimezone(UTC)).total_seconds() / 3600
+                    if item.published_at is not None
+                    else 72.0,
+                )
+                position_score = _position_heat_score(rank, len(items))
+                raw_heat, applied_weights = weighted_available_score(
+                    {
+                        "freshness": (freshness_score(age_hours, half_life_hours=24), 0.65),
+                        "feed_position": (position_score, 0.25),
+                        "source_reliability": (float(source.reliability_score), 0.10),
+                    },
+                    minimum_components=2,
+                )
+                confidence = sample_confidence(len(items), target_size=10)
+                score = _confidence_adjusted(raw_heat, confidence)
+                external_id = f"{source.id}:{item.external_id}"[:255]
+                self.session.add(
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="web",
+                        external_id=external_id,
+                        title=item.title,
+                        author_name=item.author,
+                        author_url=None,
+                        cover_url=None,
+                        video_url=item.canonical_url,
+                        view_count=None,
+                        like_count=None,
+                        comment_count=None,
+                        share_count=None,
+                        breakout_score=score,
+                        category=item.sport or source.category,
+                        metadata_json={
+                            "source_kind": "live",
+                            "provider": item.provider,
+                            "access_method": "public_rss",
+                            "metric_kind": "derived",
+                            "metric_available": False,
+                            "heat_score_method": "freshness_feed_position_source_reliability",
+                            "applied_weights": applied_weights,
+                            "confidence_score": round(confidence, 4),
+                            "source_id": str(source.id),
+                            "source_name": source.name,
+                            "source_url": source.url,
+                            "source_article_id": item.external_id,
+                            "source_published_at": (
+                                item.published_at.isoformat() if item.published_at else None
+                            ),
+                            "collected_at": collected_at,
+                        },
+                        observed_at=now,
+                    )
+                )
+                summary["videos"] += 1
+                for term in _trend_terms(text):
+                    aggregate = topic_aggregates.setdefault(
+                        term.casefold(),
+                        {
+                            "title": term,
+                            "count": 0,
+                            "sources": set(),
+                            "latest": item.published_at,
+                        },
+                    )
+                    aggregate["count"] += 1
+                    aggregate["sources"].add(str(source.id))
+                    if item.published_at and (
+                        aggregate["latest"] is None or item.published_at > aggregate["latest"]
+                    ):
+                        aggregate["latest"] = item.published_at
+
+        ranked_topics = sorted(
+            topic_aggregates.values(),
+            key=lambda item: (int(item["count"]), len(item["sources"])),
+            reverse=True,
+        )[:50]
+        population = [int(item["count"]) for item in ranked_topics]
+        for rank, aggregate in enumerate(ranked_topics, start=1):
+            count = int(aggregate["count"])
+            source_breadth = min(100.0, 100.0 * len(aggregate["sources"]) / 3)
+            raw_heat, weights = weighted_available_score(
+                {
+                    "source_volume": (percentile_rank(count, population), 0.65),
+                    "source_breadth": (source_breadth, 0.35),
+                },
+                minimum_components=2,
+            )
+            confidence = sample_confidence(count, target_size=8)
+            metadata = {
+                "source_kind": "live",
+                "provider": "public_rss_aggregate",
+                "access_method": "public_rss",
+                "metric_kind": "derived",
+                "metric_available": False,
+                "heat_score_method": "source_volume_and_breadth",
+                "applied_weights": weights,
+                "confidence_score": confidence,
+                "source_count": len(aggregate["sources"]),
+                "source_published_at": (
+                    aggregate["latest"].isoformat() if aggregate["latest"] is not None else None
+                ),
+                "collected_at": collected_at,
+            }
+            self.session.add(
+                TrendTopic(
+                    workspace_id=workspace_id,
+                    platform="web",
+                    title=str(aggregate["title"]),
+                    category=_infer_sports_category(str(aggregate["title"])),
+                    heat_score=_confidence_adjusted(raw_heat, confidence) or 50.0,
+                    growth_rate=None,
+                    rank=rank,
+                    sample_size=count,
+                    metadata_json=metadata,
+                    observed_at=now,
+                )
+            )
+            self.session.add(
+                TrendKeywordSnapshot(
+                    workspace_id=workspace_id,
+                    keyword=str(aggregate["title"]),
+                    platform="web",
+                    observed_at=now,
+                    video_count=count,
+                    total_views=None,
+                    avg_views=None,
+                    heat_index=_confidence_adjusted(raw_heat, confidence),
+                    metadata_json=metadata,
+                )
+            )
+            summary["topics"] += 1
+            summary["keywords"] += 1
+        if summary["failed_sources"] and summary["sources"]:
+            summary["status"] = "partial"
+        elif summary["failed_sources"]:
+            summary["status"] = "failed"
+        else:
+            summary["status"] = "collected"
+        return summary
+
+    async def _collect_monitored_samples(
+        self, workspace_id: UUID, *, window_hours: int = 72
+    ) -> dict[str, Any]:
         """Build trends from real content acquired by configured account adapters."""
         now = datetime.now(UTC)
         latest = (
@@ -254,7 +535,7 @@ class TrendCollectorService:
                     ContentItem.source_kind == "live",
                     ContentItem.status.notin_(("archived", "deleted")),
                     ContentItem.published_at.is_not(None),
-                    ContentItem.published_at >= now - timedelta(days=30),
+                    ContentItem.published_at >= now - timedelta(hours=window_hours),
                 )
                 .order_by(ContentItem.last_seen_at.desc())
                 .limit(500)
@@ -401,6 +682,9 @@ class TrendCollectorService:
                         ),
                         "source_url": item.canonical_url,
                         "source_entity_id": str(item.id),
+                        "content_published_at": (
+                            item.published_at.isoformat() if item.published_at else None
+                        ),
                         "collected_at": now.isoformat(),
                     },
                     observed_at=now,
@@ -422,6 +706,7 @@ class TrendCollectorService:
                         "view_sample_count": 0,
                         "providers": set(),
                         "source_entity_ids": [],
+                        "latest_published_at": None,
                     },
                 )
                 aggregate["video_count"] += 1
@@ -429,6 +714,11 @@ class TrendCollectorService:
                     aggregate["total_views"] += int(views)
                     aggregate["view_sample_count"] += 1
                 aggregate["providers"].add(item.source_provider)
+                if item.published_at is not None and (
+                    aggregate["latest_published_at"] is None
+                    or item.published_at > aggregate["latest_published_at"]
+                ):
+                    aggregate["latest_published_at"] = item.published_at
                 if len(aggregate["source_entity_ids"]) < 5:
                     aggregate["source_entity_ids"].append(str(item.id))
 
@@ -516,6 +806,11 @@ class TrendCollectorService:
                         "change_in_sample_total_views" if growth_rate is not None else None
                     ),
                     "source_entity_ids": aggregate["source_entity_ids"],
+                    "source_published_at": (
+                        aggregate["latest_published_at"].isoformat()
+                        if aggregate["latest_published_at"] is not None
+                        else None
+                    ),
                     "collected_at": now.isoformat(),
                 }
                 self.session.add(

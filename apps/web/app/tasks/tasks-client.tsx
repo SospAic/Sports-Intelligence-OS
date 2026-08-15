@@ -110,19 +110,34 @@ export function TasksClient() {
       cell: ({ row }) => {
         const { error_code, error_detail, error_hint, error_message } =
           row.original;
+        const degraded = row.original.status === "degraded";
         if (!error_code && !error_detail && !error_hint && !error_message) {
           return <span className="text-slate-500">—</span>;
         }
         return (
           <div className="max-w-lg space-y-1">
-            {error_code && <Badge tone="danger">{error_code}</Badge>}
+            {error_code && (
+              <Badge tone={degraded ? "warning" : "danger"}>{error_code}</Badge>
+            )}
             {error_detail && (
-              <pre className="whitespace-pre-wrap break-words rounded border border-rose-900/40 bg-rose-950/20 p-2 text-xs text-rose-300">
+              <pre
+                className={`whitespace-pre-wrap break-words rounded border p-2 text-xs ${
+                  degraded
+                    ? "border-amber-900/40 bg-amber-950/20 text-amber-200"
+                    : "border-rose-900/40 bg-rose-950/20 text-rose-300"
+                }`}
+              >
                 {error_detail}
               </pre>
             )}
             {error_message && !error_detail && (
-              <p className="text-xs text-rose-300">{error_message}</p>
+              <p
+                className={
+                  degraded ? "text-xs text-amber-200" : "text-xs text-rose-300"
+                }
+              >
+                {error_message}
+              </p>
             )}
             {error_hint && (
               <p className="rounded border border-amber-900/30 bg-amber-950/10 p-2 text-xs text-amber-200">

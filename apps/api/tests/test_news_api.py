@@ -193,6 +193,20 @@ def test_manual_news_dedup_clustering_merge_split_bookmark_and_scoring(
     ideas = client.get("/api/v1/news/articles", params={"is_bookmarked": True})
     assert ideas.status_code == 200
     assert ideas.json()["items"][0]["id"] == third["id"]
+    article_bookmarked = client.patch(
+        f"/api/v1/news/articles/{first['id']}/bookmark",
+        headers={"X-CSRF-Token": csrf},
+        json={"bookmarked": True},
+    )
+    assert article_bookmarked.status_code == 200, article_bookmarked.text
+    assert article_bookmarked.json()["is_bookmarked"] is True
+    article_unbookmarked = client.patch(
+        f"/api/v1/news/articles/{first['id']}/bookmark",
+        headers={"X-CSRF-Token": csrf},
+        json={"bookmarked": False},
+    )
+    assert article_unbookmarked.status_code == 200
+    assert article_unbookmarked.json()["is_bookmarked"] is False
 
     scoring = client.get("/api/v1/news/scoring-config")
     assert scoring.status_code == 200

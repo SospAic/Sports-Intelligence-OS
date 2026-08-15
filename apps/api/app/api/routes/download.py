@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 from uuid import UUID
 
 from celery.result import AsyncResult
@@ -18,6 +19,7 @@ from app.api.dependencies import (
     DatabaseSession,
     require_workspace_role,
 )
+from app.models.download import Download
 from app.schemas.download import (
     DownloadCreate,
     DownloadPage,
@@ -26,9 +28,18 @@ from app.schemas.download import (
     DownloadPreviewPoll,
     DownloadPreviewRead,
     DownloadRead,
+    SubtitleExportCreate,
+    SubtitlePreviewRead,
     YtDlpRuntimeRead,
 )
+from app.services.artifact_registry import reconcile_manifest
 from app.services.download import DownloadService
+from app.services.subtitle_tools import (
+    SubtitleExport,
+    build_subtitle_export,
+    subtitle_preview,
+    write_subtitle_export,
+)
 from app.tasks.celery_app import celery_app
 from app.tasks.monitoring import preview_download_task
 
@@ -193,6 +204,94 @@ async def get_download(
 
         raise HTTPException(status_code=404, detail="download not found")
     return DownloadRead.model_validate(record)
+
+
+def _save_export_metadata(record: Download, export: SubtitleExport) -> None:
+    """Append a generated artifact without dropping the original media list."""
+
+    media = dict(getattr(record, "media", None) or {})
+    exports = [
+        item
+        for item in (media.get("subtitle_exports") or [])
+        if isinstance(item, dict) and item.get("file") != export.filename
+    ]
+    exports.append(export.media_entry)
+    media["subtitle_exports"] = exports
+    record.media = media
+
+
+@router.post("/{download_id}/subtitle-preview", response_model=SubtitlePreviewRead)
+async def preview_subtitle_export(
+    download_id: UUID,
+    payload: SubtitleExportCreate,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> SubtitlePreviewRead:
+    """Preview a composed subtitle without re-running yt-dlp."""
+
+    record = await DownloadService(db).get(download_id)
+    if record is None or record.workspace_id != workspace.workspace_id:
+        raise HTTPException(status_code=404, detail="download not found")
+    try:
+        export = build_subtitle_export(
+            dict(record.media or {}),
+            primary_lang=payload.primary_lang,
+            secondary_lang=payload.secondary_lang,
+            output_format=payload.format,
+            show_timestamps=payload.show_timestamps,
+        )
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    preview = subtitle_preview(export, show_timestamps=payload.show_timestamps, max_cues=5000)
+    preview["generated_file"] = None
+    return SubtitlePreviewRead.model_validate(preview)
+
+
+@router.post("/{download_id}/subtitle-export")
+async def export_subtitle(
+    download_id: UUID,
+    payload: SubtitleExportCreate,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: CsrfProtectedAuth,
+) -> FileResponse:
+    """Generate and serve a selected subtitle format from archived tracks."""
+
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    record = await DownloadService(db).get(download_id)
+    if record is None or record.workspace_id != workspace.workspace_id:
+        raise HTTPException(status_code=404, detail="download not found")
+    try:
+        export = build_subtitle_export(
+            dict(record.media or {}),
+            primary_lang=payload.primary_lang,
+            secondary_lang=payload.secondary_lang,
+            output_format=payload.format,
+            show_timestamps=payload.show_timestamps,
+        )
+        path = write_subtitle_export(export, dict(record.media or {}))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _save_export_metadata(record, export)
+    record.updated_at = datetime.now(UTC)
+    await reconcile_manifest(
+        db,
+        workspace_id=record.workspace_id,
+        download_id=record.id,
+        media=dict(record.media or {}),
+        source_kind="live",
+        source_provider="subtitle_export",
+        source_url=record.url,
+        commit=True,
+    )
+    media_type = {
+        "vtt": "text/vtt",
+        "srt": "application/x-subrip",
+        "txt": "text/plain; charset=utf-8",
+        "json": "application/json",
+        "ass": "text/x-ssa",
+    }[payload.format]
+    return FileResponse(path, media_type=media_type, filename=export.filename)
 
 
 @router.get("/{download_id}/file/{file}")

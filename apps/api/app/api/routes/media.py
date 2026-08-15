@@ -13,6 +13,7 @@ import hashlib
 import ipaddress
 import os
 import socket
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -22,9 +23,30 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import CurrentAuth, DatabaseSession
+from app.api.dependencies import (
+    AuthContext,
+    CsrfProtectedAuth,
+    CurrentAuth,
+    CurrentWorkspace,
+    DatabaseSession,
+    require_workspace_role,
+)
 from app.models.monitoring import Account, ContentItem
+from app.models.subtitle import SubtitleJob
+from app.schemas.download import (
+    SubtitleExportCreate,
+    SubtitleGenerateCreate,
+    SubtitleJobRead,
+    SubtitlePreviewRead,
+)
+from app.services.artifact_registry import reconcile_manifest
+from app.services.subtitle_tools import (
+    build_subtitle_export,
+    subtitle_preview,
+    write_subtitle_export,
+)
 
 router = APIRouter(tags=["media"])
 
@@ -62,7 +84,228 @@ def _allowed_files(media: dict[str, Any]) -> set[str]:
     for sub in media.get("subtitles") or []:
         if isinstance(sub, dict) and sub.get("file"):
             allowed.add(sub["file"])
+    for export in media.get("subtitle_exports") or []:
+        if isinstance(export, dict) and export.get("file"):
+            allowed.add(export["file"])
+    for artifact in media.get("subtitle_artifacts") or []:
+        if isinstance(artifact, dict) and artifact.get("file"):
+            allowed.add(artifact["file"])
     return allowed
+
+
+async def _get_accessible_content(
+    content_id: UUID, auth: AuthContext, db: AsyncSession
+) -> ContentItem:
+    member_workspace_ids = {
+        membership.workspace_id
+        for membership in auth.user.memberships
+        if membership.status == "active"
+        and getattr(membership.workspace, "status", "active") == "active"
+    }
+    content = await db.scalar(select(ContentItem).where(ContentItem.id == content_id))
+    if content is None or content.workspace_id not in member_workspace_ids:
+        raise HTTPException(status_code=404, detail="media not found")
+    return content
+
+
+@router.post("/media/{content_id}/subtitle-preview", response_model=SubtitlePreviewRead)
+async def preview_content_subtitle_export(
+    content_id: UUID,
+    payload: SubtitleExportCreate,
+    auth: CurrentAuth,
+    db: DatabaseSession,
+) -> SubtitlePreviewRead:
+    content = await _get_accessible_content(content_id, auth, db)
+    try:
+        export = build_subtitle_export(
+            dict(content.media or {}),
+            primary_lang=payload.primary_lang,
+            secondary_lang=payload.secondary_lang,
+            output_format=payload.format,
+            show_timestamps=payload.show_timestamps,
+        )
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    preview = subtitle_preview(export, show_timestamps=payload.show_timestamps, max_cues=5000)
+    preview["generated_file"] = None
+    return SubtitlePreviewRead.model_validate(preview)
+
+
+@router.post("/media/{content_id}/subtitle-export")
+async def export_content_subtitle(
+    content_id: UUID,
+    payload: SubtitleExportCreate,
+    auth: CurrentAuth,
+    db: DatabaseSession,
+    _: CsrfProtectedAuth,
+) -> FileResponse:
+    content = await _get_accessible_content(content_id, auth, db)
+    media = dict(content.media or {})
+    try:
+        export = build_subtitle_export(
+            media,
+            primary_lang=payload.primary_lang,
+            secondary_lang=payload.secondary_lang,
+            output_format=payload.format,
+            show_timestamps=payload.show_timestamps,
+        )
+        path = write_subtitle_export(export, media)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    exports = [
+        item
+        for item in (media.get("subtitle_exports") or [])
+        if isinstance(item, dict) and item.get("file") != export.filename
+    ]
+    exports.append(export.media_entry)
+    media["subtitle_exports"] = exports
+    content.media = media
+    await reconcile_manifest(
+        db,
+        workspace_id=content.workspace_id,
+        content_item_id=content.id,
+        media=media,
+        source_kind="live",
+        source_provider="subtitle_export",
+        source_url=content.canonical_url,
+        commit=True,
+    )
+    media_type = {
+        "vtt": "text/vtt",
+        "srt": "application/x-subrip",
+        "txt": "text/plain; charset=utf-8",
+        "json": "application/json",
+        "ass": "text/x-ssa",
+    }[payload.format]
+    return FileResponse(path, media_type=media_type, filename=export.filename)
+
+
+@router.post(
+    "/media/{content_id}/subtitle-generate",
+    response_model=SubtitleJobRead,
+    status_code=202,
+)
+async def generate_content_subtitles(
+    content_id: UUID,
+    payload: SubtitleGenerateCreate,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: CsrfProtectedAuth,
+) -> SubtitleJobRead:
+    """Queue local ASR and optional translation without blocking the request."""
+
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    content = await _get_accessible_content(content_id, workspace.auth, db)
+    target_languages: list[str] = []
+    for language in payload.target_languages:
+        cleaned = language.strip()
+        if cleaned and cleaned.casefold() not in {item.casefold() for item in target_languages}:
+            target_languages.append(cleaned)
+    if not target_languages:
+        raise HTTPException(status_code=422, detail="至少选择一种字幕生成语种")
+
+    if not payload.force:
+        active = await db.scalar(
+            select(SubtitleJob)
+            .where(
+                SubtitleJob.content_item_id == content.id,
+                SubtitleJob.workspace_id == workspace.workspace_id,
+                SubtitleJob.status.in_(["queued", "running"]),
+            )
+            .order_by(SubtitleJob.created_at.desc())
+        )
+        if active is not None:
+            return SubtitleJobRead.model_validate(active)
+
+    from app.core.config import get_settings
+    from app.tasks.subtitles import generate_content_subtitles as generate_task
+
+    settings = get_settings()
+    job = SubtitleJob(
+        workspace_id=workspace.workspace_id,
+        content_item_id=content.id,
+        status="queued",
+        asr_backend=settings.subtitle_asr_backend,
+        source_language=(payload.source_language or "").strip() or None,
+        target_languages=target_languages,
+        progress={
+            "stage": "queued",
+            "percent": 0,
+            "log": [
+                {
+                    "at": datetime.now(UTC).isoformat(),
+                    "level": "info",
+                    "message": "任务已创建，等待 subtitle-worker 处理",
+                }
+            ],
+        },
+    )
+    db.add(job)
+    await db.flush()
+    # Commit before dispatch so a fast worker cannot observe a task whose row
+    # is still invisible in PostgreSQL.
+    await db.commit()
+    try:
+        generate_task.delay(str(job.id))
+    except Exception as exc:  # noqa: BLE001 - keep a queued request auditable
+        job.status = "failed"
+        job.error_code = "subtitle_dispatch_failed"
+        job.error_detail = f"字幕任务无法提交到 subtitle-worker：{str(exc)[:500]}"
+        job.progress = {
+            **dict(job.progress or {}),
+            "stage": "failed",
+            "percent": 100,
+            "message": job.error_detail,
+            "log": [
+                *list((job.progress or {}).get("log") or []),
+                {
+                    "at": datetime.now(UTC).isoformat(),
+                    "level": "error",
+                    "message": job.error_detail,
+                },
+            ][-100:],
+        }
+        await db.commit()
+        raise HTTPException(status_code=503, detail=job.error_detail) from exc
+    return SubtitleJobRead.model_validate(job)
+
+
+@router.get("/media/{content_id}/subtitle-job", response_model=SubtitleJobRead | None)
+async def latest_content_subtitle_job(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> SubtitleJobRead | None:
+    await _get_accessible_content(content_id, workspace.auth, db)
+    job = await db.scalar(
+        select(SubtitleJob)
+        .where(
+            SubtitleJob.content_item_id == content_id,
+            SubtitleJob.workspace_id == workspace.workspace_id,
+        )
+        .order_by(SubtitleJob.created_at.desc())
+    )
+    return SubtitleJobRead.model_validate(job) if job is not None else None
+
+
+@router.get("/media/{content_id}/subtitle-jobs/{job_id}", response_model=SubtitleJobRead)
+async def get_content_subtitle_job(
+    content_id: UUID,
+    job_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> SubtitleJobRead:
+    await _get_accessible_content(content_id, workspace.auth, db)
+    job = await db.scalar(
+        select(SubtitleJob).where(
+            SubtitleJob.id == job_id,
+            SubtitleJob.content_item_id == content_id,
+            SubtitleJob.workspace_id == workspace.workspace_id,
+        )
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="subtitle job not found")
+    return SubtitleJobRead.model_validate(job)
 
 
 def _safe_media_path(base: str, file: str) -> str | None:
@@ -88,15 +331,7 @@ async def serve_content_media(
     # X-Workspace-Id header, so we authenticate the user and assert the content
     # belongs to one of their active workspaces rather than relying on the
     # header. The unguessable content UUID is the only capability needed.
-    member_workspace_ids = {
-        membership.workspace_id
-        for membership in auth.user.memberships
-        if membership.status == "active"
-        and getattr(membership.workspace, "status", "active") == "active"
-    }
-    content = await db.scalar(select(ContentItem).where(ContentItem.id == content_id))
-    if content is None or content.workspace_id not in member_workspace_ids:
-        raise HTTPException(status_code=404, detail="media not found")
+    content = await _get_accessible_content(content_id, auth, db)
     media = content.media
     if not isinstance(media, dict):
         raise HTTPException(status_code=404, detail="media not found")
@@ -200,7 +435,7 @@ def _is_safe_avatar_url(url: str) -> None:
     except socket.gaierror as exc:
         raise ValueError(f"avatar host unresolved: {hostname}") from exc
     for info in infos:
-        addr = info[4][0].split("%", 1)[0]
+        addr = str(info[4][0]).split("%", 1)[0]
         try:
             ip = ipaddress.ip_address(addr)
         except ValueError:

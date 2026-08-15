@@ -313,6 +313,10 @@ class YtDlpDownloadSettings(BaseModel):
     # Output file-name rule: id / title / uploader / date_title.
     naming_rule: str = Field(default="id", max_length=256)
     write_info_json: bool = False
+    # Optional: a sync request per work, therefore disabled by default. The
+    # executor applies a bounded platform-specific concurrency and stores only
+    # the current Top 20 engagement-ranked comments.
+    fetch_comments: bool = False
 
     @model_validator(mode="after")
     def _validate_video_prereq(self) -> YtDlpDownloadSettings:
@@ -384,8 +388,8 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "min_filesize": "",
         "max_filesize": "",
         "proxy": "",
-        "socket_timeout": None,
-        "retries": 10,
+        "socket_timeout": 15,
+        "retries": 3,
         "fragment_retries": None,
         "sleep_interval": None,
         "max_sleep_interval": None,
@@ -411,5 +415,6 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "bitrate": "",
         "naming_rule": "id",
         "write_info_json": False,
+        "fetch_comments": False,
     },
 }

@@ -129,7 +129,7 @@ def isolate_db() -> Iterator[None]:
     """Truncate every table before each test so tests never leak state."""
     engine = create_engine(PG_SYNC_URL)
     with engine.connect() as conn:
-        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         conn.execute(text(_TRUNCATE_ALL))
     engine.dispose()
     yield
@@ -151,7 +151,6 @@ def _seed_database(database_path: str) -> None:
     sync_engine = create_engine(
         f"postgresql+psycopg://{_PG_USER}:{_PG_PASSWORD}@{_PG_HOST}:{_PG_PORT}/{database_path}"
     )
-    Base.metadata.create_all(sync_engine)
 
     workspace_id = uuid4()
     user_id = uuid4()

@@ -143,6 +143,11 @@ class BrowserPlatformAdapter(PlatformAdapter):
     min_action_delay: float = 0.5
     max_action_delay: float = 2.0
     page_load_timeout_ms: int = 30_000
+    # Connected real browsers retain the operator's stable fingerprint and any
+    # manually-authorized public-page session. TikTok/Douyin can challenge a
+    # fresh incognito context, so those adapters may opt into the existing
+    # context while still opening a fresh page for each scrape.
+    reuse_connected_context: bool = False
 
     def __init__(
         self,
@@ -158,6 +163,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         self._browsers: dict[str, Browser] = {}
         self._cdp_browsers: set[str] = set()
         self._session_states: dict[str, StorageState] = {}
+        self._shared_context_ids: set[int] = set()
 
     def _credential_cache_key(self, ctx: AdapterCallContext) -> str | None:
         username = ctx.config.get("username")
@@ -272,6 +278,9 @@ class BrowserPlatformAdapter(PlatformAdapter):
     async def _new_context(self, ctx: AdapterCallContext) -> BrowserContext:
         """Create an isolated browser context for public-page sampling."""
         browser = await self._ensure_browser(ctx)
+        cdp = (ctx.config.get("cdp_endpoint") if ctx is not None else None) or os.environ.get(
+            "SIO_BROWSER_CDP_ENDPOINT"
+        )
         cache_key = self._credential_cache_key(ctx)
         storage_state: StorageState | None = self._session_states.get(cache_key or "")
         raw_storage_state = ctx.config.get("storage_state_json")
@@ -283,6 +292,21 @@ class BrowserPlatformAdapter(PlatformAdapter):
             if not isinstance(parsed_state, dict):
                 raise LoginRequiredError(self.descriptor.name, "加密会话状态格式无效")
             storage_state = cast(StorageState, parsed_state)
+        if (
+            self.reuse_connected_context
+            and cdp
+            and browser.contexts
+        ):
+            # When an operator has explicitly connected a browser over CDP,
+            # that browser is the authorized session/fingerprint. Prefer it
+            # even when the credential record also contains a captured cookie
+            # or storage-state export: creating a fresh context from that
+            # export is precisely what triggers TikTok's slider wall. The
+            # adapter still opens a disposable page and never mutates the
+            # connected context's lifecycle.
+            context = browser.contexts[0]
+            self._shared_context_ids.add(id(context))
+            return context
         context = await browser.new_context(
             viewport={
                 "width": self.default_viewport_width,
@@ -294,6 +318,20 @@ class BrowserPlatformAdapter(PlatformAdapter):
             storage_state=storage_state,
         )
         return context
+
+    async def _dispose_context(
+        self, context: BrowserContext, page: Page | None = None
+    ) -> None:
+        """Close a scrape page without closing an operator-owned context."""
+        if id(context) in self._shared_context_ids:
+            if page is not None:
+                try:
+                    if not page.is_closed():
+                        await page.close()
+                except Exception:  # noqa: BLE001 - cleanup must not mask a scrape error
+                    logger.debug("failed to close shared browser page", exc_info=True)
+            return
+        await context.close()
 
     async def _new_page(self, ctx: AdapterCallContext) -> tuple[BrowserContext, Page]:
         """Create a context and page ready for navigation."""
@@ -311,10 +349,10 @@ class BrowserPlatformAdapter(PlatformAdapter):
                     )
                 self._session_states[cache_key] = await context.storage_state()
             except LoginRequiredError:
-                await context.close()
+                await self._dispose_context(context, page)
                 raise
             except Exception as exc:
-                await context.close()
+                await self._dispose_context(context, page)
                 raise LoginRequiredError(
                     self.descriptor.name,
                     f"自动登录失败或页面结构已变化: {type(exc).__name__}",
@@ -348,6 +386,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
         last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             context: BrowserContext | None = None
+            page: Page | None = None
             try:
                 self._progress(
                     ctx,
@@ -377,7 +416,7 @@ class BrowserPlatformAdapter(PlatformAdapter):
                 )
                 if context is not None:
                     try:
-                        await context.close()
+                        await self._dispose_context(context, page)
                     except Exception as close_exc:
                         # The attempt already failed; a context that also refuses
                         # to close must not mask the original navigation error.
@@ -421,7 +460,30 @@ class BrowserPlatformAdapter(PlatformAdapter):
     ) -> None:
         """Scroll the page incrementally to trigger lazy-loaded content."""
         for index in range(times):
-            await page.mouse.wheel(0, 450)
+            # TikTok's profile shell can place the pointer over a fixed side
+            # navigation container. A mouse wheel then changes no document
+            # scroll position at all, so the adapter silently sees only the
+            # first rendered batch of works. Drive the page-level scroll first;
+            # retain the mouse fallback for platforms/fakes that do not expose
+            # ``evaluate`` or use an inner scroll container.
+            scrolled = False
+            try:
+                before = await page.evaluate("window.scrollY")
+                await page.evaluate("(distance) => window.scrollBy(0, distance)", 650)
+                after = await page.evaluate("window.scrollY")
+                scrolled = isinstance(before, (int, float)) and isinstance(
+                    after, (int, float)
+                ) and after > before
+            except Exception:  # noqa: BLE001 - browser compatibility fallback
+                logger.debug("page-level scroll unavailable", exc_info=True)
+            if not scrolled:
+                try:
+                    viewport = page.viewport_size
+                    if viewport:
+                        await page.mouse.move(viewport["width"] // 2, viewport["height"] // 2)
+                except Exception:  # noqa: BLE001 - mouse positioning is best effort
+                    logger.debug("failed to position mouse for scroll", exc_info=True)
+                await page.mouse.wheel(0, 650)
             await self._polite_delay(0.5)
             self._progress(ctx, f"[{self.key}] 滚动加载 {index + 1}/{times}")
 

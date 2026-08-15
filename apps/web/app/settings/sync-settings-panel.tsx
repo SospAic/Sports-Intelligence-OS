@@ -394,6 +394,12 @@ const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
     label: "下载原始信息 (write_info_json)",
     type: "bool",
   },
+  {
+    key: "fetch_comments",
+    label: "抓取热门评论（每条作品 Top 20）",
+    type: "bool",
+    help: "可选：按点赞与回复数排序保存，默认关闭；需要平台公开评论或已授权 Cookie",
+  },
 ];
 
 const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
@@ -408,6 +414,7 @@ const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
   bitrate: "",
   naming_rule: "id",
   write_info_json: false,
+  fetch_comments: false,
 };
 
 export function SyncSettingsPanel() {

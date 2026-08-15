@@ -13,6 +13,7 @@ import {
   ContentRecordPage,
 } from "@sio/shared-types";
 import { formatDate, formatNumber } from "@/lib/format";
+import { contentCoverUrl } from "@/lib/media";
 
 const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -254,7 +255,7 @@ export function ContentCalendar({
                   className="flex items-center gap-3 py-3 first:pt-0 last:pb-0"
                 >
                   <ExternalImage
-                    src={item.cover_url}
+                    src={contentCoverUrl(item)}
                     alt=""
                     className="h-12 w-20 shrink-0 rounded-md object-cover"
                   />

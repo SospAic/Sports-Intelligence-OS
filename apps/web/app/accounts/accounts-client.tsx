@@ -21,9 +21,12 @@ import {
   Save,
   Search,
   Trash2,
+  Pin,
+  PinOff,
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
@@ -59,12 +62,14 @@ type AccountViewPrefs = {
   platform: string;
   activeState: ActiveState;
   visibility: VisibilityState;
+  pinnedIds: string[];
 };
 
 const ACCOUNT_VIEW_DEFAULTS: AccountViewPrefs = {
   platform: "",
   activeState: "active",
   visibility: {},
+  pinnedIds: [],
 };
 
 const SYNC_STAGE_ORDER = [
@@ -99,6 +104,9 @@ function readLocalAccountView(): AccountViewPrefs {
       platform: value.platform ?? "",
       activeState: value.activeState ?? "active",
       visibility: value.visibility ?? {},
+      pinnedIds: Array.isArray(value.pinnedIds)
+        ? value.pinnedIds.filter((id): id is string => typeof id === "string")
+        : [],
     };
   } catch {
     return ACCOUNT_VIEW_DEFAULTS;
@@ -449,6 +457,8 @@ export function AccountsClient() {
   const { workspaceId, role } = useWorkspace();
   const { notify } = useToast();
   const client = useQueryClient();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [page, setPage] = useState(1);
   const [virtualized, setVirtualized] = useState(false);
   const [query, setQuery] = useState("");
@@ -461,7 +471,12 @@ export function AccountsClient() {
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(
     () => readLocalAccountView().visibility,
   );
-  const [creating, setCreating] = useState(false);
+  const [pinnedIds, setPinnedIds] = useState<string[]>(
+    () => readLocalAccountView().pinnedIds,
+  );
+  const [creating, setCreating] = useState(
+    () => searchParams.get("create") === "1",
+  );
   const [highlightExternalId, setHighlightExternalId] = useState<string | null>(
     null,
   );
@@ -470,6 +485,17 @@ export function AccountsClient() {
   );
   const [syncTarget, setSyncTarget] = useState<AccountRecord | null>(null);
   const serverPrefsApplied = useRef(false);
+
+  useEffect(() => {
+    if (searchParams.get("create") !== "1") return;
+    // The initial state opens the form; this effect only normalizes the URL.
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete("create");
+    const query = nextParams.toString();
+    router.replace(`${window.location.pathname}${query ? `?${query}` : ""}`, {
+      scroll: false,
+    });
+  }, [router, searchParams]);
 
   const serverPrefs = useQuery({
     queryKey: ["account-view-preferences", workspaceId],
@@ -494,6 +520,9 @@ export function AccountsClient() {
     if (prefs.platform !== undefined) setPlatform(prefs.platform);
     if (prefs.activeState !== undefined) setActiveState(prefs.activeState);
     if (prefs.visibility !== undefined) setColumnVisibility(prefs.visibility);
+    if (Array.isArray(prefs.pinnedIds)) {
+      setPinnedIds(prefs.pinnedIds.filter((id): id is string => typeof id === "string"));
+    }
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [serverPrefs.data]);
 
@@ -554,6 +583,18 @@ export function AccountsClient() {
     return map;
   }, [syncingAccounts, syncRunQueries]);
 
+  const displayAccounts = useMemo(() => {
+    const rank = new Map(pinnedIds.map((id, index) => [id, index]));
+    return [...(accounts.data?.items ?? [])].sort((left, right) => {
+      const leftRank = rank.get(left.id);
+      const rightRank = rank.get(right.id);
+      if (leftRank === undefined && rightRank === undefined) return 0;
+      if (leftRank === undefined) return 1;
+      if (rightRank === undefined) return -1;
+      return leftRank - rightRank;
+    });
+  }, [accounts.data?.items, pinnedIds]);
+
   const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
   const canDelete = ["owner", "admin"].includes(role ?? "");
 
@@ -562,6 +603,7 @@ export function AccountsClient() {
       platform,
       activeState,
       visibility: columnVisibility,
+      pinnedIds,
     };
     writeLocalAccountView(prefs);
     if (!workspaceId) {
@@ -582,6 +624,35 @@ export function AccountsClient() {
     } catch {
       notify("视图设置已保存到当前浏览器（服务端同步失败）");
     }
+  }
+
+  async function togglePinnedAccount(accountId: string) {
+    const next = pinnedIds.includes(accountId)
+      ? pinnedIds.filter((id) => id !== accountId)
+      : [...pinnedIds, accountId];
+    setPinnedIds(next);
+    writeLocalAccountView({
+      platform,
+      activeState,
+      visibility: columnVisibility,
+      pinnedIds: next,
+    });
+    if (workspaceId) {
+      await apiRequest("/accounts/view-preferences", {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({
+          preferences: {
+            platform,
+            activeState,
+            visibility: columnVisibility,
+            pinnedIds: next,
+          },
+        }),
+      });
+    }
+    notify(next.includes(accountId) ? "账号已置顶，可继续置顶其他账号" : "账号已取消置顶");
   }
   function openSync(account: AccountRecord) {
     if (!canEdit || !account.is_active) return;
@@ -799,6 +870,19 @@ export function AccountsClient() {
               <Info size={13} />
               详情
             </button>
+            <button
+              type="button"
+              onClick={() => void togglePinnedAccount(row.original.id)}
+              title={pinnedIds.includes(row.original.id) ? "取消置顶账号" : "置顶账号"}
+              className={`inline-flex items-center gap-1 text-xs ${
+                pinnedIds.includes(row.original.id)
+                  ? "text-amber-300 hover:text-amber-200"
+                  : "text-slate-400 hover:text-amber-300"
+              }`}
+            >
+              {pinnedIds.includes(row.original.id) ? <PinOff size={13} /> : <Pin size={13} />}
+              {pinnedIds.includes(row.original.id) ? "取消置顶" : "置顶"}
+            </button>
             {canDelete && (
               <button
                 disabled={isSyncing}
@@ -983,7 +1067,7 @@ export function AccountsClient() {
         />
       ) : (
         <DataTable
-          data={accounts.data?.items ?? []}
+          data={displayAccounts}
           columns={columns}
           total={accounts.data?.total ?? 0}
           page={page}

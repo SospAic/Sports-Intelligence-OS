@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import type { AccountContentSummary } from "@sio/shared-types";
 
 import { formatNumber } from "@/lib/format";
 import {
@@ -175,6 +176,61 @@ export function InteractionBreakdown({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Work-level interaction totals for an account overview.
+ *
+ * The totals are calculated from the latest snapshot of every synced work;
+ * the rates use the same work-view denominator. Account lifetime likes are
+ * intentionally not mixed into this breakdown.
+ */
+export function AccountInteractionBreakdown({
+  summary,
+  format,
+}: {
+  summary: AccountContentSummary | undefined;
+  format: (v: number) => string;
+}) {
+  const items = [
+    {
+      label: "点赞合计",
+      total: summary?.total_like_count,
+      rate: summary?.calculated_like_rate,
+    },
+    {
+      label: "评论合计",
+      total: summary?.total_comment_count,
+      rate: summary?.calculated_comment_rate,
+    },
+    {
+      label: "分享合计",
+      total: summary?.total_share_count,
+      rate: summary?.calculated_share_rate,
+    },
+    {
+      label: "收藏合计",
+      total: summary?.total_favorite_count,
+      rate: summary?.calculated_favorite_rate,
+    },
+  ];
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => (
+        <div
+          key={item.label}
+          className="rounded-lg border border-slate-800 bg-slate-900/40 p-3"
+        >
+          <p className="text-xs text-slate-400">{item.label}</p>
+          <p className="mt-1 text-xl font-semibold tabular-nums text-slate-100">
+            {item.total != null ? formatNumber(item.total) : "—"}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            占作品播放量 {item.rate != null ? format(item.rate) : "—"}
+          </p>
+        </div>
+      ))}
     </div>
   );
 }

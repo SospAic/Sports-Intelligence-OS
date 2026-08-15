@@ -21,6 +21,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BarChart,
@@ -53,7 +54,7 @@ import { formatNumber } from "@/lib/format";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Platform = "all" | "youtube" | "tiktok" | "douyin" | "bilibili";
+type Platform = "all" | "youtube" | "tiktok" | "douyin" | "bilibili" | "web";
 
 interface PlatformSummary {
   platform: string;
@@ -120,6 +121,27 @@ interface DashboardResponse {
   top_topics: TrendingTopic[];
   breakout_videos: BreakoutVideo[];
   platform_summary: PlatformSummary[];
+  window_hours?: number;
+  generated_at?: string | null;
+}
+
+interface HotNewsEvent {
+  id: string;
+  title: string;
+  summary: string | null;
+  sport: string | null;
+  league: string | null;
+  last_update_time: string;
+  article_count: number;
+  source_count: number;
+  heat_score: number;
+  reliability_score: number;
+  status: string;
+}
+
+interface HotNewsPage {
+  items: HotNewsEvent[];
+  total: number;
 }
 
 interface TopicsPageResponse {
@@ -146,6 +168,8 @@ const PLATFORM_TABS: { key: Platform; label: string }[] = [
   { key: "bilibili", label: "Bilibili" },
 ];
 
+PLATFORM_TABS.push({ key: "web", label: "全网新闻" });
+
 const PLATFORM_LABELS: Record<string, string> = Object.fromEntries(
   PLATFORM_TABS.filter((item) => item.key !== "all").map((item) => [
     item.key,
@@ -158,6 +182,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   tiktok: "#EC4899",
   douyin: "#06B6D4",
   bilibili: "#3B82F6",
+  web: "#A78BFA",
 };
 
 const PLATFORM_BG: Record<string, string> = {
@@ -165,6 +190,7 @@ const PLATFORM_BG: Record<string, string> = {
   tiktok: "bg-pink-500/10 border-pink-500/30",
   douyin: "bg-cyan-500/10 border-cyan-500/30",
   bilibili: "bg-blue-500/10 border-blue-500/30",
+  web: "bg-violet-500/10 border-violet-500/30",
 };
 
 const PLATFORM_TEXT: Record<string, string> = {
@@ -172,6 +198,7 @@ const PLATFORM_TEXT: Record<string, string> = {
   tiktok: "text-pink-400",
   douyin: "text-cyan-400",
   bilibili: "text-blue-400",
+  web: "text-violet-400",
 };
 
 const PLATFORM_ACCENT: Record<string, string> = {
@@ -179,13 +206,14 @@ const PLATFORM_ACCENT: Record<string, string> = {
   tiktok: "from-pink-500/20 to-transparent",
   douyin: "from-cyan-500/20 to-transparent",
   bilibili: "from-blue-500/20 to-transparent",
+  web: "from-violet-500/20 to-transparent",
 };
 
 /** Platform-specific sort options mapped to backend sort_by fields */
-const PLATFORM_SORT_OPTIONS: Record<
+const PLATFORM_SORT_OPTIONS: Partial<Record<
   Platform,
   { value: string; label: string }[]
-> = {
+>> = {
   all: [
     { value: "breakout_score", label: "热度" },
     { value: "view_count", label: "播放量" },
@@ -213,6 +241,11 @@ const PLATFORM_SORT_OPTIONS: Record<
     { value: "comment_count", label: "弹幕数" },
   ],
 };
+
+PLATFORM_SORT_OPTIONS.web = [
+  { value: "breakout_score", label: "热度" },
+  { value: "observed_at", label: "发布时间" },
+];
 
 const PAGE_SIZE = 20;
 
@@ -728,6 +761,100 @@ function SortDropdown({
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
+type TrendCollectionLogLine = {
+  at: string;
+  level: "info" | "warn" | "error";
+  message: string;
+};
+
+type TrendCollectionStatus = {
+  task_id: string;
+  state: "queued" | "running" | "success" | "failed" | "cancelled";
+  stage: string;
+  message: string;
+  log: TrendCollectionLogLine[];
+  updated_at?: string | null;
+  error?: string;
+  result?: Record<string, unknown>;
+};
+
+function TrendCollectionIndicator({
+  submitting,
+  status,
+}: {
+  submitting: boolean;
+  status?: TrendCollectionStatus;
+}) {
+  const logRef = useRef<HTMLDivElement>(null);
+  const state = submitting ? "queued" : status?.state ?? "cancelled";
+  const log = status?.log ?? [];
+  const active = state === "queued" || state === "running";
+  const label = submitting
+    ? "正在排队"
+    : state === "running"
+      ? "执行中"
+      : state === "success"
+        ? "最近一次采集完成"
+        : state === "failed"
+          ? "采集失败"
+          : status
+            ? "采集已结束"
+            : "实时采集就绪";
+  const dotClass = active
+    ? "animate-pulse bg-cyan-300 shadow-[0_0_12px_rgba(34,211,238,.9)]"
+    : state === "success"
+      ? "bg-emerald-400"
+      : state === "failed"
+        ? "bg-rose-400"
+        : "bg-slate-500";
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [log.length]);
+
+  return (
+    <div className="group relative inline-flex max-w-full">
+      <div
+        className="inline-flex min-w-0 items-center gap-2 rounded-full border border-slate-800 bg-slate-950/70 px-3 py-1.5 text-xs text-slate-300 shadow-sm"
+        role="status"
+        tabIndex={0}
+        aria-live="polite"
+        aria-label={`热点采集状态：${label}`}
+      >
+        <span className={`size-2 shrink-0 rounded-full ${dotClass}`} />
+        <span className="shrink-0 font-medium text-slate-200">{label}</span>
+        {status?.message && active && (
+          <span className="max-w-[min(60vw,34rem)] truncate text-slate-500">
+            {status.message}
+          </span>
+        )}
+        {log.length > 0 && <span className="text-slate-600">悬停查看日志</span>}
+      </div>
+      {log.length > 0 && (
+        <div className="pointer-events-none invisible absolute left-0 top-full z-40 mt-2 w-[min(560px,calc(100vw-2rem))] origin-top-left rounded-xl border border-slate-700 bg-slate-950/95 p-2 opacity-0 shadow-2xl backdrop-blur transition duration-150 group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
+          <div className="flex items-center justify-between px-2 py-1 text-[11px] text-slate-500">
+            <span className="font-semibold tracking-wide text-slate-300">热点采集实时日志</span>
+            <span>{log.length} 条</span>
+          </div>
+          <div ref={logRef} className="max-h-56 space-y-1 overflow-y-auto rounded-lg bg-slate-900/80 p-2" role="log" aria-live="polite">
+            {log.map((line, index) => (
+              <div key={`${line.at}-${index}`} className="flex gap-2 text-[11px] leading-5">
+                <time className="shrink-0 font-mono text-slate-600">
+                  {new Date(line.at).toLocaleTimeString("zh-CN", { hour12: false })}
+                </time>
+                <span className={line.level === "error" ? "text-rose-300" : "text-slate-300"}>
+                  {line.message}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="px-2 pt-1 text-[10px] text-slate-600">日志保留最近 120 条，滚动条可查看更早记录。</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const MODULE_TABS: {
   key: "trends" | "derivatives" | "search" | "analytics";
   label: string;
@@ -749,9 +876,14 @@ export function TrendsClient() {
 
   const [platformRaw] = useUrlState("platform", "all");
   const platform = platformRaw as Platform;
-  const [collecting, setCollecting] = useState(false);
+  const [collectSubmitting, setCollectSubmitting] = useState(false);
+  const [collectTaskId, setCollectTaskId] = useState<string | null>(null);
   const [category, setCategory] = useUrlState("category", "全部");
   const [tab, setTab] = useState<"trends" | "derivatives" | "search" | "analytics">("trends");
+
+  const [windowRaw, setWindowRaw] = useUrlState("window", "24");
+  const parsedWindow = Number(windowRaw);
+  const windowHours = [24, 48, 72].includes(parsedWindow) ? parsedWindow : 24;
 
   // Pagination & sort state for videos
   const [videoPage, setVideoPage] = useState(1);
@@ -778,7 +910,7 @@ export function TrendsClient() {
         params.set("platform", newPlatform);
       }
       // Reset sort to first option for the new platform
-      const opts = PLATFORM_SORT_OPTIONS[newPlatform];
+      const opts = PLATFORM_SORT_OPTIONS[newPlatform] ?? PLATFORM_SORT_OPTIONS.all ?? [];
       const newSort = opts[0]?.value ?? "breakout_score";
       if (newSort === "breakout_score") {
         params.delete("sort");
@@ -820,19 +952,19 @@ export function TrendsClient() {
   // ─── Queries ─────────────────────────────────────────────────────────────
 
   const dashboard = useQuery({
-    queryKey: ["trends-dashboard", workspaceId],
+    queryKey: ["trends-dashboard", workspaceId, windowHours],
     queryFn: () =>
-      apiRequest<DashboardResponse>("/trends/dashboard", {
+      apiRequest<DashboardResponse>(`/trends/dashboard?window_hours=${windowHours}`, {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
   });
 
   const topics = useQuery({
-    queryKey: ["trends-topics", workspaceId, platformParam, topicPage],
+    queryKey: ["trends-topics", workspaceId, platformParam, topicPage, windowHours],
     queryFn: () =>
       apiRequest<TopicsPageResponse>(
-        `/trends/topics?platform=${platformParam}&page=${topicPage}&page_size=${PAGE_SIZE}`,
+        `/trends/topics?platform=${platformParam}&window_hours=${windowHours}&page=${topicPage}&page_size=${PAGE_SIZE}`,
         { workspaceId: workspaceId! },
       ),
     enabled: Boolean(workspaceId),
@@ -845,23 +977,56 @@ export function TrendsClient() {
       platformParam,
       videoSort,
       videoPage,
+      windowHours,
     ],
     queryFn: () =>
       apiRequest<VideosPageResponse>(
-        `/trends/videos?platform=${platformParam}&sort_by=${videoSort}&page=${videoPage}&page_size=${PAGE_SIZE}`,
+        `/trends/videos?platform=${platformParam}&window_hours=${windowHours}&sort_by=${videoSort}&page=${videoPage}&page_size=${PAGE_SIZE}`,
         { workspaceId: workspaceId! },
       ),
     enabled: Boolean(workspaceId),
   });
 
   const keywords = useQuery({
-    queryKey: ["trends-keywords", workspaceId, platformParam],
+    queryKey: ["trends-keywords", workspaceId, platformParam, windowHours],
     queryFn: () =>
-      apiRequest<KeywordStat[]>(`/trends/keywords?platform=${platformParam}`, {
+      apiRequest<KeywordStat[]>(`/trends/keywords?platform=${platformParam}&window_hours=${windowHours}`, {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
   });
+
+  const hotNews = useQuery({
+    queryKey: ["hot-news-events", workspaceId, windowHours],
+    queryFn: () => {
+      const updatedFrom = new Date(
+        Date.now() - windowHours * 60 * 60 * 1000,
+      ).toISOString();
+      return apiRequest<HotNewsPage>(
+        `/news/events?page=1&page_size=8&sort=heat_score&order=desc&updated_from=${encodeURIComponent(updatedFrom)}`,
+        { workspaceId: workspaceId! },
+      );
+    },
+    enabled: Boolean(workspaceId),
+  });
+
+  const collectionStatus = useQuery<TrendCollectionStatus>({
+    queryKey: ["trends-collection-status", workspaceId, collectTaskId],
+    queryFn: () =>
+      apiRequest<TrendCollectionStatus>(`/trends/collect/${collectTaskId}`, {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId && collectTaskId),
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === "queued" || state === "running" ? 1000 : false;
+    },
+    refetchOnWindowFocus: true,
+  });
+  const collecting =
+    collectSubmitting ||
+    collectionStatus.data?.state === "queued" ||
+    collectionStatus.data?.state === "running";
 
   // Merge accumulated videos with new page results for display
   const currentVideoItems = videos.data?.items ?? [];
@@ -882,6 +1047,34 @@ export function TrendsClient() {
   const refetchKeywords = keywords.refetch;
   const videosIsFetching = videos.isFetching;
   const topicsIsFetching = topics.isFetching;
+
+  const notifiedCollectionRef = useRef<string>("");
+  useEffect(() => {
+    const status = collectionStatus.data;
+    if (!collectTaskId || !status || ["queued", "running"].includes(status.state)) {
+      return;
+    }
+    const notificationKey = `${collectTaskId}:${status.state}`;
+    if (notifiedCollectionRef.current === notificationKey) return;
+    notifiedCollectionRef.current = notificationKey;
+    if (status.state === "success") {
+      notify("热点情报采集已完成，榜单数据正在刷新");
+    } else if (status.state === "failed") {
+      notify(status.error || status.message || "热点情报采集失败", "error");
+    }
+    refetchDashboard();
+    refetchTopics();
+    refetchVideos();
+    refetchKeywords();
+  }, [
+    collectTaskId,
+    collectionStatus.data,
+    notify,
+    refetchDashboard,
+    refetchKeywords,
+    refetchTopics,
+    refetchVideos,
+  ]);
 
   // Track previous video page to detect load-more completion
   const prevVideoPageRef = useRef(videoPage);
@@ -911,14 +1104,14 @@ export function TrendsClient() {
   useEffect(() => {
     if (!workspaceId) return;
     const source = new EventSource(
-      `/api/v1/trends/stream?interval=5`,
+      `/api/v1/trends/stream?interval=5&window_hours=${windowHours}`,
     );
     source.onopen = () => setLiveConnected(true);
     source.onmessage = (event) => {
       try {
         const snapshot = JSON.parse(event.data) as DashboardResponse;
         queryClient.setQueryData(
-          ["trends-dashboard", workspaceId],
+          ["trends-dashboard", workspaceId, windowHours],
           snapshot,
         );
       } catch {
@@ -930,13 +1123,13 @@ export function TrendsClient() {
       source.close();
       setLiveConnected(false);
     };
-  }, [workspaceId, queryClient]);
+  }, [workspaceId, queryClient, windowHours]);
 
   // ─── Actions ─────────────────────────────────────────────────────────────
 
   async function collectData() {
     if (!workspaceId) return;
-    setCollecting(true);
+    setCollectSubmitting(true);
     try {
       const result = await apiRequest<{ status: string; task_id: string }>(
         "/trends/collect",
@@ -947,18 +1140,13 @@ export function TrendsClient() {
           body: JSON.stringify({}),
         },
       );
-      notify(`真实数据采集任务已排队（${result.task_id.slice(0, 8)}）`);
-      for (const delay of [5000, 15000])
-        setTimeout(() => {
-          refetchDashboard();
-          refetchTopics();
-          refetchVideos();
-          refetchKeywords();
-        }, delay);
+      setCollectTaskId(result.task_id);
+      notifiedCollectionRef.current = "";
+      notify(`真实数据采集任务已启动（${result.task_id.slice(0, 8)}）`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "采集失败", "error");
     } finally {
-      setCollecting(false);
+      setCollectSubmitting(false);
     }
   }
 
@@ -1010,7 +1198,7 @@ export function TrendsClient() {
   const hasError =
     dashboard.isError || topics.isError || videos.isError || keywords.isError;
 
-  const sortOptions = PLATFORM_SORT_OPTIONS[platform];
+  const sortOptions = PLATFORM_SORT_OPTIONS[platform] ?? PLATFORM_SORT_OPTIONS.all ?? [];
 
   // ─── Render ──────────────────────────────────────────────────────────────
 
@@ -1021,6 +1209,12 @@ export function TrendsClient() {
         eyebrow="Hotspot Intelligence"
         title="热点情报中心"
         description="跨平台真实视频样本、热点衍生话题与智能搜索分析"
+        status={
+          <TrendCollectionIndicator
+            submitting={collectSubmitting}
+            status={collectionStatus.data}
+          />
+        }
         actions={
           <div className="flex items-center gap-2">
             {liveConnected && (
@@ -1072,6 +1266,34 @@ export function TrendsClient() {
             跨平台真实视频样本与热点话题排行，可按平台、分类筛选，并查看赛道趋势图表与各平台派生话题。
           </p>
 
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+            <Clock3 size={15} className="text-cyan-400" />
+            <span className="text-xs text-slate-400">热点时间窗</span>
+            {[24, 48, 72].map((hours) => (
+              <button
+                key={hours}
+                type="button"
+                onClick={() => {
+                  setWindowRaw(String(hours));
+                  setVideoPage(1);
+                  setTopicPage(1);
+                  setAccumulatedVideos([]);
+                  setIsLoadMore(false);
+                }}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  windowHours === hours
+                    ? "bg-cyan-500 text-slate-950"
+                    : "bg-slate-800/70 text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                近 {hours} 小时
+              </button>
+            ))}
+            <span className="ml-auto text-[11px] text-slate-500">
+              仅展示 live 来源；热度按新鲜度、互动、样本量和来源覆盖度计算
+            </span>
+          </div>
+
           {/* Platform Filter Tabs */}
           <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50 p-2">
         {PLATFORM_TABS.map((tab) => (
@@ -1112,7 +1334,7 @@ export function TrendsClient() {
             <CircleHelp size={16} className="text-cyan-400" />
             指标口径与可信度
             <span className="ml-auto text-xs font-normal text-slate-500 group-open:hidden">
-              最近 24 小时 · 仅 live 样本
+              最近 {windowHours} 小时 · 仅 live 样本
             </span>
           </summary>
           <div className="mt-3 grid gap-3 text-xs leading-6 text-slate-400 md:grid-cols-3">
@@ -1324,7 +1546,61 @@ export function TrendsClient() {
             )}
           </Panel>
 
-          {/* Section 4: Keyword Trend Chart */}
+          {/* Section 4: Latest news events */}
+          <Panel>
+            <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+              <div className="flex items-center gap-2">
+                <Flame size={18} className="text-rose-400" />
+                <h2 className="font-semibold text-white">最新热门新闻</h2>
+                <span className="text-xs text-slate-500">
+                  近 {windowHours} 小时 · 按热度排序
+                </span>
+              </div>
+              <Link
+                href="/news"
+                className="text-xs text-cyan-400 hover:text-cyan-300"
+              >
+                查看新闻中心 →
+              </Link>
+            </div>
+            <div className="grid gap-3 p-4 md:grid-cols-2">
+              {hotNews.isLoading && <SkeletonRows count={4} />}
+              {!hotNews.isLoading && hotNews.data?.items?.map((event) => (
+                <Link
+                  key={event.id}
+                  href={`/news?view=cluster&event=${encodeURIComponent(event.id)}`}
+                  className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 transition hover:border-rose-900/60 hover:bg-slate-900/60"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="line-clamp-2 text-sm font-medium text-slate-100">
+                      {event.title}
+                    </h3>
+                    <span className="shrink-0 text-sm font-semibold text-amber-300">
+                      {event.heat_score.toFixed(1)}
+                    </span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">
+                    {event.summary || "暂无新闻摘要"}
+                  </p>
+                  <div className="mt-3 flex flex-wrap items-center gap-3 text-[11px] text-slate-500">
+                    <span>{event.article_count} 篇报道</span>
+                    <span>{event.source_count} 个来源</span>
+                    <span>{formatRelativeDate(event.last_update_time)}更新</span>
+                    <span className="text-emerald-400">
+                      可信度 {event.reliability_score.toFixed(0)}
+                    </span>
+                  </div>
+                </Link>
+              ))}
+              {!hotNews.isLoading && !hotNews.data?.items?.length && (
+                <p className="col-span-full px-2 py-8 text-center text-sm text-slate-500">
+                  当前时间窗暂无已采集新闻事件；请先在新闻中心启用来源并同步。
+                </p>
+              )}
+            </div>
+          </Panel>
+
+          {/* Section 5: Keyword Trend Chart */}
           <Panel className="p-5">
             <div className="mb-4 flex items-center gap-2">
               <BarChart3 size={18} className="text-cyan-400" />

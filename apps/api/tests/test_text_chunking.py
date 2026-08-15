@@ -13,6 +13,7 @@ from app.services.text_chunking import (
     build_meta_text,
     chunk_cues,
     chunk_text,
+    normalise_subtitle_text,
     normalise_whitespace,
     parse_subtitle,
     parse_timestamp_ms,
@@ -30,6 +31,11 @@ def test_normalise_whitespace_collapses_runs_and_drops_blank_lines():
 
 def test_normalise_whitespace_handles_nbsp():
     assert normalise_whitespace("\u00a0排球\u00a0世界\u00a0") == "排球 世界"
+
+
+def test_normalise_subtitle_text_flattens_entities_and_youtube_marker():
+    source = "What's happening? &gt;&gt; In\n<c>the middle</c>"
+    assert normalise_subtitle_text(source) == "What's happening? In the middle"
 
 
 # --- build_meta_text -------------------------------------------------------

@@ -13,6 +13,7 @@ from app.api.routes import (
     reliability,
     semantic_search,
     settings,
+    subscriptions,
     topics,
     trends,
     users,
@@ -34,6 +35,7 @@ api_router.include_router(trends.router)
 api_router.include_router(operations.router)
 api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
+api_router.include_router(subscriptions.router)
 api_router.include_router(media.router)
 api_router.include_router(download.router)
 api_router.include_router(video_search.router)

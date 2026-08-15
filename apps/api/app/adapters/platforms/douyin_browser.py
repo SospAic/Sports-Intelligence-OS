@@ -338,19 +338,32 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
         page_size: int,
     ) -> AdapterPage:
         """Scrape the video list from the user's profile page."""
+        try:
+            offset = int(cursor) if cursor else 0
+        except (TypeError, ValueError) as exc:
+            raise AdapterContractError("Douyin browser cursor must be numeric") from exc
+        if offset < 0:
+            raise AdapterContractError("Douyin browser cursor cannot be negative")
+        requested_page_size = max(1, int(page_size))
         context, page = await self._new_page(ctx)
         try:
             # Intercept the post list API.
             post_data: list[dict[str, Any]] = []
+            api_has_more = False
 
             async def _capture(response: Any) -> None:
+                nonlocal api_has_more
                 url = response.url
                 if "/aweme/v1/web/aweme/post" in url:
                     try:
                         data = await response.json()
                         if data.get("status_code") == 0:
                             aweme_list = data.get("aweme_list", [])
-                            post_data.extend(aweme_list)
+                            if isinstance(aweme_list, list):
+                                post_data.extend(
+                                    item for item in aweme_list if isinstance(item, dict)
+                                )
+                            api_has_more = api_has_more or bool(data.get("has_more"))
                     except Exception:
                         pass
 
@@ -361,12 +374,25 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             await self._polite_delay(2.0)
             # Anonymous-first: stop before scrolling a page that will never load.
             await self._check_login_required(page, "抖音")
-            await self._scroll_page(page, times=2, ctx=ctx)
+            # Re-materialize the prefix for the requested offset. The old
+            # browser path ignored ``cursor`` and returned the first cards for
+            # every page, so older works were never ingested.
+            scroll_rounds = min(30, 2 + (offset // requested_page_size) * 3)
+            await self._scroll_page(page, times=scroll_rounds, ctx=ctx)
 
             # If API interception got data, use it.
             if post_data:
+                ordered_posts: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for aweme in post_data:
+                    aweme_id = str(aweme.get("aweme_id") or aweme.get("item_id") or "")
+                    if aweme_id and aweme_id in seen_ids:
+                        continue
+                    if aweme_id:
+                        seen_ids.add(aweme_id)
+                    ordered_posts.append(aweme)
                 items: list[PlatformContentData] = []
-                for aweme in post_data[:page_size]:
+                for aweme in ordered_posts[: offset + requested_page_size]:
                     aweme_id = aweme.get("aweme_id", "")
                     desc = aweme.get("desc", "").strip() or f"视频 {len(items) + 1}"
                     cover = None
@@ -404,10 +430,15 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                             },
                         )
                     )
-                has_more = len(post_data) >= page_size
+                page_items = items[offset : offset + requested_page_size]
+                has_more = api_has_more or len(ordered_posts) >= offset + requested_page_size
                 return AdapterPage(
-                    items=tuple(items),
-                    next_cursor=str(int(cursor or "0") + page_size) if has_more else None,
+                    items=tuple(page_items),
+                    next_cursor=(
+                        str(offset + len(page_items))
+                        if has_more and page_items
+                        else None
+                    ),
                 )
 
             # Fallback: DOM scraping via the video-grid anchors. The video grid
@@ -423,7 +454,7 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
             anchors = page.locator("a[href*='/video/']")
             count = await anchors.count()
 
-            for i in range(min(count, page_size)):
+            for i in range(min(count, offset + requested_page_size)):
                 try:
                     anchor = anchors.nth(i)
                     href = await anchor.get_attribute("href") or ""
@@ -489,7 +520,13 @@ class DouyinBrowserAdapter(BrowserPlatformAdapter):
                     logger.debug("skip card %d: %s", i, exc)
                     continue
 
-            return AdapterPage(items=tuple(items_dom), next_cursor=None)
+            page_items = items_dom[offset : offset + requested_page_size]
+            next_cursor = (
+                str(offset + requested_page_size)
+                if len(items_dom) >= offset + requested_page_size
+                else None
+            )
+            return AdapterPage(items=tuple(page_items), next_cursor=next_cursor)
         except Exception as exc:
             reraise_if_terminal(exc)
             raise TransientAdapterError(

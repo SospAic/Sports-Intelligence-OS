@@ -12,6 +12,7 @@ when the LLM gateway is wired up; the endpoint degrades gracefully without it.
 from __future__ import annotations
 
 from collections import Counter
+from typing import Any
 
 _POSITIVE = {
     "好",
@@ -89,12 +90,12 @@ def _sentiment(text: str) -> str:
     return "neutral"
 
 
-def _heat(item: dict) -> float:
+def _heat(item: dict[str, Any]) -> float:
     score = float(item.get("score") or 0.0)
     return max(0.0, min(1.0, score))
 
 
-def summarize_results(payload: dict) -> dict:
+def summarize_results(payload: dict[str, Any]) -> dict[str, Any]:
     items = list(payload.get("items") or [])
     total = len(items)
     platform_distribution = dict(Counter(i.get("platform") or "unknown" for i in items))

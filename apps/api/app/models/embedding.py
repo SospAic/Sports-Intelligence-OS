@@ -129,6 +129,12 @@ class ContentEmbedding(TimestampMixin, Base):
             "model",
         ),
         Index("ix_content_embeddings_item", "content_item_id"),
+        Index(
+            "ix_content_embeddings_vector_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
         CheckConstraint(
             "chunk_kind IN ('meta', 'subtitle', 'transcript')",
             name="content_embeddings_chunk_kind",

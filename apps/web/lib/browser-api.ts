@@ -100,3 +100,41 @@ export async function downloadApiFile(
   anchor.click();
   URL.revokeObjectURL(url);
 }
+
+export async function downloadApiPostFile(
+  path: string,
+  body: unknown,
+  workspaceId: string,
+  filename: string,
+): Promise<void> {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    "X-Workspace-Id": workspaceId,
+    "X-CSRF-Token": await getCsrfToken(),
+  });
+  const send = () =>
+    fetch(`/api/v1${path}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers,
+      credentials: "include",
+      cache: "no-store",
+    });
+  let response = await send();
+  if (!response.ok) {
+    const error = await parseError(response);
+    if (isCsrfFailure(response, error)) {
+      headers.set("X-CSRF-Token", await getCsrfToken(true));
+      response = await send();
+    } else {
+      throw error;
+    }
+  }
+  if (!response.ok) throw await parseError(response);
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}

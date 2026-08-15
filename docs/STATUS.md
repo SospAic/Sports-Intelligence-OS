@@ -1,6 +1,49 @@
 # 项目状态
 
-更新时间：2026-08-06（全量黑盒 / 白盒 / 灰盒审计）
+更新时间：2026-08-12（TikTok 字幕下载链路修复与前端真实验收）
+
+## 2026-08-12：TikTok 字幕下载链路修复（真实文件验收）
+
+- 根因：TikTok 作品页的 yt-dlp 网页解析会间歇性返回 `Unexpected response`；公开页实际只返回 `und` 自动字幕，而旧 UI 默认只请求 `zh/en` 且关闭自动字幕，导致真实轨道被过滤后又重复触发 yt-dlp 回退。
+- 修复：字幕-only 任务优先读取公开主页；预览展示实际字幕轨道及“人工/自动”类型；当公开页只有唯一自动轨道时，在明确请求字幕的情况下使用该真实轨道；Cookie 通道最多额外尝试一次，避免重复重试风暴。
+- 前端：第一语言、第二语言和时间戳开关改为基于实际返回轨道的控件；只有存在真实字幕轨道时才允许提交，并自动选择唯一自动轨道。
+- 真实前端验收：对 `7666080726214774029` 提交字幕-only 任务，任务约 19 秒完成，滚动日志显示 8 次主页滚动、`已保存 1 个公开资源`、`已完成：生成 1 个文件`；生成 `7666080726214774029.und.auto.vtt`，文件非空且包含 `WEBVTT` 与时间轴，下载记录可见 `und-auto` 文件链接。
+- 验证：字幕/下载/预览/TikTok 回归 `32 passed, 1 warning`；相关 Ruff 通过；API/Web healthy，`/health/live=200`、`/health/ready=200`，迁移 `20260811_0002 (head)`；Web 生产构建与 TypeScript 通过。
+
+## 2026-08-12：TikTok 公开评论采集修复（指定作品真实验收）
+
+- 根因：`The Sound That Sent MLB Players RUNNING`（TikTok 作品 ID `7666080726214774029`）的作品页会返回 `ERR_HTTP_RESPONSE_CODE_FAILURE`，但同一公开页面的评论 JSON 仍可读取；原逻辑只调用 yt-dlp 的 `comments` 字段，因此错误显示“未返回可读评论”。
+- 修复：TikTok 评论采集优先通过授权浏览器上下文读取公开 `api/comment/list` 响应；仅在公开接口无结果且确实配置了 Cookie 时，才回退一次 yt-dlp Cookie 通道。不会估算、伪造或绕过验证码/登录墙。
+- 统一字段：评论文本、作者、作者页、头像、平台评论 ID、点赞数、回复数、评论时间、顶层/回复关系均写入 `comments`，来源标记为 `tiktok_browser_comments`。
+- 真实前端验收：从作品详情点击“刷新热门评论”后，页面显示 14 条真实评论；包含“Could’ve just said lightning at the beginning”（点赞 8、回复 0、发布时间 2026-07-28）等公开数据，数据库中 14 个评论 ID 全部去重。
+- 验证：Ruff 通过；评论/同步稳定性/快照/下载/字幕定向回归 `55 passed, 1 warning`；前端核心路由 `23/23` 无 Application Error；Docker API/worker/beat 已重建并更新。
+
+## 2026-08-11（最新）：TikTok Cookie 字幕回退与热点采集实时日志
+
+- **TikTok 字幕回退**：公开浏览器页返回 `und` 或未匹配所选语种时，如果当前工作区确实配置了加密 Cookie，会切换到 yt-dlp Cookie 字幕通道；没有 Cookie 时仍快速返回真实的公开字幕缺失原因，不重复触发相同网页解析错误，不伪造字幕文件。
+- **热点采集实时反馈**：`POST /trends/collect` 返回 Celery 任务 ID；新增 `GET /trends/collect/{task_id}` 状态接口，实时返回队列/执行/成功/失败状态、阶段、最近 120 条日志和时间戳。任务状态按工作区隔离。
+- **热点情报中心 UI**：标题下方状态灯显示“正在排队 / 执行中 / 最近一次采集完成 / 采集失败”；执行中按钮锁定并显示旋转状态。状态灯支持悬停和聚焦展开滚动日志，成功后仍可回看本次采集日志。
+
+### 验证
+
+- Docker：`docker compose build api worker beat web`、`docker compose up -d api worker beat web` 成功；API、Web、Worker、Beat、PostgreSQL、Redis、Browser 均运行正常；迁移为 `20260811_0001 (head)`。
+- 健康检查：API `/health/ready` 返回 `{"status":"ok","service":"api","checks":{"database":"ok","redis":"ok"}}`。
+- 后端：Ruff、`compileall` 通过；相关回归测试 `90 passed`，最终增量测试 `3 passed`。
+- 前端：Next production build/TypeScript 通过；Vitest `17 files / 66 tests passed`。
+- 浏览器完整链路：真实点击“开始采集”后约 0.4 秒显示“执行中”并出现阶段日志；约 9 秒完成后状态为“最近一次采集完成”，聚焦状态灯可展开日志面板，实测保留 12 条日志，包括平台统计和“采集完成：新增/更新作品 500 条，话题 100 个”。
+
+## 2026-08-11（追加）：TikTok 字幕失败收敛、字幕标题栏控件与公开播放流选择
+
+- 字幕-only 的 TikTok 下载不再在公开浏览器通道无结果后继续调用 yt-dlp 网页解析，因此不会重复触发 `Unexpected response from webpage request`。公开页没有所选字幕时任务会以 `empty` 结束，并显示实际可用语种/缺失原因；这不是伪造成功。
+- 字幕语言、第二语言（可选“无”）和时间戳开关已移到“字幕文件”卡片标题栏右侧；字幕播放器改为受控渲染，下载弹窗保留资源类型选择，打开时沿用标题栏当前设置。
+- TikTok 视频下载仅在平台公开响应提供合法 CDN 播放地址时才保存：优先 `playAddr`，缺失时使用 `downloadAddr`。系统不去除画面水印，也不调用未公开的去水印接口；`playAddr` 本身是否带水印由平台返回内容决定，日志会明确记录这一边界。
+
+### 验证
+
+- Docker：`docker compose build api worker beat`、`docker compose build web`、`docker compose up -d api worker beat web` 成功；API/Web/Worker/Beat 运行正常，API `/health/ready` 返回 `status=ok`，迁移为 `20260811_0001 (head)`。
+- 后端：Ruff、`compileall` 通过；下载/TikTok/字幕空结果/yt-dlp 回归测试 `61 passed, 1 warning`。
+- 前端：Next production build/TypeScript 通过；Vitest `17 files / 66 tests passed`。
+- 浏览器链路：真实作品详情页确认标题栏显示第一语言、第二语言、时间戳和下载入口；字幕弹窗确认不再重复显示语言控件，且提示沿用标题栏设置。
 
 ## 当前阶段
 
@@ -188,6 +231,20 @@
 
 - **yt-dlp 全平台接入（用户「全平台尝试 yt-dlp」）**：新增 `app/adapters/platforms/yt_dlp.py`（YtDlpAdapter 基类 + YouTube/TikTok/Douyin 三适配器，key: youtube_ytdlp/tiktok_ytdlp/douyin_ytdlp），逆向各平台私有 InnerTube/web JSON，免 API Key/浏览器，返回精确播放/点赞/评论/分享、时长秒、描述全文、tags、结构化 channel_id、精确发布时间；账号/analytics 用 `--dump-single-json`（Browse API），内容列表用 `--dump-json`；yt-dlp 取不到时自动回退浏览器兜底（抖音基本不支持、TikTok 偶尔需要），不伪造数据。registry 注册三适配器；`platform_catalog_seed` 把 youtube/tiktok/douyin 默认 adapter_key 切到 yt-dlp；pyproject 加 yt-dlp 依赖；前端 `operation-labels.ts` 加中文标签；`main.py` 启动幂等 seed。修复 seed 关键 bug（先按 adapter_key 查 descriptor，避免遗留同名适配器把 adapter_key 静默改回 legacy）。离线单测 `test_yt_dlp_adapter.py` 7 passed。容器内真实验证：YouTube 账号/analytics/list/content-analytics 全经 yt-dlp 免浏览器取精确数据，TikTok list 经 yt-dlp 取精确播放量，Douyin 回退浏览器。已提交 `codex/full-repair-real-data` 分支 c808329，部署并重启 api/worker/beat，DB adapter_key 已切到 yt-dlp。
 - **质量门禁复绿（收尾）**：修复若干累积 lint/类型/测试问题——`monitoring.py` 内容日历聚合 `count` 标签与 `Row.count()` 方法冲突（真实数据下会崩，已改名 `content_count`）；`browser_base.py` proxy 参数补 `ProxySettings` 类型；`base.PlatformAdapter` 增加默认 `aclose` 钩子；`yt_dlp.py` 缩略图返回 `str()` 强转；ruff 10 项（I001/UP041/S110/S105/E501）全修。ruff / mypy（149 文件）全绿；`pytest` 全绿（修复 `test_monitoring_api` 对平台列表顺序的脆弱断言为成员断言）。
+
+---
+## 2026-08-11：字幕下载与播放器双语显示
+
+- 作品详情的字幕下载弹窗现在提供第一语言、第二语言下拉框，以及“无（只显示第一语言）”选项；默认按作品语言选择第一语言，第二语言默认启用，时间戳显示默认关闭。
+- 下载请求保留两条原始字幕轨道，不额外生成双语文件；播放器依据已下载的实际语种按时间轴叠加显示，关闭第二语言后只显示单行。时间戳开关状态会随当前作品媒体清单保存。
+- yt-dlp 的语言过滤会将 `en` / `zh` 等语言族扩展为 `en.*` / `zh.*`，兼容 `en-US`、`zh-Hans` 等轨道；TikTok 浏览器媒体通道复用相同的双轨选择规则。源站没有字幕时保持真实空结果并在任务日志中说明，不伪造文件。
+- 播放区域收紧为最大宽度/高度，避免宽屏页面中的原生播放控件过大。
+
+### 验证
+
+- Docker：`docker compose build api worker beat web`、`docker compose up -d api worker beat web`；API/Web healthy，迁移 `20260811_0001 (head)`，`/health/ready=200`。
+- 后端：ruff、compileall、下载/媒体/yt-dlp 回归 **54 passed**；前端 Vitest **17 files / 66 tests passed**；Next production build 与 TypeScript 通过。
+- 浏览器：作品详情字幕弹窗已核验第一/第二语言下拉、第二语言“无”及时间戳默认关闭；本次未因验证而触发真实平台字幕下载。
 
 ---
 
@@ -1331,3 +1388,478 @@ Prompt 00–11 已按顺序完成，第一次交付代码阶段结束。下一�
 5. 对主要页面执行多分辨率截图回归，并继续修复溢出、对齐、空态和 loading 态。
 
 交接规则：修改后必须保留 `live/imported/mock` 边界、不提交敏感凭证、运行对应测试、重新构建受影响 Docker 镜像，并在本文件追加新的事实章节；不要使用 `docker compose down -v` 删除数据卷。
+
+## 2026-08-10：账号同步超时与重复慢路径修复
+
+- yt-dlp 账号同步现在把剩余同步预算传入 profile、账号指标、作品分页和子进程；默认套接字超时为 15 秒、重试为 3 次、单个子进程上限为 90 秒，flat 目录探测上限为 30 秒。
+- flat 探测发生超时或传输失败时，首屏直接进入浏览器适配器，不再重复执行一次完整播放列表解析；详情并发仍受平台上限约束，并保留目录项以避免单条作品拖垮整页。
+- 默认同步分页抓取预算从 120 秒收紧为 60 秒，Compose 清洁环境默认分页上限从 20 页收紧为 5 页；现有 `None` 网络设置也会被安全默认值覆盖。
+- 离线账号同步回归为 **46 passed**（快速分页、并发、失败降级、命令参数、超时与分页边界）；ruff、py_compile 和核心后端 mypy 通过。
+- 本轮 Docker 门禁明确阻断：当前 Windows 环境未安装/未暴露 Docker CLI，无法完成镜像重建、Compose 启动、迁移、健康检查和真实平台同步；普通 pytest 的 PostgreSQL fixture 也因 `postgres` 主机无法解析而未能启动。不得将离线回归视为 Docker 或真实平台验收。
+
+## 2026-08-11：前端账号同步完整链路与深分页回补验收
+
+- 已通过真实前端链路：登录 → 账号监控 → TikTok `Olympics™` → 保存同步设置 → 观察进度 → 账号详情 → 作品列表 → 作品详情；前端显示 `15/15 · 100%`，作品页显示 117 条真实作品，浏览器控制台错误为 0。
+- Docker CLI 已使用本机 Docker Desktop 路径完成门禁：`docker compose build api worker beat`、`docker compose up -d`、`docker compose ps`、`/health/ready` 和迁移检查均通过；迁移为 `20260808_0001 (head)`。
+- 修复 TikTok 深分页 429：同一目录请求预算内轮换 yt-dlp `app_info` 通道，并将 250 条目录窗口在一次同步运行内缓存切片。真实回补两轮各处理 250 条，cursor `400 → 650 → 900`，作品数 `649 → 899`，未卡住、未删除已有作品。
+- 任务在目录尚未耗尽时保持 `degraded`、`content_sync_complete=false` 并保留 cursor；这是防止作品获取不全却误报成功的保护，不是静默成功。
+- 最新定向回归：适配器/快速列表 `53 passed`；同步状态、部分入库、卡住保护、进度和登录墙 `83 passed`；合计 `136 passed`。Ruff、compileall、API readiness、数据库 head 均通过。
+- 详细报告见 [`docs/ACCOUNT_SYNC_TEST_REPORT-2026-08-10.md`](ACCOUNT_SYNC_TEST_REPORT-2026-08-10.md)。
+
+## 2026-08-11：账号同步顶层重构验收与 TikTok 数据错位修复
+
+- 采集链路固定为“账号资料 → 目录分页 → 作品入库 → 指标快照 → 派生指标”五个阶段；每一页、每一条作品和每个指标阶段均有可恢复进度。YouTube 采用 flat 目录优先，详情失败时保留真实目录字段；TikTok/Douyin 目录采用低并发浏览器分页，避免对平台发起逐条详情请求突发。
+- TikTok 复用已授权 CDP 浏览器上下文，拦截公开 `item_list` 响应并分别映射 caption、发布时间、封面、播放、点赞、评论、分享和收藏；DOM 兜底时不再把数字播放量写入标题。游标和页级滚动均已修复，挑战页会进入明确的登录墙/采集条件错误，不再被当成“0 条作品成功”。
+- 账号作品脏数据已按用户授权仅清理 Olympic Motion 账号范围，保留同步审计记录；前端重新触发同步后最终闭合 cursor，`content_sync_complete=true`、`sync_status=success`、201 条作品入库。
+- 数据验收：201/201 标题不是播放量文本，201/201 有发布时间和播放量快照，200/201 有封面；前端作品表显示真实标题、发布时间、播放、点赞、评论和条件化分析字段。
+- 验证：Docker `compose build api worker beat`、`compose up -d api worker beat`；最终 yt-dlp 回归 `52 passed`，本轮完整同步相关回归 `130 passed`；迁移 `20260808_0001 (head)`；`/health/ready=200`；`/login` 正常；前端真实点击“保存设置并同步”后最新尾页运行 `success / 100% / 0 条新增`。
+- YouTube 当前 Docker 出口仍被平台识别为 VPN/Proxy；系统不绕过该限制，不伪造详情字段，改为保留 flat 目录中的真实标题、封面、时长和播放量，并集中提示详情增强不可用。若要获得与 Windows 独立 yt-dlp 完全相同的详情能力，需让 worker 使用同一授权网络/会话出口。
+
+## 2026-08-11：作品封面、互动拆分与可测算指标修复
+
+- AccountContentSummary 现在分别返回已同步作品最新快照中的点赞、评论、分享、收藏合计，并返回总互动量、各项互动率、总互动率和作品播放量合计；账号平台公开的累计点赞仍单独保留，不再作为总互动量的兜底值。
+- 账号详情页新增“作品互动拆分与测算”面板，明确展示四类互动合计和“互动合计 ÷ 作品播放量”的计算结果；完播率、平均观看时长、流量来源等仍按授权条件显示，不用推算值冒充平台分析数据。
+- TikTok 浏览器适配器补充视频、图文/轮播作品的多种公开封面字段；YouTube 适配器和前端补充稳定的 i.ytimg.com 缩略图兜底；外部封面加载失败时作品表显示可见占位，不再出现整格空白。
+- 当前 Olympic Motion 真实数据核对：201 条作品、200 条有封面 URL；点赞 1,321,287、评论 15,504、分享 26,498、收藏 56,852、播放 34,331,933，计算互动率 4.1365%，页面展示与数据库汇总一致。
+- 唯一缺失封面的历史 TikTok 作品已通过公开作品页复核：TikTok 返回的 video.cover、originCover、dynamicCover 和 shareCover 均为空，不能用作者头像或其他作品图片伪造封面；系统会保留明确占位，后续平台公开字段恢复时增量同步可自动补齐。
+- 验证：API 聚合测试 5 passed、TikTok 封面映射 3 passed、监控 API 回归 11 passed、Ruff/compileall 通过；前端 Vitest 17 files / 66 tests passed，Next production build 和 TypeScript 通过；Docker 镜像重建、Compose 更新、迁移 20260808_0001 (head)、API ready、登录页和真实账号详情页检查均通过。
+
+## 2026-08-11：作品列表封面布局、TikTok 分页与概览指标修复
+
+- 浏览器复现并修复作品表首列宽度被压缩为 `0px` 的问题；图片请求虽然成功，但全局 `max-width: 100%` 与表格窄列组合导致封面不可见。现在封面固定为 `80×48px`，第 1 页和第 2 页真实浏览器验收分别为 `20/20` 和 `19/19` 加载，缺失源数据使用可见占位。
+- TikTok 公开 `item_list` 当前单页返回 15 条；修正同步器的游标窗口和滚动物化逻辑，下一页不再按 50 条窗口跳过未加载作品。默认安全分页上限由 5 调整为 40，但仍受 300 秒运行预算、单页超时、`max_contents` 和增量边界约束。
+- 明确区分全量回补和稳态增量：本次 Olympic Motion 前端同步运行 `4de7709b-9668-4be8-923c-020b8497a0fd` 成功，检查 15 条首页已知作品后在增量边界停止；目录已有 201 条，UI 不再把 `15/15` 误解为目录只有 15 条。
+- TikTok 未返回公开 `video_count` 时，账号概览显示真实已同步目录数 `201`，并明确标注这是目录回退值，不冒充平台官方总数。近 24h 播放增量在缺少 18–36 小时基线时，基于真实约 2.56 小时观测外推并展示样本数；当前页面为 `+66（15 个作品）`。
+- 验证：后端完整定向回归 `35 passed`，最终摘要与 TikTok 分页回归 `10 passed`；Ruff/compileall 通过；前端 Vitest `17 files / 66 tests passed`；Docker `compose build api worker beat web`、Compose 更新、容器健康、API ready、登录页、浏览器概览/翻页/前端发起同步均通过。
+
+## 2026-08-11：作品详情下载链路与滚动任务日志修复
+
+## 2026-08-11：TikTok 公开媒体通道与下载弹窗布局修复
+
+- 针对 TikTok 作品页可正常播放、但 yt-dlp 网页解析器反复返回 `Unexpected response from webpage request` 的场景，增加 `tiktok_browser` 公开媒体通道：从已授权浏览器页面自身的公开作品响应中提取 CDN 视频、字幕和封面地址，再通过同一浏览器请求上下文保存文件。
+- 媒体通道仅接受 TikTok 官方 CDN 域名，不能绕过验证码、登录墙或访问限制；未捕获到公开媒体响应时才回退到 yt-dlp，并保留原始失败日志。
+- 视频、字幕、封面、元信息均写入统一下载目录并继续复用现有媒体清单、作品绑定和安全文件服务；元信息包含 `sio_media_source=tiktok_browser_direct` 来源标记。
+- 视频/字幕/元信息弹窗改为与账号同步弹窗一致的 Portal、`pt-[10vh]` 顶部定位、`max-h-[80vh]` 内部滚动和固定底部操作区；遮罩、标题区和实时滚动日志在页面滚动时保持同一交互行为。
+- 新增 TikTok 公开 CDN URL、作品响应定位、字幕自动生成识别的回归测试。
+
+验证边界：真实 TikTok 页面可播放并返回作品公开数据；媒体下载是否最终产出仍取决于该次浏览器响应是否包含可用 CDN 地址和平台返回状态。代码不会把 yt-dlp 错误伪装成媒体成功。
+- 修复下载失败后状态长期停留在 `running` 的后端缺陷：`DownloadService.mark_failed` 已回到服务类，异常现在会在有限 yt-dlp 尝试结束后可靠收敛为 `failed`，并保留错误详情。
+- `downloads` 新增持久化 `progress` JSON 和迁移 `20260811_0001`：阶段、百分比、最近 120 条 yt-dlp 输出，以及视频/音频、字幕、封面、info.json 各产物的 `pending/ready/missing/failed` 状态均可在刷新后恢复。
+- 作品详情的“下载视频 / 下载字幕 / 下载原始信息”入口现在把任务绑定到当前作品；成功产物合并回作品媒体目录，视频、字幕、封面和 JSON 文件可继续从详情页访问。
+- info.json 纯元信息任务在源站临时拒绝 yt-dlp 时使用已入库真实公开字段生成“归档元信息快照”，日志明确标注 `archived_content_snapshot`，不冒充本次重新抓取的原始平台响应。
+- 下载弹窗底部新增自动滚动 `role=log`：实时显示阶段、百分比、文件元素状态、时间线和失败原因；保存文件失败也会回显到弹窗，而不是产生未处理的前端 Promise 异常。
+- 浏览器真实验收：TikTok 作品 `2eea849a-1e61-4fd0-940c-c86631951e1f` 的 info.json 任务在 yt-dlp 三次快速恢复失败后约 15 秒内转为 `done`，生成 `7666080726214774029.info.json`；弹窗显示“元信息 · 已生成”、100% 和完整滚动日志。视频/字幕弹窗的选项和任务入口均可打开；当前样本视频页被平台返回 `Unexpected response from webpage request`，因此没有伪造视频或字幕成功。
+- Docker 门禁：重建 `api worker beat web`（后端兜底补丁后再次重建 `api worker beat`）、Compose 更新、迁移 `20260811_0001 (head)`、`/health/ready=200`、`/login=200` 均通过；最终后端下载/文件安全/失败收敛回归 `14 passed`，Ruff/compileall 通过，前端 Vitest `17 files / 66 tests passed`，Next production build 和 TypeScript 通过。
+# 2026-08-12 YouTube OlympicMotion sync repair
+
+- Root cause confirmed in the production API container: `https://www.youtube.com/@OlympicMotion/videos` returned `This channel does not have a videos tab`; the empty browser fallback was then incorrectly finalized as `success` with zero works.
+- Fix: yt-dlp fast and sequential listing paths now switch to the root channel catalogue only for that deterministic error; the browser fallback also starts at the root. A complete unfiltered backfill records the real catalogue total separately from the number of rows currently synchronized.
+- Real front-end verification: `OlympicMotion` completed with `success`, 49 real YouTube works, 49/49 covers, three UI pages, and `平台作品总数=49`; account-monitoring list and account-detail page agree.
+- Docker verification: `docker compose build api worker beat`, `docker compose up -d api worker beat web`, API live/ready `200/200`, Alembic `20260811_0002 (head)`, adapter/sync regression tests passed.
+
+## 2026-08-12 YouTube OlympicMotion work-data completeness repair
+
+- Root cause: the fast catalogue refresh wrote a newer view-only snapshot, so the works table selected that newest row and displayed real previously captured likes/comments as `—`. Catalogue-only rows also retained `partial` markers and the fixed 25-second detail batch ceiling left the tail of a 49-item page incomplete.
+- Fix: incomplete rows are re-queued for detail extraction even with `skip_existing`; successful details clear the stale marker; the detail batch timeout scales with concurrency waves and remains bounded; omitted snapshot metrics carry forward the last known value with explicit metadata.
+- Real front-end verification: OlympicMotion completed through the UI with `success`; 49/49 works have publish time, duration and cover; 49/49 latest snapshots have views and likes; 28 works have platform-returned comment counts. The works table displays real likes/comments and calculated interaction rates; the overview displays total interactions `8980`, likes `8897`, comments `83`, and measured 24-hour playback growth `+7.5万`.
+- Validation: targeted adapter/sync regression `65 passed, 1 warning`; Docker API/worker/beat rebuilt and updated; API live/ready `200/200`; Alembic `20260811_0002 (head)`.
+
+## 2026-08-12 Subtitle display and YouTube download repair
+
+- Subtitle preview and overlay default to plain text without timestamps or manually inserted line breaks. Cue text wraps naturally inside the subtitle control; the active cue is visually emphasized during playback.
+- YouTube video downloads normalize legacy format values and add explicit merge-container flags. YouTube subtitle downloads use a bounded track preflight and fall back from a missing manual track to a matching real automatic caption track, including regional language matching.
+- Local validation passed: Ruff, Python compilation, frontend TypeScript, Vitest `17 files / 66 tests`, and Next production build. Targeted subtitle/download ESLint has no errors.
+- Deployment and backend integration validation are blocked in this run because Docker Desktop's Linux Engine returns HTTP 500 on `dockerDesktopLinuxEngine/_ping`; the PostgreSQL test fixture therefore cannot resolve `postgres`, and the local frontend endpoint on `127.0.0.1:8080` is unavailable. No real YouTube download success is claimed until Docker is restored.
+
+## 2026-08-13 Docker restoration and real YouTube download verification
+
+- Docker Desktop's Linux Engine was restored without deleting application volumes. Redis AOF was repaired in place after a read-only check identified a 512-byte truncated tail; the original increment file was retained as an in-volume backup before repair.
+- Rebuilt `api`, `worker`, `beat`, and `web`, brought the Compose stack up, refreshed the Caddy proxy after the API container IP changed, and verified all services are running with API/web/browser/Postgres/Redis health checks passing. Alembic is at `20260811_0002 (head)`.
+- Root cause of the YouTube download failure: yt-dlp was invoked with `--dump-json` but without `--no-simulate`, so it returned valid metadata while silently producing no selected files. File-producing adapter paths now add `--no-simulate`, including subtitle-only and concurrent detail paths.
+- Real front-end verification on `OlympicMotion` work `The Sound That Sent MLB Players RUNNING`: video download completed with video plus four real caption tracks; subtitle-only download completed with two real tracks after manual-to-automatic fallback; `info.json` download completed and is linked from the detail page. The database stores the video/subtitle manifests and the video element mounts the `/api/v1/media/...webm` file.
+- Validation: targeted backend suite `63 passed, 1 warning`; direct worker adapter download wrote a video and four VTT files; frontend browser workflow completed login → account → work detail → video download → subtitle download → info.json download. Full backend pytest was separately bounded at six minutes and timed out without a failure assertion, so it is not reported as fully passed.
+
+## 2026-08-13 Subtitle multilingual display and playback interaction repair
+
+- Simplified the subtitle-file workflow: the original-subtitle option now downloads the platform-provided track; the former low-quality automatic-subtitle option is replaced by local multilingual generation.
+- Multilingual generation defaults to Chinese and exposes Chinese, English, Japanese, Korean, Spanish, French, German, and Portuguese. Generated tracks reuse the original cue timestamps and are appended to the first/second-language selector and video overlay after refresh.
+- Removed the old local word-by-word / multilingual-track generation panel and its direct `en-orig` / `en` links from the subtitle-file module. Existing tracks remain available through the normal subtitle list and workbench.
+- Added the `字幕翻译` settings tab for ASR and local translation runtime parameters. The settings are explicit environment-backed controls; changes that affect workers/models require service restart.
+- Validation for this change: Docker images rebuilt and Compose updated; API live/ready `200/200`; Alembic `20260813_0003 (head)`; focused backend subtitle/settings regression `48 passed, 1 warning`; browser verification confirmed the new dialog and all eight language choices. A prior full backend run exceeded its bounded timeout without a failure summary and is not claimed as passed.
+
+## 2026-08-13 Local ASR / multilingual subtitle pipeline implementation
+
+- Added `subtitle_jobs` migration `20260813_0003` and a persisted job contract
+  for isolated local transcription/translation, including progress logs,
+  degraded results and safe terminal errors.
+- Added the dedicated `subtitle-worker` Compose service (`subtitle` queue,
+  concurrency 1, child recycling) and installed `faster-whisper` as an
+  optional API package extra. Account-sync and download workers keep their
+  existing queues and are not used for ASR.
+- Added strict timeline conversion and VTT/JSON artifact writers. Provider word
+  timestamps are preserved; missing word boundaries are never fabricated.
+- Added lazy `faster-whisper` transcription and local HTTP translation provider
+  contracts. The default environment keeps both backends disabled; the UI
+  reports `asr_not_configured` or `translation_degraded` instead of claiming
+  a false translation.
+- Added content-detail controls with target-language selection, task polling,
+  and an independent scrollable progress log. Platform original subtitles are
+  reused first, and generated tracks are appended without overwriting them.
+- Validation completed: Docker images for API/worker/beat/subtitle-worker/web
+  built successfully; Compose started and migration reached
+  `20260813_0003 (head)`; web production TypeScript/build passed; Ruff passed;
+  focused subtitle/provider regression passed `9 tests`; browser verification
+  completed the real content-detail flow and confirmed a fast, explicit
+  translation-degraded result when no local translation endpoint is configured.
+- Full backend pytest reached 71% with passing dots, but Docker Desktop's
+  Linux Engine returned an internal HTTP 500 while the exec stream was still
+  running; the final suite summary was therefore unavailable and is not
+  claimed as passed. The local API/frontend health endpoints subsequently
+  timed out when the daemon stopped responding. Rerun the full suite after
+  Docker Desktop recovers.
+
+- Simplified the content-detail subtitle card: removed the subtitle workbench,
+  preview/export controls, track-link list, and nested preview layer. The card
+  now exposes direct original-subtitle download and a separate multilingual-
+  generation action; generation opens only the local ASR/translation dialog.
+- Kept the video element on native browser `controls` without adding a second
+  vertical-dots overlay. Native video controls are browser-owned Shadow DOM
+  and cannot accept application-specific first/second-language, font,
+  background, or position items; implementing those inside the same menu would
+  require replacing native controls with a custom player.
+- Final validation: Web image build and Compose update passed; API live/ready
+  `200/200`; content-detail HTTP `200`; browser verification found one video
+  element, no subtitle workbench, and the expected compact subtitle actions.
+
+- Added a shared frontend subtitle parser that decodes HTML entities, removes
+  YouTube `>>` speaker markers and WebVTT markup, and joins physical cue lines
+  into one text flow. The text still wraps naturally at the width of its own
+  control.
+- YouTube inline cue timestamps are preserved as a word timeline. The video
+  overlay highlights the active word only when every segment has a real
+  per-word boundary; a multi-word segment without individual boundaries falls
+  back to cue-level emphasis instead of receiving false precision.
+- The subtitle workbench now scrolls only its own bounded container with
+  `overscroll-contain`; active-cue following no longer calls page-level
+  `scrollIntoView`.
+- Fixed the language selector state machine: `null` means initial automatic
+  selection, while an explicit empty string means “关闭/无”. Closing the
+  secondary language therefore stays single-line until the user selects it
+  again, in both the video overlay and subtitle workbench.
+- The `>>` cleanup handles both leading and sentence-internal standalone
+  markers (for example `What's happening? >> In...`), including their
+  `&gt;&gt;` encoded form.
+- Documented the local translation options and licensing boundary in
+  `docs/PLATFORM_SYNC.md`: CTranslate2 + NLLB-200 for broad coverage,
+  TranslateGemma for heavier higher-quality common-language use, and Argos
+  Translate for a lightweight CPU fallback. No translation is fabricated or
+  claimed as installed until a local model endpoint is configured.
+- Final Docker validation: web build passed its embedded TypeScript check;
+  frontend Vitest `18 files / 69 tests` passed; backend subtitle regression
+  `35 passed, 1 warning`; `/health/ready`, `/login`, and `/download` returned
+  `200`; Alembic remains `20260811_0002 (head)`; browser verification showed
+  single-language output after selecting “无”, with no `>>` or `&gt;&gt;` in
+  the rendered preview.
+
+## 2026-08-13 Subtitle download hover progress
+
+- Added an exclamation status button beside the direct subtitle download
+  action. Hovering or focusing it opens a bounded, auto-following progress log
+  without opening a modal.
+- The log shows task stage, status, percentage, requested file state, and
+  bounded yt-dlp messages/errors. The direct original-subtitle path remains
+  retryable after a failed or empty task.
+- Browser verification on the real YouTube work confirmed `pending/running`,
+  live log updates, automatic manual-to-automatic caption fallback, and a
+  terminal `100%` success with one generated subtitle file. Web Docker build,
+  Compose update, and API/Web health checks passed.
+
+## 2026-08-13 Subtitle display box and title-bar export
+
+- Restored the bounded subtitle display box inside the subtitle file card while
+  keeping the latest display rules: plain text without timestamps by default,
+  natural wrapping within the box width, time-aligned optional bilingual rows,
+  and word-level highlight only when the source track contains real word
+  boundaries.
+- The display box follows the video time independently inside its own scroll
+  container, so active-cue tracking does not scroll the page. The former
+  nested workbench and preview action were not restored.
+- Restored a compact export-format selector and export button in the subtitle
+  title bar. SRT, WebVTT, TXT, JSON, and ASS are sent to the existing validated
+  server export endpoint using the selected languages and timestamp setting.
+- Validation: `docker compose build web` passed the Next.js production build
+  and TypeScript check; Compose updated the web container; browser verification
+  found the display box, language controls, export selector/button, and
+  single-language mode after selecting “无”; the real content page rendered
+  archived subtitle text successfully.
+
+## 2026-08-13 Subtitle generation default configuration and live progress
+
+- Removed the previous silent no-op configuration: Docker now enables the
+  dedicated local subtitle pipeline by default with `faster_whisper` ASR and
+  the internal HTTP translation provider. A persistent `translation_models`
+  volume keeps the local Argos model cache across restarts; the first startup
+  downloads models, while later starts reuse the cache.
+- Added a Compose-managed LibreTranslate service limited to the eight product
+  languages (`zh`, `en`, `ja`, `ko`, `es`, `fr`, `de`, `pt`). The subtitle
+  worker waits for its health check before consuming the `subtitle` queue.
+- The generation dialog now starts with all eight languages selected and has
+  explicit `全选` / `清空` controls. The title-bar `!` status button remains
+  available after the dialog closes and shows queued/running/complete state,
+  percentage, target count, and a bounded scrolling log.
+- Fixed the HTTP translation provider to accept LibreTranslate's batch
+  response (`translatedText` as an array). Empty language selections now fail
+  immediately with a clear 422 response; dispatch failures are persisted as a
+  terminal job error instead of leaving an invisible task.
+- Real browser verification on the YouTube work `The Sound That Sent MLB
+  Players RUNNING`: all eight checkboxes were selected by default, the task
+  entered `queued`, advanced to `82%` with per-language logs, then completed at
+  `100%` with seven generated translation tracks and no translation errors.
+  The subtitle display immediately exposed the generated tracks.
+- Docker gate completed: affected images (`api`, `worker`, `subtitle-worker`,
+  `beat`, `web`) built successfully; LibreTranslate became healthy after its
+  one-time model initialization; subtitle worker reported the task succeeded
+  in 29.5 seconds; API `/health/live` and `/health/ready` both returned `200`.
+  Focused regression tests passed `9 passed, 1 warning`.
+
+## 2026-08-13 Chinese subtitle labels and global language preference
+
+- Added a shared subtitle-language label map. First-language and second-language
+  selectors now keep the original platform code as their value while rendering
+  Chinese labels such as `中文`, `英语`, `英语（原始）`, `日语`, `韩语` and
+  `葡萄牙语`; unknown platform codes are shown as `其他语言（代码）` instead
+  of leaking raw labels into the UI.
+- Updated the subtitle workbench, content-detail media controls, download
+  page, and multilingual-generation checklist to use Chinese language names.
+- Added a compact, keyboard-dismissible language menu to the global header's
+  right side. It offers Simplified Chinese, English, Japanese, Korean,
+  Spanish, French, German, and Portuguese, displays both Chinese and native
+  names, persists the user's browser preference, and updates the document
+  language metadata for future localized surfaces.
+- Validation: web Docker production build passed; web regression suite passed
+  `19 files / 71 tests`; web and API containers are healthy; API live/ready and
+  login returned `200`; browser verification opened the header menu, selected
+  English (`html lang="en-US"`), and confirmed both subtitle selectors display
+  Chinese labels while their internal values remain platform codes.
+
+## 2026-08-14 Full frontend system acceptance
+
+- Completed a browser-first full-system acceptance pass across all listed
+  frontend routes, controls, CRUD entry points, async task states, errors and
+  empty states. The detailed evidence and boundaries are recorded in
+  `docs/FULL_SYSTEM_TEST_REPORT-2026-08-14.md`.
+- Fixed the manual content form requesting `page_size=200` against the API
+  limit of 100; account association and save flow now load correctly.
+- Fixed video-search run serialization by populating `created_at` and
+  `updated_at` before dispatch, preventing an immediate `MissingGreenlet`
+  500 response.
+- Validation: web build, TypeScript, Vitest (`19 files / 71 tests`), focused
+  API regression (`32 passed`) and automation API file (`8 passed`) passed;
+  ESLint has 0 errors and 16 pre-existing warnings. The 606-test API suite
+  was separately recorded as timed out after 20 minutes; no assertion failure
+  was emitted, and the first slow file was isolated to `test_automation.py`,
+  which passes independently.
+## 2026-08-14 Automation and notification frontend chain follow-up
+
+- Completed a second browser-first verification with self-created, clearly marked temporary data: notification-channel CRUD, encrypted persistence/masking, enable/disable, automation creation, notification action binding, edit-time action switching, and notification test delivery.
+- The unreachable webhook test produced persisted failed delivery records with `retryable=false`; no real third-party notification was sent. All temporary rules, channel, delivery rows, and attempt rows were removed and verified absent.
+- `docker compose exec -T api pytest apps/api/tests/test_automation.py -q`: 8 passed, 1 warning.
+
+## 2026-08-14 Local subtitle translation 400 fix
+
+- Fixed LibreTranslate compatibility at the provider boundary: `zh` now maps
+  to the loaded `zh-Hans` model and `und-auto` maps to source autodetection
+  `auto`. Stored/UI language values remain unchanged.
+- Added response-body details to HTTP translation failures and regression tests
+  for language normalization and service error diagnostics.
+- Rebuilt `api`, `worker`, `beat`, and `subtitle-worker`; the real content-page
+  flow generated 7 translated tracks successfully with 7 HTTP 200 responses,
+  no translation errors, and a 100% succeeded job.
+- Validation: subtitle/provider tests `11 passed`; Ruff passed; API container
+  direct translation call returned Chinese text; page log showed all seven
+  translation stages and the completion message.
+
+## 2026-08-14 System audit and feasibility analysis
+
+- Completed a code, browser, Docker, automated-test, and industry-capability audit across account monitoring, content/media, subtitles, comments, hotspot intelligence, automation, notifications, generation, and operations.
+- Implemented and browser-verified artifact status behavior on content detail: existing video/subtitles/info.json show `已下载` and disable their download actions; generated subtitle languages are detected individually, existing languages are disabled, missing languages remain selectable, and all-complete generation shows `已生成字幕` disabled.
+- Standardized multilingual subtitle defaults to English first and Chinese second, and renamed `und-auto`/`und` to `源字幕` in the UI. Web production build passed, frontend TypeScript passed, Vitest passed `20 files / 74 tests`, and ESLint passed with 0 errors / 12 warnings.
+- The detailed feasibility report is `docs/SYSTEM_AUDIT_FEASIBILITY_2026-08-14.md`. It records the remaining P0/P1/P2 work: artifact integrity checks, platform canaries, sync recovery/SLOs, real-time hotspot source expansion, comment cursors, notification delivery canaries, and cross-host HA.
+
+## 2026-08-14 Automation rule list actions
+
+- Added an `编辑` column to the automation rule list. Owner/admin/editor roles can open an existing rule and directly enable or disable it; the action uses the existing CSRF-protected `PATCH /automations/{rule_id}` endpoint and refreshes the list after success. Viewers retain read-only access.
+- Removed the `启用规则` checkbox from the automation editor. Newly created rules are explicitly created disabled by default; editing an existing rule no longer changes its enabled state, preventing content edits from accidentally starting or stopping execution.
+- Added frontend regression coverage for the edit link, disable action, PATCH payload, query invalidation path, and success notification.
+- Validation: web Docker production build and TypeScript passed; targeted automation test passed (`1 file / 1 test`); frontend Vitest passed (`21 files / 75 tests`); ESLint passed with 0 errors / 12 warnings; web/API health endpoints and login returned `200`; Compose services are running and web/api are healthy.
+
+## 2026-08-14 Current system audit review
+
+- Completed a fresh evidence-based audit of the current working tree, covering account sync, media/artifacts, subtitles/ASR/translation, comments, hotspot/news, automation/notifications, generation/search, security, database, task queues, and Docker deployment.
+- Runtime and regression evidence: API live/ready and Web login returned `200`; Alembic is at `20260813_0003 (head)`; critical API groups passed `53` tests; Web passed `21 files / 75 tests`; API collection contains `617` tests.
+- The audit found no runtime failure in the selected critical groups, but the full API suite was not claimed as passed. Ruff currently reports 2 errors, and mypy run from the correct API work directory reports 67 errors in 18 files. These are tracked as P0 release-gate work.
+- The main product boundary remains explicit: account sync is the strongest implemented core, while artifact physical-integrity checks, global platform scheduling/quotas, daily platform canaries, and independent cross-web 24–72 hour hotspot collection remain the highest-priority gaps.
+- Detailed findings and an actionable P0/P1/P2 roadmap are recorded in `docs/SYSTEM_AUDIT_REVIEW-2026-08-14.md`.
+
+## 2026-08-15 Audit remediation and regression gate
+
+- Implemented the physical media artifact registry. Migration
+  `20260814_0001_media_artifacts.py` records each requested artifact's relative
+  path, size, MIME type, SHA-256, source and verification status. Content detail
+  reads and completed downloads reconcile the manifest against the real media
+  directory; missing, empty, unsafe-path and checksum-mismatched files are not
+  presented as ready.
+- Implemented a Redis-backed global sync lease. The default policy is global
+  concurrency `2`, per-platform concurrency `1`, bounded wait `30s`, and a
+  lease TTL derived from the run timeout. Release is token-safe and stale leases
+  expire automatically; Celery worker process concurrency remains `4`.
+- Implemented append-only comment snapshots with migration
+  `20260814_0002_comment_snapshots.py`. Comment refreshes upsert the current
+  Top 20 view and append a ranked/metric/time/source snapshot; empty or degraded
+  collection never erases previously observed comments. A history endpoint is
+  available for later trend charts.
+- Implemented independent public RSS/Atom hotspot collection for the `web`
+  / `全网新闻` dimension. It is bounded to configured source/item limits, uses
+  a 72-hour freshness window, concurrent fetches with a semaphore, source
+  provenance and confidence metadata, and leaves unavailable view/like/comment
+  metrics as `null` rather than estimates.
+- Fixed an async serialization regression introduced by artifact relations:
+  account content list/detail queries now eagerly load artifacts, preventing
+  `MissingGreenlet` when the frontend renders the works table.
+- Cleared the API static-quality gate: container Ruff reports `All checks
+  passed`; container mypy reports `Success: no issues found in 193 source files`.
+  API/worker/beat images were rebuilt and deployed; Alembic is at
+  `20260814_0002 (head)`; API live/ready and the web entrypoint returned `200`.
+- Regression evidence: the complete API test set was collected as `618`
+  selected tests with `6` deselected. Every test file was executed in isolated
+  module shards and each shard passed (including the 45-case critical gate,
+  91 account/auth/automation cases, 72 content/download/media cases, 44
+  generation cases, 96 news/hotspot/subtitle cases, 158 adapter cases, 80
+  sync/reliability cases and 76 search/settings cases). A single merged run
+  exceeded the 10-minute execution gate because the shared PostgreSQL fixture
+  performs per-test isolation and WAL synchronization; it is explicitly not
+  claimed as a merged-suite pass. The fixture was hardened so TRUNCATE uses
+  the intended autocommit connection and no longer repeats `create_all` per
+  test.
+- Frontend browser verification confirmed unauthenticated protected routes
+  redirect to the login page and the login controls render. A real authenticated
+  platform sync/download canary remains intentionally unclaimed because the
+  current browser session had no usable authorization session.
+
+The remaining release boundaries are real platform canaries, storage
+quota/lifecycle, external notification canaries, translation/ASR quality
+baselines, production secret/image pinning, and cross-host HA/backup recovery.
+
+## 2026-08-15 Notification, storage and artifact governance follow-up
+
+- Added a local-only notification channel configuration check at
+  `POST /api/v1/notification-channels/{channel_id}/configuration-check`.
+  It validates the encrypted provider configuration, enabled state and
+  provider shape without contacting a third-party endpoint; the response
+  explicitly reports `external_io_performed=false`.
+- Added workspace-scoped notification health at
+  `GET /api/v1/notification-health`. It reports delivery/attempt counts,
+  success rate, latency, last error and queued/sending states for a bounded
+  observation window. This is an operational health snapshot, not proof of
+  external delivery.
+- Added a read-only media storage health report at
+  `GET /api/v1/storage/health`. It scans the configured media root with a
+  bounded file budget, reports volume usage, tracked Artifact Registry
+  status, orphan files and quota warnings, and never deletes or rewrites
+  files. `SIO_MEDIA_STORAGE_QUOTA_BYTES` and
+  `SIO_MEDIA_STORAGE_SCAN_MAX_FILES` are documented in `.env.example`.
+- Linked download records to the physical Artifact Registry and reconciled
+  subtitle-export artifacts for both content and download flows. Existing
+  media is now surfaced from physical verification rather than a database
+  flag alone; missing, empty, unsafe or checksum-mismatched files do not
+  appear as ready downloads.
+- Declared the existing pgvector HNSW index in SQLAlchemy metadata so
+  Alembic autogeneration no longer proposes dropping the index. `alembic
+  check` now reports no new upgrade operations.
+- Final gate evidence for this batch: Docker Compose configuration valid;
+  API, Worker, Beat, Web, PostgreSQL, Redis, browser, subtitle-worker and
+  translation services running; API live/ready and Web login returned 200;
+  Ruff passed; mypy passed for 195 API source files; focused backend
+  regression passed `30 tests` (one existing Starlette/httpx deprecation
+  warning only).
+
+The remaining boundaries are intentional rather than silently simulated:
+real platform sync/download/comment canaries still require valid platform
+authorization and current public responses; notification canaries require
+user-provided third-party endpoints; translation/ASR quality needs a
+representative evaluation set; automatic media deletion/retention is not
+enabled; and production image pinning, backup/restore drills and cross-host
+HA require deployment infrastructure outside this local Compose workspace.
+
+## 2026-08-15 Storage lifecycle governance and release-gate follow-up
+
+- Implemented the storage lifecycle policy and migration
+  `20260815_0001_media_lifecycle.py`. Artifacts now carry a retention class
+  (`managed`, `temporary`, or `protected`), optional `retain_until`, access and
+  deletion timestamps, and a workspace/retention index. Existing downloaded
+  artifacts are classified as temporary during migration.
+- Added workspace-scoped lifecycle preview and owner/admin execution APIs under
+  `/api/v1/storage/lifecycle`, plus retention override at
+  `/api/v1/storage/artifacts/{artifact_id}/retention`. Deletion remains
+  disabled by default, requires explicit confirmation, honors dry-run mode,
+  protects managed/protected artifacts, refuses symlinks/path escapes, bounds
+  scan and batch sizes, and records an audit entry for every run.
+- Added the hourly Celery lifecycle task, storage governance settings panel,
+  quota/retention configuration, and the operator guide in
+  `docs/STORAGE_LIFECYCLE.md`. Automatic cleanup is intentionally opt-in and
+  defaults to dry-run.
+- Added the dependency-free production configuration gate, backup/restore
+  drill script (isolated temporary database only), subtitle quality baseline
+  evaluator, and API test shard runner. The LibreTranslate image reference is
+  now pinned by digest in Compose and `.env.example`.
+- Verification completed in the current host: root contract tests `35 passed`,
+  Python compileall passed, `git diff --check` passed, web TypeScript passed,
+  web Vitest passed `21 files / 75 tests`, and ESLint passed with `0 errors / 12
+  existing warnings`. Production configuration checks passed for a valid
+  production fixture and rejected unsafe defaults as expected.
+- Environment-gated verification remains explicit: Docker CLI/daemon is not
+  available on this host, so the required image rebuild, Compose startup,
+  migration/health gate and backup drill were not rerun in this batch. The
+  dependency-backed API shards were started with `.venv` but stopped after the
+  first repeated fixture failure because the `postgres` Compose hostname could
+  not resolve. No volume deletion or database reset was performed.
+
+The remaining boundaries are real platform and notification canaries, a
+representative subtitle/ASR quality set, a production backup/restore run,
+cross-host HA, and production credential/infrastructure verification. The
+storage lifecycle code path is implemented and tested at the unit/contract
+level, but remains disabled by default until operators configure a quota and
+explicitly enable it.
+
+## 2026-08-15 Subscription alerts and final publication gate
+
+- Completed the subscription alert vertical slice. `subscription_rules` and
+  `subscription_events` are added by migration
+  `20260815_0002_subscription_alerts.py`; notification deliveries can now
+  reference their originating subscription while retaining an idempotency key.
+- Added workspace-scoped CRUD, event history and protected evaluation APIs;
+  rules support new content, keyword matches and metric spikes with platform/
+  account targeting, cooldown suppression, source markers and audit entries.
+  A subscription must bind at least one existing notification channel, and
+  unavailable channels produce an explicit `failed` or `partial` event rather
+  than a fake delivery success.
+- Added the Celery recent-entity scanner integration for content, account and
+  news observations, plus the 「设置 → 订阅告警」 management panel and
+  `docs/SUBSCRIPTION_ALERTS.md`.
+- Verification for this batch: Python compileall passed; Ruff passed; mypy
+  passed for 199 API source files; frontend TypeScript passed; Vitest passed
+  21 files / 75 tests; ESLint passed with 0 errors / 12 warnings; root
+  contract tests passed 35 tests; subscription pure-function smoke passed.
+  The focused subscription pytest collection reached the tests but all 4
+  cases were blocked in the shared PostgreSQL fixture because host
+  `postgres:5432` was not resolvable outside Compose.
+- Docker deployment gate remains BLOCKED because `docker` is not installed or
+  available on this host. Therefore no image rebuild, `docker compose up -d`,
+  migration-in-container, API readiness, web login, or database backup drill
+  is claimed for this batch. No volumes were deleted.
+- GitHub CLI is installed at `C:\Program Files\GitHub CLI\gh.exe`, and
+  authenticated access to `SospAic/Sports-Intelligence-OS` was verified in an
+  authorized network environment. The current worktree is intended for the
+  user's requested full-project publication on branch
+  `codex/full-repair-real-data`; external platform, notification, ASR/translation,
+  backup/restore and HA canaries remain credential/infrastructure gated.

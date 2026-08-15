@@ -283,7 +283,6 @@ function AutomationEditorForm({
   );
   const [cooldown, setCooldown] = useState(initial?.cooldown_seconds ?? 3600);
   const [dedup, setDedup] = useState(initial?.deduplication_window ?? 3600);
-  const [enabled, setEnabled] = useState(initial?.enabled ?? false);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonText, setJsonText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -385,7 +384,7 @@ function AutomationEditorForm({
         schedule: {},
         cooldown_seconds: cooldown,
         deduplication_window: dedup,
-        enabled,
+        enabled: false,
         priority: 100,
         actions: id
           ? undefined
@@ -403,7 +402,6 @@ function AutomationEditorForm({
             schedule: {},
             cooldown_seconds: cooldown,
             deduplication_window: dedup,
-            enabled,
             priority: 100,
           }),
         });
@@ -516,14 +514,6 @@ function AutomationEditorForm({
               value={dedup}
               onChange={(e) => setDedup(Number(e.target.value))}
             />
-          </label>
-          <label className="flex gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-            />
-            启用规则
           </label>
         </Panel>
         <div className="space-y-5">

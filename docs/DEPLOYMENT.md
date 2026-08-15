@@ -34,11 +34,16 @@ API 启动会升级迁移，正式变更窗口仍建议先显式执行 `make mig
 - `/health/ready` 同时检查数据库和 Redis。
 - `docker compose ps` 检查 Worker、Beat 和 Web；它们没有业务成功的替代含义。
 - 同步、新闻、生成、自动化和通知失败记录保存在各自运行表中，可从后台任务/日志页面查询。
+- 订阅告警迁移会创建 `subscription_rules`、`subscription_events` 并将通知投递关联到订阅；部署后先执行迁移，再在「设置 → 订阅告警」绑定启用的通知渠道。详见 [订阅告警](SUBSCRIPTION_ALERTS.md)。
 - Celery 任务有 1,800 秒软限制和 1,860 秒硬限制；默认 2,100 秒租约只用于确认 Worker 已失联后释放锁或失败状态，不能设置得短于正常最大任务时间。
 
 ## 备份
 
 至少备份 PostgreSQL；Redis 是队列与短期状态，不应是唯一业务事实来源。备份必须包含通知配置加密密钥，否则加密渠道配置无法恢复。恢复后先运行迁移与只读健康检查，再开放写流量。
+
+媒体目录也必须纳入备份或明确声明为可重新下载。生命周期清理默认关闭，启用前必须先执行预览和受控恢复演练；具体保留级别、孤儿文件边界和审计字段见 [STORAGE_LIFECYCLE.md](STORAGE_LIFECYCLE.md)。仓库提供 `scripts/backup_restore_drill.py`，使用隔离的临时数据库名验证 PostgreSQL dump、Redis RDB 和媒体归档，不删除应用数据卷。
+
+生产启动前运行 `python scripts/validate_production_config.py`。它会拒绝默认密钥、开发数据库密码、非 Secure Cookie、实验 LLM 回退、无配额的自动媒体清理和浮动翻译镜像标签。跨主机 HA、托管 Redis/PostgreSQL、对象存储和灾备切换仍需部署环境完成，不能由本地 Compose 验收替代。
 
 ## 扩容边界
 

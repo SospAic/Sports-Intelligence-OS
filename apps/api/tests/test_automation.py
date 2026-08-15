@@ -314,6 +314,21 @@ def test_automation_api_cooldown_dedup_and_delivery(
     assert test_delivery.json()["status"] == "delivered"
     assert test_delivery.json()["provider_message_id"] == "stub-test-1"
 
+    configuration_check = client.post(
+        f"/api/v1/notification-channels/{channel['id']}/configuration-check",
+        headers=headers,
+    )
+    assert configuration_check.status_code == 200, configuration_check.text
+    assert configuration_check.json()["status"] == "configured"
+    assert configuration_check.json()["external_io_performed"] is False
+
+    health = client.get("/api/v1/notification-health?window_minutes=1440")
+    assert health.status_code == 200, health.text
+    health_payload = health.json()
+    assert health_payload["deliveries"] == 2
+    assert health_payload["successful_attempts"] == 1
+    assert health_payload["channels"][0]["success_rate"] == 1.0
+
 
 def test_automation_notification_uses_published_template(client: TestClient) -> None:
     csrf = authenticate(client)

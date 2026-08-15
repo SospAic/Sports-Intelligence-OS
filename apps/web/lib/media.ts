@@ -31,7 +31,21 @@ export function normalizeExternalImageUrl(
 export interface ContentCoverSource {
   id: string;
   cover_url: string | null;
+  canonical_url?: string | null;
   media: { thumbnail?: string | null } | null;
+}
+
+function youtubeThumbnailFallback(canonicalUrl: string | null | undefined): string | null {
+  if (!canonicalUrl) return null;
+  try {
+    const url = new URL(canonicalUrl);
+    const videoId =
+      url.searchParams.get("v") ??
+      (url.hostname === "youtu.be" ? url.pathname.slice(1) : null);
+    return videoId ? "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg" : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Resolve the best cover image for a content item.
@@ -48,5 +62,8 @@ export function contentCoverUrl(
   if (!content) return null;
   const thumb = content.media?.thumbnail;
   if (thumb) return `/api/v1/media/${content.id}/${thumb}`;
-  return normalizeExternalImageUrl(content.cover_url);
+  return (
+    normalizeExternalImageUrl(content.cover_url) ??
+    youtubeThumbnailFallback(content.canonical_url)
+  );
 }

@@ -121,6 +121,8 @@ async def _schedule_due() -> dict[str, Any]:
     return {"dispatched": dispatched, "failed": failed}
 
 
-@celery_app.task(name="app.tasks.video_search.schedule_due_video_search_plans")
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.tasks.video_search.schedule_due_video_search_plans"
+)
 def schedule_due_video_search_plans() -> dict[str, Any]:
     return asyncio.run(_schedule_due())

@@ -1,3 +1,4 @@
+from app.models.artifact import MediaArtifact
 from app.models.automation import (
     AutomationAction,
     AutomationEvaluation,
@@ -20,6 +21,7 @@ from app.models.generation import (
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
+    CommentSnapshot,
     ContentItem,
     ContentSnapshot,
     DerivedMetric,
@@ -54,6 +56,8 @@ from app.models.settings import (
     RuntimeSettingOverride,
     SyncSettings,
 )
+from app.models.subscription import SubscriptionEvent, SubscriptionRule
+from app.models.subtitle import SubtitleJob
 from app.models.sync import SyncRun, SyncRunEvent
 from app.models.topics import SavedTopic
 from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
@@ -75,11 +79,13 @@ __all__ = [
     "ContentEmbedding",
     "ContentItem",
     "ContentSnapshot",
+    "CommentSnapshot",
     "CrossPlatformLink",
     "DashboardStat",
     "DeadLetterEvent",
     "DerivedMetric",
     "Download",
+    "SubtitleJob",
     "EventArticle",
     "ExternalCallAttempt",
     "GenerationRun",
@@ -87,6 +93,7 @@ __all__ = [
     "GenerationWorkflow",
     "LLMProviderSetting",
     "LoginAttempt",
+    "MediaArtifact",
     "NewsScoringConfig",
     "NewsSyncRun",
     "NotificationChannel",
@@ -100,6 +107,8 @@ __all__ = [
     "PlatformCredentialSetting",
     "RuntimeSettingOverride",
     "SyncSettings",
+    "SubscriptionEvent",
+    "SubscriptionRule",
     "PromptCollection",
     "PromptVersion",
     "Rule",

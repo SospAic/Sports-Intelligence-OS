@@ -12,6 +12,8 @@ import {
   BookMarked,
   Download,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Search,
   Save,
@@ -19,7 +21,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
 import { ExternalImage } from "@/components/external-image";
@@ -86,6 +88,18 @@ export function ContentsClient() {
   const [virtualized, setVirtualized] = useState(false);
   const publishedFrom = resolvePublishedFrom(range, from || null) ?? undefined;
   const [selected, setSelected] = useState<string[]>([]);
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const contentPrefsApplied = useRef(false);
+  const contentPrefs = useQuery({
+    queryKey: ["content-view-preferences", workspaceId],
+    queryFn: () =>
+      apiRequest<{ preferences?: Record<string, unknown> } | null>(
+        "/accounts/view-preferences?view=contents",
+        { workspaceId: workspaceId! },
+      ),
+    enabled: Boolean(workspaceId),
+    staleTime: Infinity,
+  });
   const [creating, setCreating] = useState(false);
   const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
   const contentPath = buildContentListPath({
@@ -104,6 +118,28 @@ export function ContentsClient() {
       }),
     enabled: Boolean(workspaceId),
   });
+  useEffect(() => {
+    if (contentPrefsApplied.current || !contentPrefs.data?.preferences) return;
+    const values = contentPrefs.data.preferences.pinnedIds;
+    if (Array.isArray(values)) {
+      // The server preference arrives after the first render; this one-time
+      // hydration is the state synchronization point for the view preference.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPinnedIds(values.filter((id): id is string => typeof id === "string"));
+    }
+    contentPrefsApplied.current = true;
+  }, [contentPrefs.data]);
+  const displayContents = useMemo(() => {
+    const rank = new Map(pinnedIds.map((id, index) => [id, index]));
+    return [...(contents.data?.items ?? [])].sort((left, right) => {
+      const leftRank = rank.get(left.id);
+      const rightRank = rank.get(right.id);
+      if (leftRank === undefined && rightRank === undefined) return 0;
+      if (leftRank === undefined) return 1;
+      if (rightRank === undefined) return -1;
+      return leftRank - rightRank;
+    });
+  }, [contents.data?.items, pinnedIds]);
   const tagOptions = useQuery({
     queryKey: ["content-tags", workspaceId],
     queryFn: () =>
@@ -118,7 +154,7 @@ export function ContentsClient() {
   const accounts = useQuery({
     queryKey: ["accounts-for-content"],
     queryFn: () =>
-      apiRequest<AccountRecordPage>("/accounts?page_size=200", {
+      apiRequest<AccountRecordPage>("/accounts?page_size=100", {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId) && creating,
@@ -212,12 +248,35 @@ export function ContentsClient() {
       notify(error instanceof Error ? error.message : "创建选题失败", "error");
     }
   }
-  function saveView() {
+  async function saveView() {
     window.localStorage.setItem(
       "sio-content-view",
-      JSON.stringify({ platform, minViews }),
+      JSON.stringify({ platform, minViews, pinnedIds }),
     );
+    if (workspaceId) {
+      await apiRequest("/accounts/view-preferences?view=contents", {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ preferences: { platform, minViews, pinnedIds } }),
+      });
+    }
     notify("筛选视图已保存到当前浏览器");
+  }
+  async function togglePinnedContent(contentId: string) {
+    const next = pinnedIds.includes(contentId)
+      ? pinnedIds.filter((id) => id !== contentId)
+      : [...pinnedIds, contentId];
+    setPinnedIds(next);
+    if (workspaceId) {
+      await apiRequest("/accounts/view-preferences?view=contents", {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ preferences: { platform, minViews, pinnedIds: next } }),
+      });
+    }
+    notify(next.includes(contentId) ? "作品已置顶，可继续置顶其他作品" : "作品已取消置顶");
   }
   const columns: ColumnDef<ContentRecord, unknown>[] = [
     {
@@ -405,6 +464,15 @@ export function ContentsClient() {
                   </>
                 ) : (
                   <>
+                    <button
+                      type="button"
+                      className={`inline-flex items-center gap-1 ${pinnedIds.includes(row.original.id) ? "text-amber-300" : "text-slate-400 hover:text-amber-300"}`}
+                      onClick={() => void togglePinnedContent(row.original.id)}
+                      title={pinnedIds.includes(row.original.id) ? "取消置顶作品" : "置顶作品"}
+                    >
+                      {pinnedIds.includes(row.original.id) ? <PinOff size={14} /> : <Pin size={14} />}
+                      {pinnedIds.includes(row.original.id) ? "取消置顶" : "置顶"}
+                    </button>
                     <button
                       className="inline-flex items-center gap-1 text-cyan-300 hover:text-cyan-200"
                       onClick={() => {
@@ -684,7 +752,7 @@ export function ContentsClient() {
         />
       ) : (
         <DataTable
-          data={contents.data?.items ?? []}
+          data={displayContents}
           columns={columns}
           total={contents.data?.total ?? 0}
           page={page}

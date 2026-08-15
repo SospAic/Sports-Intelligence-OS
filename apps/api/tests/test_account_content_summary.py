@@ -180,11 +180,72 @@ def test_account_content_summary_aggregates_real_snapshots(
     assert data["traffic_source_split"]["recommendation"] == pytest.approx(0.68, rel=1e-3)
     assert data["traffic_source_split"]["search"] == pytest.approx(0.21, rel=1e-3)
     # total interactions: 91000 + 6000
+    assert data["total_like_count"] == 75_000
+    assert data["total_comment_count"] == 4_500
+    assert data["total_share_count"] == 8_300
+    assert data["total_favorite_count"] == 9_200
     assert data["total_interactions"] == 97_000
+    assert data["calculated_engagement_rate"] == pytest.approx(0.097, rel=1e-3)
+    assert data["calculated_like_rate"] == pytest.approx(0.075, rel=1e-3)
+    assert data["calculated_comment_rate"] == pytest.approx(0.0045, rel=1e-3)
+    assert data["calculated_share_rate"] == pytest.approx(0.0083, rel=1e-3)
+    assert data["calculated_favorite_rate"] == pytest.approx(0.0092, rel=1e-3)
+    assert data["content_total_view_count"] == 1_000_000
     # recent 24h view growth: 350000 + 50000
     assert data["recent_24h_view_growth"] == 400_000
     # top content by views is the 900k one
     assert data["top_content_views"] == 900_000
+
+
+def test_account_content_summary_extrapolates_short_observation_window(
+    client: TestClient, database_path: Path
+) -> None:
+    account_id = _seed_account_with_two_contents(client, database_path)
+
+    engine = create_engine(PG_SYNC_URL)
+    with Session(engine) as session:
+        content_rows = (
+            session.query(
+                ContentSnapshot.content_item_id,
+                ContentSnapshot.captured_at,
+                ContentSnapshot.view_count,
+            )
+            .join(ContentItem, ContentItem.id == ContentSnapshot.content_item_id)
+            .filter(ContentItem.account_id == account_id)
+            .all()
+        )
+        content_ids = [row[0] for row in content_rows]
+        session.query(DerivedMetric).filter(
+            DerivedMetric.entity_id.in_(content_ids)
+        ).delete(synchronize_session=False)
+        for content_id, captured_at, current_views in content_rows:
+            assert current_views is not None
+            delta = 100_000 if current_views == 900_000 else 10_000
+            prior_at = captured_at - timedelta(hours=2)
+            session.add(
+                ContentSnapshot(
+                    id=uuid4(),
+                    content_item_id=content_id,
+                    captured_at=prior_at,
+                    view_count=current_views - delta,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="test_fixture",
+                    fetched_at=prior_at,
+                    created_at=prior_at,
+                )
+            )
+        session.commit()
+    engine.dispose()
+
+    response = client.get(f"/api/v1/accounts/{account_id}/content-summary")
+    assert response.status_code == 200, response.text
+    data = response.json()
+
+    assert data["recent_24h_view_growth"] == 1_320_000
+    assert data["recent_24h_view_growth_estimated"] is True
+    assert data["recent_24h_view_growth_sample_size"] == 2
+    assert data["recent_24h_view_growth_actual_window_hours"] == pytest.approx(2.0)
 
 
 @pytest.mark.parametrize(

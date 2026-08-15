@@ -23,11 +23,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.adapters.platforms.base import AdapterCallContext
+from app.adapters.platforms.base import AdapterCallContext, AdapterPage
 from app.adapters.platforms.yt_dlp import (
     YTDLP_PLATFORM_FETCH_CONCURRENCY,
     TikTokYtDlpAdapter,
     YouTubeYtDlpAdapter,
+    _FastListUnavailable,
 )
 
 HANDLE = "@example"
@@ -300,6 +301,37 @@ async def test_empty_catalogue_falls_back_to_the_legacy_path(recorder) -> None:
 
     assert rec.legacy_calls == 1
     assert [item.title for item in page.items] == ["legacy z1"]
+
+
+@pytest.mark.anyio
+async def test_fast_timeout_does_not_repeat_the_slow_legacy_extraction(monkeypatch) -> None:
+    """A timed-out flat probe must not spend the same budget on a second probe."""
+
+    class _Fallback:
+        async def list_contents(self, *_args, **_kwargs) -> AdapterPage:
+            return AdapterPage(items=(), next_cursor=None)
+
+    adapter = YouTubeYtDlpAdapter()
+    adapter._fb = _Fallback()  # type: ignore[assignment]
+    legacy_calls = 0
+
+    async def _fast_failure(*_args, **_kwargs):
+        nonlocal legacy_calls
+        legacy_calls += 1
+        raise _FastListUnavailable("flat probe timed out")
+
+    monkeypatch.setattr(adapter, "_fast_list_entries", _fast_failure)
+
+    page = await adapter.list_contents(
+        _ctx(fetch_concurrency=4, timeout_seconds=30),
+        HANDLE,
+        published_after=None,
+        cursor=None,
+        page_size=10,
+    )
+
+    assert page.items == ()
+    assert legacy_calls == 1, "only the fast probe should have been attempted"
 
 
 @pytest.mark.anyio

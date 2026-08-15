@@ -127,6 +127,10 @@ _BUSINESS_HINTS: dict[str, str] = {
     "external_call_failed": "外部调用失败。请检查目标服务可用性、凭证与网络。",
     "outbox_publish_failed": "领域事件发布失败。系统会按退避策略自动重试。",
     "llm_call_failed": "LLM 调用失败。请检查模型供应商凭证、额度或超时设置。",
+    "media_lifecycle_partial_failure": (
+        "媒体生命周期清理仅部分完成。请检查文件权限、存储连通性与代码级详情，"
+        "确认失败文件后再手动重试。"
+    ),
     "operation_failed": "操作执行失败。请结合代码级错误详情定位原因，必要时联系管理员。",
 }
 

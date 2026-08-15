@@ -55,7 +55,9 @@ x-backend-environment: &backend-environment
   SIO_PLATFORM_REQUEST_MAX_ATTEMPTS: ${SIO_PLATFORM_REQUEST_MAX_ATTEMPTS:-3}
   SIO_SYNC_TASK_MAX_RETRIES: ${SIO_SYNC_TASK_MAX_RETRIES:-3}
   SIO_TASK_STALE_AFTER_SECONDS: ${SIO_TASK_STALE_AFTER_SECONDS:-2100}
-  SIO_SYNC_PAGE_LIMIT: ${SIO_SYNC_PAGE_LIMIT:-20}
+  # Keep clean installs on the safe bounded monitoring default. Historical
+  # backfills remain an explicit workspace/account setting.
+  SIO_SYNC_PAGE_LIMIT: ${SIO_SYNC_PAGE_LIMIT:-40}
   SIO_YTDLP_NODE_PATH: ${SIO_YTDLP_NODE_PATH:-/usr/local/bin/node}
   SIO_YTDLP_REMOTE_COMPONENTS: ${SIO_YTDLP_REMOTE_COMPONENTS:-}
   SIO_YTDLP_ALLOW_RUNTIME_UPDATE: ${SIO_YTDLP_ALLOW_RUNTIME_UPDATE:-false}
@@ -77,6 +79,28 @@ x-backend-environment: &backend-environment
   SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS: ${SIO_NOTIFICATION_REQUEST_TIMEOUT_SECONDS:-10}
   SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS: ${SIO_NOTIFICATION_REQUEST_MAX_ATTEMPTS:-3}
   SIO_MEDIA_ROOT: ${SIO_MEDIA_ROOT:-/workspace/media}
+  SIO_MEDIA_STORAGE_QUOTA_BYTES: ${SIO_MEDIA_STORAGE_QUOTA_BYTES:-}
+  SIO_MEDIA_STORAGE_SCAN_MAX_FILES: ${SIO_MEDIA_STORAGE_SCAN_MAX_FILES:-100000}
+  # Lifecycle cleanup is opt-in and remains a dry run until explicitly changed.
+  SIO_MEDIA_LIFECYCLE_ENABLED: ${SIO_MEDIA_LIFECYCLE_ENABLED:-false}
+  SIO_MEDIA_LIFECYCLE_DRY_RUN: ${SIO_MEDIA_LIFECYCLE_DRY_RUN:-true}
+  SIO_MEDIA_RETENTION_DAYS: ${SIO_MEDIA_RETENTION_DAYS:-30}
+  SIO_MEDIA_ORPHAN_RETENTION_DAYS: ${SIO_MEDIA_ORPHAN_RETENTION_DAYS:-7}
+  SIO_MEDIA_LIFECYCLE_BATCH_SIZE: ${SIO_MEDIA_LIFECYCLE_BATCH_SIZE:-200}
+  SIO_SUBTITLE_ASR_ENABLED: ${SIO_SUBTITLE_ASR_ENABLED:-true}
+  SIO_SUBTITLE_ASR_BACKEND: ${SIO_SUBTITLE_ASR_BACKEND:-faster_whisper}
+  SIO_SUBTITLE_ASR_MODEL: ${SIO_SUBTITLE_ASR_MODEL:-small}
+  SIO_SUBTITLE_ASR_DEVICE: ${SIO_SUBTITLE_ASR_DEVICE:-auto}
+  SIO_SUBTITLE_ASR_COMPUTE_TYPE: ${SIO_SUBTITLE_ASR_COMPUTE_TYPE:-int8}
+  SIO_SUBTITLE_ASR_MODEL_DIR: ${SIO_SUBTITLE_ASR_MODEL_DIR:-/workspace/models/whisper}
+  SIO_SUBTITLE_ASR_MAX_FILE_BYTES: ${SIO_SUBTITLE_ASR_MAX_FILE_BYTES:-4000000000}
+  SIO_SUBTITLE_ASR_MAX_DURATION_SECONDS: ${SIO_SUBTITLE_ASR_MAX_DURATION_SECONDS:-7200}
+  SIO_SUBTITLE_ASR_BEAM_SIZE: ${SIO_SUBTITLE_ASR_BEAM_SIZE:-5}
+  SIO_SUBTITLE_TRANSLATION_BACKEND: ${SIO_SUBTITLE_TRANSLATION_BACKEND:-http}
+  SIO_SUBTITLE_TRANSLATION_BASE_URL: ${SIO_SUBTITLE_TRANSLATION_BASE_URL:-http://translation:5000}
+  SIO_SUBTITLE_TRANSLATION_API_KEY: ${SIO_SUBTITLE_TRANSLATION_API_KEY:-}
+  SIO_SUBTITLE_TRANSLATION_TIMEOUT_SECONDS: ${SIO_SUBTITLE_TRANSLATION_TIMEOUT_SECONDS:-120}
+  SIO_SUBTITLE_TRANSLATION_MAX_SEGMENTS: ${SIO_SUBTITLE_TRANSLATION_MAX_SEGMENTS:-2000}
 
 services:
   postgres:
@@ -204,11 +228,68 @@ services:
         "apps.worker.celery_app:celery_app",
         "worker",
         "--loglevel=INFO",
+        "--concurrency=4",
         "--queues=maintenance,monitoring,news,generation,automation,notification,video-search",
       ]
     depends_on:
       api:
         condition: service_healthy
+    restart: unless-stopped
+
+  subtitle-worker:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment: *backend-environment
+    volumes:
+      - ./media:/workspace/media
+      - subtitle_models:/workspace/models
+    command:
+      [
+        "celery",
+        "-A",
+        "apps.worker.celery_app:celery_app",
+        "worker",
+        "--loglevel=INFO",
+        "--queues=subtitle",
+        "--concurrency=1",
+        "--max-tasks-per-child=1",
+      ]
+    depends_on:
+      api:
+        condition: service_healthy
+      translation:
+        condition: service_healthy
+    restart: unless-stopped
+
+  translation:
+    # Multi-platform index digest; update deliberately after a reviewed model/API upgrade.
+    image: ${SIO_TRANSLATION_IMAGE:-libretranslate/libretranslate@sha256:1de2d7056bb8ad607a412f4563d9abe324ff632b43b5be9428bcc8e213aebb32}
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5000",
+        "--load-only",
+        "en,zh,ja,ko,es,fr,de,pt",
+        "--translation-cache",
+        "all",
+      ]
+    volumes:
+      - translation_models:/home/libretranslate/.local:rw
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/languages', timeout=5)",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
     restart: unless-stopped
 
   beat:
@@ -321,3 +402,5 @@ volumes:
   docker_browser_profile:
   llm_gateway_data:
   llm_experimental_data:
+  subtitle_models:
+  translation_models:

@@ -283,6 +283,21 @@ async def get_article(
     return await service(request, db).get_article(workspace.workspace_id, article_id)
 
 
+@router.patch("/articles/{article_id}/bookmark", response_model=ArticleRead)
+async def bookmark_article(
+    article_id: UUID,
+    payload: BookmarkRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> ArticleRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(request, db).bookmark_article(
+        workspace.workspace_id, article_id, auth.user.id, payload.bookmarked
+    )
+
+
 @router.patch("/articles/{article_id}", response_model=ArticleRead)
 async def update_article(
     article_id: UUID,

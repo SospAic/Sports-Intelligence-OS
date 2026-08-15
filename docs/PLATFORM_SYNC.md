@@ -74,6 +74,10 @@ TikTok 当前官方实现使用 Display API v2：`GET /v2/user/info/`、`POST /v
 
 页面中的“视频样本”是样本总数，“高潜视频”按当前平台样本内播放量百分位排序，不表示平台官方认定的爆款。
 
+### TikTok 公开评论
+
+公开 TikTok 作品评论优先通过浏览器请求上下文读取 `api/comment/list` 的真实响应。作品页文档加载失败并不等于评论接口不可用；只有公开评论接口没有结果时，且工作区确实配置了 Cookie，才允许一次 yt-dlp Cookie 后备尝试。评论文本、作者、发布时间、点赞数和回复数均原样保存并标记 `source_provider=tiktok_browser_comments`；无结果时显示条件说明，不填充估算值。
+
 ## 6. 调度与验证
 
 账号同步由 Celery Worker 执行，Beat 扫描到期账号；外部调用具备超时、有限重试、退避、限流与结构化错误。真实数据验收使用：
@@ -118,6 +122,10 @@ docker compose exec -T api sh -lc "cd /workspace/apps/api && python scripts/benc
 - `sync_fast_list_enabled`（默认 `true`）—— 快速通道总开关，关闭后回退旧路径；
 - `sync_fetch_concurrency`（默认 `4`）—— 详情抓取并发度，按平台再做上限钳制（YouTube 8 / Bilibili 4 / TikTok 2 / 抖音 2），风控更严的平台不会被拉高；
 - `sync_incremental_probe_size`（默认 `15`）—— 增量同步首页探测窗口。
+- `sync_page_limit`（默认 `40`）—— 单轮允许读取的目录页数上限；TikTok
+  公开目录每页通常只有 15 条，因此不能用 5 页作为“完整目录”上限。实际运行
+  仍受单轮时间预算、`max_contents` 和增量已知作品边界约束，稳态同步不会重复
+  重抓全部历史作品。
 
 **数据完整性保护**：仅凭目录读到的行（详情抓取失败，或已入库而被跳过）会被标记 `metadata.partial`。刷新策略下这类行只填补空缺字段，绝不覆盖此前完整解析已存下的描述与发布时间——否则一次详情抓取失败就会静默抹掉正确数据。
 
@@ -150,3 +158,115 @@ docker compose exec -T api sh -lc "cd /workspace/apps/api && python scripts/benc
 - 当前环境 TikTok Token 无效、YouTube 缺少 Key、抖音返回非预期响应；这些链路不能宣称真实同步成功。
 - Bilibili 当前公开页触发登录墙，需配置加密自动登录凭证或有效 `storage_state_json`；系统不会绕过验证码或 2FA。
 - 平台配额预算、调度随机抖动和分片队列仍待增强。
+# YouTube Shorts-only channel catalogue fallback (2026-08-12)
+
+YouTube channels without a `/videos` tab must be enumerated from the channel root URL (`/@handle`), not from `@handle/videos`. The yt-dlp adapter now switches to the root only when yt-dlp reports the deterministic `does not have a videos tab` error; timeouts and rate limits are not duplicated. The browser fallback uses the same root catalogue. A complete, unfiltered backfill records the independently observed catalogue total in the account snapshot; capped or date-filtered runs do not present their row count as the platform total.
+
+## YouTube work-detail completeness (2026-08-12)
+
+Fast catalogue rows are no longer treated as permanently complete when `skip_existing` is enabled. Rows marked `partial`/`flat_known`, or missing a publish timestamp, duration, or cover, re-enter the bounded detail queue. Successful detail extraction clears the stale marker. The per-video batch budget scales with the number of concurrent waves (bounded at 60 seconds), so a 49-item YouTube page is not silently cut off at the old 25-second ceiling.
+
+When a refresh returns a new view count but omits older interaction fields, the new snapshot carries forward the last known like/comment/share/favorite values and records `carried_forward_metrics` in snapshot metadata. This keeps the UI truthful and visible without presenting an omitted value as newly observed.
+
+## Subtitle display and YouTube downloads (2026-08-12)
+
+The subtitle workbench and video overlay now normalize cue text to plain text: timestamps are hidden by default, cue lines are joined with spaces, and the browser wraps text according to the control width. During playback the active cue is emphasized with stronger text/background styling; the system does not fabricate word-level timings when the source does not provide them.
+
+YouTube subtitle downloads now perform a bounded track preflight when a manual track is requested. If the requested language is available only under `automatic_captions`, the download switches to that real track and records the fallback in the task log. Empty language selectors preserve the legacy language filter instead of producing an empty `--sub-langs` value. Video format aliases such as `bestvideo+bestaudio` are normalized to valid yt-dlp selectors, and explicit output containers add a merge format.
+
+When any download artifact is requested, the adapter also passes `--no-simulate`. This is required because yt-dlp's `--dump-json` mode otherwise returns metadata successfully while leaving video, subtitle, thumbnail, and info-json files unwritten. The behavior is covered by an offline command-construction regression test and a real Docker worker download verification.
+
+## Subtitle multilingual translation options (2026-08-13)
+
+The product keeps platform-provided tracks separate from machine translation: a
+missing source track is never presented as if it came from YouTube/TikTok. For
+local deployment, the recommended provider boundary is:
+
+1. **CTranslate2 + NLLB-200 distilled** for broad language coverage and fast
+   batch inference. NLLB covers up to 200 languages, and CTranslate2 is an
+   efficient inference runtime. Verify the NLLB model license before any
+   commercial deployment; the commonly used NLLB-200 checkpoints are
+   non-commercial.
+2. **TranslateGemma** for higher-quality common-language translation when a
+   GPU/large desktop model is acceptable. It is a gated model family with
+   Gemma terms and a smaller supported language set, so it is not the default
+   for every-language coverage.
+3. **Argos Translate** as a CPU-friendly offline fallback. It is simpler to
+   deploy, but package coverage and quality vary more by language pair.
+
+The translation provider must record `provider`, `model`, `source_lang`,
+`target_lang`, `fetched_at`, and the source cue hash. It may add a translated
+track, but must not overwrite the original track. Deployment should expose the
+model as a separate local service or optional worker dependency so that
+subtitle display/download remains responsive while translation is running.
+
+The display path now preserves inline WebVTT word timestamps when supplied by
+the source (for example, YouTube's timed `<00:...>` tags). Other tracks use cue
+level emphasis until a transcription/translation provider supplies word-level
+alignment; no artificial word timing is claimed as exact.
+
+## Isolated local ASR and translation jobs (2026-08-13)
+
+The first implementation of the local processing boundary is now in the
+repository:
+
+- `SubtitleJob` persists queued/running/succeeded/degraded/failed status,
+  bounded rolling logs, result metadata and safe error details.
+- `POST /api/v1/media/{content_id}/subtitle-generate` queues work and
+  `GET /api/v1/media/{content_id}/subtitle-job` polls it. The content detail
+  page exposes language controls and a scrollable live log.
+- `app.tasks.subtitles.generate_content_subtitles` is routed to a dedicated
+  `subtitle` queue. Compose starts `subtitle-worker` with concurrency `1` and
+  `--max-tasks-per-child=1`; the normal account-sync worker does not consume
+  that queue.
+- `faster-whisper` is an optional model-backed provider with lazy model loading,
+  `word_timestamps=True`, file/duration limits, and a persistent model volume.
+  The default configuration remains disabled, so an unconfigured deployment
+  fails fast with `asr_not_configured` instead of fabricating text.
+- Existing platform tracks are reused first. A track without word timestamps
+  is not upgraded by interpolating fake timings; once ASR is enabled and a
+  local video exists, the worker generates a separate word-timed VTT and JSON
+  timeline. Translation tracks are separate and never overwrite the original.
+- Translation uses a local HTTP provider boundary compatible with a locally
+  hosted Argos / NLLB-CTranslate2 / TranslateGemma service. Missing provider
+  configuration produces a `degraded` job with the exact reason and keeps the
+  original subtitle usable.
+
+The Docker image installs the Python runtime (`faster-whisper`, CTranslate2,
+ONNX Runtime and audio support), but model weights are not downloaded during
+build. Enable ASR only after choosing a model, storage budget and CPU/GPU
+capacity, then set `SIO_SUBTITLE_ASR_ENABLED=true` and
+`SIO_SUBTITLE_ASR_BACKEND=faster_whisper`. Configure the local translation
+endpoint separately with `SIO_SUBTITLE_TRANSLATION_BACKEND=http` and
+`SIO_SUBTITLE_TRANSLATION_BASE_URL`. This prevents first-run model downloads or
+translation latency from blocking account monitoring.
+
+## Non-destructive sync updates and custom video player (2026-08-14)
+
+Account synchronization is an additive refresh. A sparse platform response,
+an empty subtitle/comment result, or a detail request that only returns a
+directory row must not erase a previously stored video file, cover, subtitle
+track, subtitle export, or comment. Existing media manifests are merged by
+artifact filename; an observed artifact updates its metadata, while a new
+artifact is appended. Existing comments are updated only with non-empty fields
+and are not deleted because a ranked/top-N refresh omitted them. Deletion or
+cleanup must be a separate explicit operation.
+
+The content detail page uses a custom video player rather than the browser's
+native controls. It provides keyboard shortcuts, seek buttons, volume, speed,
+subtitle language and display settings, fullscreen, auto-hiding controls, and a
+buffered-progress indicator. Playback time and duration are accepted only when
+finite and non-negative; unknown media duration is rendered as `--:--`, and
+seeking is clamped to the confirmed duration. The player preserves the
+subtitle workbench's cue-level and source-provided word-level highlighting.
+
+## LibreTranslate language-code compatibility (2026-08-14)
+
+The bundled LibreTranslate 1.9.6 service exposes Simplified Chinese as
+`zh-Hans`, while the product language value remains `zh` for UI and manifest
+stability. The HTTP provider now maps `zh`, `zh-CN`, and `zh_Hans` to
+`zh-Hans` on the wire. Platform tracks such as `und-auto` are sent as source
+`auto`, allowing LibreTranslate to detect the source language. The provider
+keeps this mapping at the integration boundary and does not rewrite stored
+subtitle language values. HTTP failures now include the translation service's
+response detail in the auditable job error.

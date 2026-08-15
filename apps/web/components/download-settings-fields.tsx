@@ -11,6 +11,7 @@ export const DEFAULT_DOWNLOAD_SETTINGS: YtDlpDownloadSettings = {
   download_video: false,
   video_format: "best",
   write_info_json: false,
+  fetch_comments: false,
 };
 
 type Props = {
@@ -40,6 +41,11 @@ const BOOLEAN_FIELDS: {
     key: "write_info_json",
     label: "下载元数据 JSON",
     hint: "归档作品的结构化元数据",
+  },
+  {
+    key: "fetch_comments",
+    label: "抓取热门评论（每条作品 Top 20）",
+    hint: "可选：按点赞与回复数排序保存；默认关闭，不拖慢普通账号同步",
   },
 ];
 

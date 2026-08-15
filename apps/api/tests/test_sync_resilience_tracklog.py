@@ -208,6 +208,10 @@ async def test_single_item_failure_continues_sync_and_records_tracklog() -> None
         # The 4 healthy items must each appear as a created/updated item event.
         item_ok = [e for e in events if e.event_type == "item" and e.level == "info"]
         assert len(item_ok) == 4
+        assert all(event.payload.get("kind") == "content_progress" for event in item_ok)
+        assert all("elements" in event.payload for event in item_ok)
+        assert run.metadata_json["content_progress"]["status"] == "metrics"
+        assert run.metadata_json["content_progress"]["elements"]["metrics"] == "available"
 
         # Detail endpoint must return the run plus the same ordered events.
         detail = await SyncService(session, registry, settings).get_run_detail(

@@ -62,4 +62,15 @@ describe("contentCoverUrl", () => {
     ).toBeNull();
     expect(contentCoverUrl(null)).toBeNull();
   });
+
+  it("uses the stable YouTube thumbnail endpoint when metadata has no cover", () => {
+    expect(
+      contentCoverUrl({
+        id: "cid",
+        cover_url: null,
+        canonical_url: "https://www.youtube.com/watch?v=abc123",
+        media: null,
+      }),
+    ).toBe("https://i.ytimg.com/vi/abc123/hqdefault.jpg");
+  });
 });

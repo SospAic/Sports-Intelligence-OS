@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "@/components/app-shell";
 import { ExternalImage } from "@/components/external-image";
+import { SubtitleWorkbench } from "@/components/subtitle-workbench";
 import { apiRequest } from "@/lib/browser-api";
 import {
   Badge,
@@ -22,6 +23,7 @@ import {
   secondaryButtonClass,
 } from "@/components/ui";
 import { formatDate } from "@/lib/format";
+import { subtitleTrackLabel } from "@/lib/language-options";
 
 interface DownloadMedia {
   base: string;
@@ -29,6 +31,7 @@ interface DownloadMedia {
   thumbnail?: string | null;
   info_json?: string | null;
   subtitles?: { lang: string; file: string }[] | null;
+  subtitle_exports?: { lang: string; file: string; format?: string }[] | null;
 }
 
 interface DownloadRecord {
@@ -53,6 +56,7 @@ interface DownloadPreview {
   duration_seconds: number | null;
   description: string | null;
   subtitle_languages: string[];
+  subtitle_tracks: { language: string; kind: "manual" | "automatic" }[];
   notice?: string | null;
 }
 
@@ -74,11 +78,34 @@ export default function DownloadPage() {
   const [downloadVideo, setDownloadVideo] = useState(true);
   const [videoFormat, setVideoFormat] = useState("best");
   const [writeSubtitles, setWriteSubtitles] = useState(true);
-  const [writeAutoSubtitles, setWriteAutoSubtitles] = useState(false);
-  const [subtitleLangs, setSubtitleLangs] = useState("zh.*,en.*");
+  const [writeAutoSubtitles, setWriteAutoSubtitles] = useState<boolean | null>(null);
+  const [subtitleLangs] = useState("zh.*,en.*");
+  const [subtitlePrimaryLang, setSubtitlePrimaryLang] = useState("");
+  const [subtitleSecondaryLang, setSubtitleSecondaryLang] = useState("");
+  const [subtitleShowTimestamps, setSubtitleShowTimestamps] = useState(false);
   const [writeThumbnail, setWriteThumbnail] = useState(true);
   const [writeInfoJson, setWriteInfoJson] = useState(false);
   const [saveToWorks, setSaveToWorks] = useState(false);
+
+  const subtitleLanguages = Array.from(
+    new Set(preview?.subtitle_tracks.map((track) => track.language).filter(Boolean) ?? []),
+  );
+  const effectiveSubtitlePrimaryLang =
+    subtitlePrimaryLang && subtitleLanguages.includes(subtitlePrimaryLang)
+      ? subtitlePrimaryLang
+      : subtitleLanguages[0] ?? "";
+  const effectiveSubtitleSecondaryLang =
+    subtitleSecondaryLang &&
+    subtitleLanguages.includes(subtitleSecondaryLang) &&
+    subtitleSecondaryLang !== effectiveSubtitlePrimaryLang
+      ? subtitleSecondaryLang
+      : subtitleLanguages.find((language) => language !== effectiveSubtitlePrimaryLang) ?? "";
+  const previewAutoOnly = Boolean(
+    preview &&
+      preview.subtitle_tracks.length > 0 &&
+      preview.subtitle_tracks.every((track) => track.kind === "automatic"),
+  );
+  const effectiveWriteAutoSubtitles = writeAutoSubtitles ?? previewAutoOnly;
 
   const list = useQuery({
     queryKey: ["downloads", workspaceId],
@@ -133,8 +160,13 @@ export default function DownloadPage() {
           download_video: downloadVideo,
           video_format: videoFormat,
           write_subtitles: writeSubtitles,
-          write_auto_subtitles: writeAutoSubtitles,
-          subtitle_langs: subtitleLangs,
+          write_auto_subtitles: effectiveWriteAutoSubtitles,
+          subtitle_langs:
+            [effectiveSubtitlePrimaryLang, effectiveSubtitleSecondaryLang].filter(Boolean).join(",") ||
+            subtitleLangs,
+          subtitle_primary_lang: effectiveSubtitlePrimaryLang,
+          subtitle_secondary_lang: effectiveSubtitleSecondaryLang,
+          subtitle_show_timestamps: subtitleShowTimestamps,
           write_thumbnail: writeThumbnail,
           write_info_json: writeInfoJson,
           save_to_works: saveToWorks,
@@ -241,7 +273,12 @@ export default function DownloadPage() {
                   )}
                   {preview.subtitle_languages.length > 0 && (
                     <span>
-                      字幕 {preview.subtitle_languages.slice(0, 6).join("、")}
+                      字幕 {preview.subtitle_tracks.length > 0
+                        ? preview.subtitle_tracks
+                            .slice(0, 6)
+                            .map((track) => `${track.language}${track.kind === "automatic" ? "（自动）" : "（人工）"}`)
+                            .join("、")
+                        : preview.subtitle_languages.slice(0, 6).join("、")}
                     </span>
                   )}
                 </div>
@@ -316,26 +353,64 @@ export default function DownloadPage() {
                     </span>
                   </span>
                 </label>
-                <label className="grid gap-2 text-sm text-slate-300">
+                <div className="grid gap-2 text-sm text-slate-300">
                   <span>
                     字幕语言
                     <span className="ml-1 text-xs text-slate-500">
-                      例如 zh.*、en.*
+                      仅显示当前公开页实际返回的轨道
                     </span>
                   </span>
-                  <input
-                    className={inputClass}
-                    value={subtitleLangs}
-                    onChange={(e) => setSubtitleLangs(e.target.value)}
-                    placeholder="zh.*,en.*"
-                    disabled={!writeSubtitles}
-                  />
-                </label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(["第一语言", "第二语言"] as const).map((label) => {
+                      const value = label === "第一语言" ? effectiveSubtitlePrimaryLang : effectiveSubtitleSecondaryLang;
+                      const setValue = label === "第一语言" ? setSubtitlePrimaryLang : setSubtitleSecondaryLang;
+                      return (
+                        <select
+                          key={label}
+                          aria-label={label}
+                          className={inputClass}
+                          value={value}
+                          onChange={(event) => setValue(event.target.value)}
+                          disabled={!writeSubtitles || preview.subtitle_tracks.length === 0}
+                        >
+                          <option value="">{label === "第二语言" ? "无" : "不下载"}</option>
+                          {Array.from(new Set(preview.subtitle_tracks.map((track) => track.language))).map((language) => (
+                            <option key={`${label}-${language}`} value={language} disabled={label === "第二语言" && language === effectiveSubtitlePrimaryLang}>
+                              {subtitleTrackLabel(
+                                language,
+                                preview.subtitle_tracks.some(
+                                  (track) => track.language === language && track.kind === "automatic",
+                                )
+                                  ? "automatic"
+                                  : "manual",
+                              )}
+                            </option>
+                          ))}
+                        </select>
+                      );
+                    })}
+                  </div>
+                  {preview.subtitle_tracks.length === 0 && (
+                    <p className="text-xs text-amber-300">
+                      公开页没有返回可下载字幕轨道；不会用估算文本代替字幕。
+                    </p>
+                  )}
+                  <label className="flex items-center gap-2 text-xs text-slate-400">
+                    <input
+                      type="checkbox"
+                      className="rounded border-slate-600 bg-slate-800"
+                      checked={subtitleShowTimestamps}
+                      onChange={(event) => setSubtitleShowTimestamps(event.target.checked)}
+                      disabled={!writeSubtitles}
+                    />
+                    显示时间戳（默认关闭；原始 VTT/SRT 时间码仍会保留）
+                  </label>
+                </div>
                 <label className="flex items-start gap-3 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-sm text-slate-200 transition hover:border-violet-900/80">
                   <input
                     type="checkbox"
                     className="mt-1 size-4 shrink-0 accent-violet-400"
-                    checked={writeAutoSubtitles}
+                    checked={effectiveWriteAutoSubtitles}
                     onChange={(e) => setWriteAutoSubtitles(e.target.checked)}
                   />
                   <span className="min-w-0">
@@ -502,6 +577,16 @@ export default function DownloadPage() {
                         <FileJson size={14} /> info.json
                       </a>
                     )}
+                  </div>
+                )}
+                {item.media?.subtitles && item.media.subtitles.length > 0 && workspaceId && (
+                  <div className="mt-4">
+                    <SubtitleWorkbench
+                      endpoint={`/downloads/${item.id}`}
+                      workspaceId={workspaceId}
+                      tracks={item.media.subtitles}
+                      compact
+                    />
                   </div>
                 )}
               </div>

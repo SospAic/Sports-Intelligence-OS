@@ -199,6 +199,23 @@ class NotificationChannelRead(BaseModel):
     updated_at: datetime
 
 
+class NotificationChannelValidationRead(BaseModel):
+    """Result of a local notification configuration check.
+
+    This endpoint deliberately performs no external I/O.  A valid result means
+    the provider accepted the decrypted configuration; it is not a delivery
+    receipt.
+    """
+
+    channel_id: UUID
+    provider_key: str
+    status: Literal["configured", "invalid", "disabled"]
+    is_mock: bool
+    external_io_performed: bool = False
+    checked_at: datetime
+    detail: str
+
+
 class NotificationProviderRead(BaseModel):
     key: str
     name: str
@@ -217,6 +234,7 @@ class NotificationDeliveryRead(BaseModel):
     id: UUID
     channel_id: UUID
     rule_id: UUID | None
+    subscription_id: UUID | None = None
     entity_type: str
     entity_id: UUID
     payload: dict[str, Any]
@@ -234,3 +252,38 @@ class NotificationDeliveryPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class NotificationChannelHealthRead(BaseModel):
+    channel_id: UUID
+    name: str
+    provider_key: str
+    enabled: bool
+    health_status: str
+    deliveries: int = 0
+    delivered: int = 0
+    failed: int = 0
+    queued: int = 0
+    sending: int = 0
+    attempts: int = 0
+    successful_attempts: int = 0
+    failed_attempts: int = 0
+    success_rate: float | None = None
+    average_latency_ms: float | None = None
+    last_delivery_at: datetime | None = None
+    last_error_code: str | None = None
+
+
+class NotificationHealthSummaryRead(BaseModel):
+    window_minutes: int
+    generated_at: datetime
+    channels: list[NotificationChannelHealthRead] = Field(default_factory=list)
+    deliveries: int = 0
+    delivered: int = 0
+    failed: int = 0
+    queued: int = 0
+    sending: int = 0
+    successful_attempts: int = 0
+    failed_attempts: int = 0
+    success_rate: float | None = None
+    average_latency_ms: float | None = None

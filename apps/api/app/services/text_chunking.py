@@ -17,6 +17,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from html import unescape
 
 #: 句子边界：中英文终止标点 + 换行。保留标点本身（用 lookbehind 切分）。
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？；!?;\n])")
@@ -35,6 +36,7 @@ _INLINE_TAG = re.compile(r"<[^>]*>")
 _CUE_INDEX = re.compile(r"^\s*\d+\s*$")
 
 _WHITESPACE = re.compile(r"[ \t\u00a0]+")
+_SUBTITLE_SPEAKER_MARKER = re.compile(r"(?:^|\s)>>(?=\s|$)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +72,21 @@ def normalise_whitespace(value: str) -> str:
     collapsed = _WHITESPACE.sub(" ", value.replace("\r\n", "\n").replace("\r", "\n"))
     lines = [line.strip() for line in collapsed.split("\n")]
     return "\n".join(line for line in lines if line)
+
+
+def normalise_subtitle_text(value: str) -> str:
+    """Flatten one caption cue and remove platform-only speaker markers.
+
+    Caption files commonly contain HTML entities and WebVTT markup. A cue is
+    one semantic text flow even when its source uses several physical lines;
+    the UI/exporter should let its own width decide wrapping.
+    """
+
+    decoded = unescape(value)
+    stripped = _INLINE_TAG.sub("", decoded)
+    flattened = re.sub(r"[\r\n]+", " ", stripped)
+    flattened = re.sub(r"[ \t\u00a0]+", " ", flattened).strip()
+    return re.sub(r"[ \t]+", " ", _SUBTITLE_SPEAKER_MARKER.sub(" ", flattened)).strip()
 
 
 def build_meta_text(
@@ -182,7 +199,7 @@ def parse_subtitle(content: str) -> list[SubtitleCue]:
     def flush() -> None:
         nonlocal current, buffer
         if current is not None:
-            text = normalise_whitespace(" ".join(buffer))
+            text = normalise_subtitle_text(" ".join(buffer))
             if text:
                 cues.append(SubtitleCue(start_ms=current[0], end_ms=current[1], text=text))
         current = None

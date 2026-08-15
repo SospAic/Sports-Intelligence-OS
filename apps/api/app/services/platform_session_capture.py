@@ -11,6 +11,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import urlopen
 
@@ -112,7 +113,7 @@ def _netscape_cookie_line(cookie: dict[str, object]) -> str:
     secure = "TRUE" if cookie.get("secure") else "FALSE"
     raw_expiry = cookie.get("expires")
     try:
-        expiry = int(float(raw_expiry)) if raw_expiry and float(raw_expiry) > 0 else 0
+        expiry = int(float(str(raw_expiry))) if raw_expiry and float(str(raw_expiry)) > 0 else 0
     except (TypeError, ValueError):
         expiry = 0
     name = str(cookie.get("name") or "").replace("\t", " ").replace("\n", " ")
@@ -135,7 +136,7 @@ def _session_expiry(cookies: list[dict[str, object]]) -> datetime:
     for cookie in cookies:
         raw = cookie.get("expires")
         try:
-            timestamp = float(raw) if raw is not None else 0
+            timestamp = float(str(raw)) if raw is not None else 0
         except (TypeError, ValueError):
             timestamp = 0
         if timestamp > now.timestamp():
@@ -149,7 +150,10 @@ def _storage_state_for_platform(
     state: dict[str, object], cookies: list[dict[str, object]], allowed_domains: tuple[str, ...]
 ) -> dict[str, object]:
     origins: list[dict[str, object]] = []
-    for origin in state.get("origins", []):
+    raw_origins = state.get("origins")
+    if not isinstance(raw_origins, list):
+        raw_origins = []
+    for origin in raw_origins:
         if not isinstance(origin, dict):
             continue
         host = urlsplit(str(origin.get("origin") or "")).hostname or ""
@@ -158,7 +162,7 @@ def _storage_state_for_platform(
     return {"cookies": cookies, "origins": origins}
 
 
-def _pick_page(contexts: list[object], allowed_domains: tuple[str, ...]):
+def _pick_page(contexts: list[object], allowed_domains: tuple[str, ...]) -> tuple[Any, Any]:
     for context in contexts:
         for page in getattr(context, "pages", []):
             host = urlsplit(page.url).hostname or ""
@@ -205,7 +209,7 @@ def _resolve_cdp_websocket_endpoint(endpoint: str) -> str:
     )
 
 
-async def _connect_browser(playwright, endpoint: str):
+async def _connect_browser(playwright: Any, endpoint: str) -> Any:
     websocket_endpoint = await asyncio.to_thread(_resolve_cdp_websocket_endpoint, endpoint)
     return await playwright.chromium.connect_over_cdp(websocket_endpoint, timeout=15_000)
 

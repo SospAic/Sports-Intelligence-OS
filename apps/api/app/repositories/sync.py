@@ -80,7 +80,7 @@ class SyncRepository:
             .join(Platform, Platform.id == Account.platform_id)
             .where(
                 Account.is_active.is_(True),
-                Account.sync_status != "disabled",
+                Account.sync_status.notin_(["disabled", "queued", "syncing"]),
                 Platform.enabled.is_(True),
                 (Account.next_sync_at.is_(None) | (Account.next_sync_at <= due_at)),
             )

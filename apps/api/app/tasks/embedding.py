@@ -189,7 +189,9 @@ async def _index_one(content_item_id: UUID) -> dict[str, Any]:
         await engine.dispose()
 
 
-@celery_app.task(name="app.tasks.embedding.backfill_content_embeddings")
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.tasks.embedding.backfill_content_embeddings"
+)
 def backfill_content_embeddings(
     workspace_id: str | None = None,
     limit: int = DEFAULT_BATCH_LIMIT,

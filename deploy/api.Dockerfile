@@ -43,7 +43,7 @@ COPY apps/__init__.py /workspace/apps/__init__.py
 COPY scripts /workspace/scripts
 
 RUN --mount=type=cache,id=sio-pip-cache,target=/root/.cache/pip \
-    pip install "/workspace/apps/api[dev]" \
+    pip install "/workspace/apps/api[dev,subtitle]" \
     && chown -R sio:sio /workspace
 
 USER sio

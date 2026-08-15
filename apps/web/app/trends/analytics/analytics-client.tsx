@@ -33,11 +33,14 @@ const PLATFORM_LABELS: Record<string, string> = {
   bilibili: "B站",
 };
 
+PLATFORM_LABELS.web = "全网新闻";
+
 const PLATFORM_COLORS: Record<string, string> = {
   youtube: "#ef4444",
   tiktok: "#22d3ee",
   douyin: "#f472b6",
   bilibili: "#60a5fa",
+  web: "#a78bfa",
 };
 
 const ALL_PLATFORMS = [...ANALYTICS_PLATFORMS];

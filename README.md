@@ -141,7 +141,9 @@ SIO_LLM_DEFAULT_MODEL=gpt-5.6-terra
 
 浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
 
-通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md)。
+通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。订阅告警可在“设置 → 订阅告警”按新作品、关键词或指标突变触发统一通知队列，详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md) 和 [订阅告警](docs/SUBSCRIPTION_ALERTS.md)。
+
+媒体文件的物理完整性、配额和生命周期治理见 [媒体存储生命周期治理](docs/STORAGE_LIFECYCLE.md)。默认只读预览，自动删除必须由 Owner/Admin 显式确认并启用策略；不会把数据库中的文件名当作真实文件存在。
 
 ### 添加 RSS 新闻源
 
@@ -317,4 +319,4 @@ Mock 默认被生产自动化阻止；仅测试模式或规则明确允许 Mock 
 
 ## 文档索引
 
-[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [平台采集](docs/PLATFORM_SYNC.md) · [真实数据验收](docs/REAL_DATA_ACCEPTANCE.md) · [指标口径](docs/METRIC_CATALOG.md) · [待处理任务](docs/NEXT_TASKS.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md)
+[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [平台采集](docs/PLATFORM_SYNC.md) · [真实数据验收](docs/REAL_DATA_ACCEPTANCE.md) · [指标口径](docs/METRIC_CATALOG.md) · [待处理任务](docs/NEXT_TASKS.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [订阅告警](docs/SUBSCRIPTION_ALERTS.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md)

@@ -2,11 +2,13 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, or_
+from sqlalchemy import and_, delete, or_, select
 
 from app.core.config import get_settings
 from app.db.session import create_engine_and_session
 from app.models.session import AuthSession, LoginAttempt
+from app.models.workspace import Workspace
+from app.services.storage import media_lifecycle
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -54,5 +56,53 @@ async def _cleanup_auth_records() -> dict[str, int]:
                 "sessions_deleted": int(sessions.rowcount or 0),  # type: ignore[attr-defined]
                 "attempts_deleted": int(attempts.rowcount or 0),  # type: ignore[attr-defined]
             }
+    finally:
+        await engine.dispose()
+
+
+@celery_app.task(name="app.tasks.system.cleanup_media_lifecycle")  # type: ignore[untyped-decorator]
+def cleanup_media_lifecycle() -> dict[str, int]:
+    return asyncio.run(_cleanup_media_lifecycle())
+
+
+async def _cleanup_media_lifecycle() -> dict[str, int]:
+    """Run the configured bounded policy; disabled deployments perform no scan."""
+
+    settings = get_settings()
+    if not settings.media_lifecycle_enabled:
+        return {"workspaces": 0, "planned": 0, "deleted": 0, "skipped_disabled": 1}
+    engine, session_factory = create_engine_and_session(settings)
+    result = {"workspaces": 0, "planned": 0, "deleted": 0, "failed": 0}
+    try:
+        async with session_factory() as session:
+            workspace_ids = list(
+                (
+                    await session.scalars(
+                        select(Workspace.id).where(Workspace.status == "active")
+                    )
+                ).all()
+            )
+            for workspace_id in workspace_ids:
+                try:
+                    report = await media_lifecycle(
+                        session,
+                        settings,
+                        workspace_id,
+                        dry_run=settings.media_lifecycle_dry_run,
+                        confirm=True,
+                        actor_type="system",
+                    )
+                    result["workspaces"] += 1
+                    result["planned"] += len(report.candidates)
+                    result["deleted"] += report.deleted_file_count
+                    result["failed"] += len(report.failed)
+                except Exception:  # noqa: BLE001 - one workspace must not block others
+                    await session.rollback()
+                    result["failed"] += 1
+                    logger.exception(
+                        "media_lifecycle_workspace_failed",
+                        extra={"workspace_id": str(workspace_id)},
+                    )
+        return result
     finally:
         await engine.dispose()

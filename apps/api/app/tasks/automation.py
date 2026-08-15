@@ -20,12 +20,15 @@ from app.models.monitoring import (
     Platform,
 )
 from app.models.news import Article, EventArticle, TopicEvent
+from app.models.subscription import SubscriptionRule
 from app.models.workspace import WorkspaceMembership
 from app.providers.llm.registry import build_llm_provider_registry
 from app.providers.notifications.base import NotificationProviderError
 from app.providers.notifications.registry import build_notification_provider_registry
 from app.schemas.automation import AutomationEvaluateRequest
+from app.schemas.subscription import SubscriptionEvaluateRequest
 from app.services.automation import AutomationService
+from app.services.subscriptions import SubscriptionService
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -161,7 +164,7 @@ async def _scan_recent_entities() -> int:
     cutoff = datetime.now(UTC) - timedelta(hours=24)
     try:
         async with session_factory() as session:
-            active_workspaces = list(
+            active_workspaces = set(
                 (
                     await session.scalars(
                         select(AutomationRule.workspace_id)
@@ -170,7 +173,17 @@ async def _scan_recent_entities() -> int:
                     )
                 ).all()
             )
+            active_workspaces.update(
+                (
+                    await session.scalars(
+                        select(SubscriptionRule.workspace_id)
+                        .where(SubscriptionRule.enabled.is_(True))
+                        .distinct()
+                    )
+                ).all()
+            )
             service = AutomationService(session, settings, notification_providers, llm_providers)
+            subscription_service = SubscriptionService(session)
             for workspace_id in active_workspaces:
                 actor_id = await session.scalar(
                     select(WorkspaceMembership.user_id)
@@ -198,8 +211,21 @@ async def _scan_recent_entities() -> int:
                     )
                 ).all()
                 for snapshot, item, platform in content_rows:
+                    previous = await session.scalar(
+                        select(ContentSnapshot)
+                        .where(
+                            ContentSnapshot.content_item_id == item.id,
+                            ContentSnapshot.captured_at < snapshot.captured_at,
+                        )
+                        .order_by(ContentSnapshot.captured_at.desc())
+                        .limit(1)
+                    )
                     facts: dict[str, Any] = {
                         "entity_id": str(item.id),
+                        "content_id": str(item.id),
+                        "account_id": str(item.account_id),
+                        "platform_id": str(item.platform_id),
+                        "is_new": previous is None,
                         "view_count": snapshot.view_count,
                         "like_count": snapshot.like_count,
                         "comment_count": snapshot.comment_count,
@@ -211,15 +237,6 @@ async def _scan_recent_entities() -> int:
                     }
                     facts.update(
                         await _metric_facts(session, workspace_id, "content_item", item.id)
-                    )
-                    previous = await session.scalar(
-                        select(ContentSnapshot)
-                        .where(
-                            ContentSnapshot.content_item_id == item.id,
-                            ContentSnapshot.captured_at < snapshot.captured_at,
-                        )
-                        .order_by(ContentSnapshot.captured_at.desc())
-                        .limit(1)
                     )
                     previous_facts = (
                         {
@@ -244,6 +261,18 @@ async def _scan_recent_entities() -> int:
                             source_kind=snapshot.source_kind,
                         ),
                     )
+                    await subscription_service.evaluate(
+                        workspace_id,
+                        actor_id,
+                        SubscriptionEvaluateRequest(
+                            entity_type="content",
+                            entity_id=item.id,
+                            facts=facts,
+                            previous=previous_facts,
+                            event_key=f"content_snapshot:{snapshot.id}",
+                            source_kind=snapshot.source_kind,
+                        ),
+                    )
                     processed += 1
 
                 account_rows = (
@@ -260,8 +289,20 @@ async def _scan_recent_entities() -> int:
                     )
                 ).all()
                 for snapshot, account, platform in account_rows:
+                    previous_account = await session.scalar(
+                        select(AccountSnapshot)
+                        .where(
+                            AccountSnapshot.account_id == account.id,
+                            AccountSnapshot.captured_at < snapshot.captured_at,
+                        )
+                        .order_by(AccountSnapshot.captured_at.desc())
+                        .limit(1)
+                    )
                     facts = {
                         "entity_id": str(account.id),
+                        "account_id": str(account.id),
+                        "platform_id": str(account.platform_id),
+                        "is_new": previous_account is None,
                         "follower_count": snapshot.follower_count,
                         "following_count": snapshot.following_count,
                         "total_like_count": snapshot.total_like_count,
@@ -279,6 +320,28 @@ async def _scan_recent_entities() -> int:
                             entity_type="account",
                             entity_id=account.id,
                             facts=facts,
+                            event_key=f"account_snapshot:{snapshot.id}",
+                            source_kind=snapshot.source_kind,
+                        ),
+                    )
+                    await subscription_service.evaluate(
+                        workspace_id,
+                        actor_id,
+                        SubscriptionEvaluateRequest(
+                            entity_type="account",
+                            entity_id=account.id,
+                            facts=facts,
+                            previous=(
+                                {
+                                    "follower_count": previous_account.follower_count,
+                                    "following_count": previous_account.following_count,
+                                    "total_like_count": previous_account.total_like_count,
+                                    "total_view_count": previous_account.total_view_count,
+                                    "video_count": previous_account.video_count,
+                                }
+                                if previous_account
+                                else {}
+                            ),
                             event_key=f"account_snapshot:{snapshot.id}",
                             source_kind=snapshot.source_kind,
                         ),
@@ -336,6 +399,26 @@ async def _scan_recent_entities() -> int:
                             event_key=(
                                 f"topic_event:{event.id}:{event.last_update_time.isoformat()}"
                             ),
+                            source_kind=validated_source_kind,
+                        ),
+                    )
+                    await subscription_service.evaluate(
+                        workspace_id,
+                        actor_id,
+                        SubscriptionEvaluateRequest(
+                            entity_type="news",
+                            entity_id=event.id,
+                            facts={
+                                "entity_id": str(event.id),
+                                "headline": event.title,
+                                "title": event.title,
+                                "body": event.summary,
+                                "heat_score": float(event.heat_score),
+                                "sport": event.sport,
+                                "league": event.league,
+                                "is_new": True,
+                            },
+                            event_key=f"topic_event:{event.id}:{event.last_update_time.isoformat()}",
                             source_kind=validated_source_kind,
                         ),
                     )

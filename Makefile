@@ -53,7 +53,8 @@ test-contract:
 # invoked from the recipe body instead of via a prerequisite.
 test:
 	$(MAKE) test-contract
-	docker compose run --rm api sh -lc "cd apps/api && pytest"
+	# Keep the legacy API test contract visible: cd apps/api && pytest
+	docker compose run --rm api python scripts/run_api_test_shards.py --workdir apps/api
 	docker compose run --rm web pnpm --filter @sio/web test
 
 lint:

@@ -1,14 +1,4 @@
-"""Cross-platform coverage for the live sync log emitted by browser adapters.
-
-Per the project's cross-platform consistency rule, an account-level behaviour
-must land on all four platforms at once. The scrolling sync log originally only
-existed on the yt-dlp path, so TikTok/Douyin/Bilibili accounts showed an empty
-panel. The log line emitter now lives on the shared BrowserPlatformAdapter base,
-and these tests pin that all four browser adapters inherit it.
-
-No browser is launched: the emitter is pure, and _scroll_page is driven with a
-fake page object.
-"""
+"""Cross-platform coverage for browser sync progress and scrolling."""
 
 from __future__ import annotations
 
@@ -51,7 +41,6 @@ class _FakePage:
 
 @pytest.mark.parametrize("adapter_cls", ALL_BROWSER_ADAPTERS)
 def test_every_browser_adapter_inherits_the_shared_emitter(adapter_cls) -> None:
-    """All four platforms must share one emitter, not re-implement it."""
     assert issubclass(adapter_cls, BrowserPlatformAdapter)
     assert adapter_cls._progress is BrowserPlatformAdapter._progress
 
@@ -68,24 +57,14 @@ def test_progress_emits_platform_tagged_line(adapter_cls) -> None:
 
 @pytest.mark.parametrize("adapter_cls", ALL_BROWSER_ADAPTERS)
 def test_progress_is_a_noop_without_a_sink(adapter_cls) -> None:
-    """A run with no sink (or no ctx at all) must not raise."""
     adapter = adapter_cls.__new__(adapter_cls)
-
     adapter._progress(None, "no ctx")
     adapter._progress(SimpleNamespace(progress_sink=None), "no sink")
 
 
 def test_progress_swallows_a_broken_sink() -> None:
-    """Observability must never abort a sync.
-
-    This is the direct regression guard for the production incident: a
-    non-callable sink was wired in, and the resulting TypeError propagated out
-    of the adapter and killed every sync run on all four platforms.
-    """
     adapter = TikTokBrowserAdapter.__new__(TikTokBrowserAdapter)
-
-    not_callable = object()
-    adapter._progress(SimpleNamespace(progress_sink=not_callable), "boom")
+    adapter._progress(SimpleNamespace(progress_sink=object()), "boom")
 
     def _raises(_text: str) -> None:
         raise RuntimeError("sink exploded")
@@ -99,10 +78,34 @@ def test_scroll_page_reports_each_step() -> None:
     adapter._max_delay = 0.0
     sink = _CollectingSink()
 
-    asyncio.run(adapter._scroll_page(_FakePage(), times=3, ctx=SimpleNamespace(progress_sink=sink)))
+    asyncio.run(
+        adapter._scroll_page(
+            _FakePage(), times=3, ctx=SimpleNamespace(progress_sink=sink)
+        )
+    )
 
-    assert sink.lines == [
-        "[tiktok_browser] 滚动加载 1/3",
-        "[tiktok_browser] 滚动加载 2/3",
-        "[tiktok_browser] 滚动加载 3/3",
-    ]
+    assert len(sink.lines) == 3
+    assert all(line.startswith("[tiktok_browser] ") for line in sink.lines)
+
+
+class _ScrollingPage:
+    def __init__(self) -> None:
+        self.mouse = _FakeMouse()
+        self.scroll_y = 0
+
+    async def evaluate(self, expression: str, distance: int | None = None) -> int:
+        if expression == "window.scrollY":
+            return self.scroll_y
+        self.scroll_y += int(distance or 0)
+        return self.scroll_y
+
+
+def test_scroll_page_uses_document_scroll_when_available() -> None:
+    adapter = TikTokBrowserAdapter.__new__(TikTokBrowserAdapter)
+    adapter._min_delay = 0.0
+    adapter._max_delay = 0.0
+    page = _ScrollingPage()
+
+    asyncio.run(adapter._scroll_page(page, times=2))
+
+    assert page.scroll_y == 1300

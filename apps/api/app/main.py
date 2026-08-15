@@ -21,6 +21,7 @@ from app.api.routes.reliability import (
     outbox_exception_handler,
 )
 from app.api.routes.settings import settings_exception_handler
+from app.api.routes.subscriptions import subscription_exception_handler
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
@@ -39,6 +40,7 @@ from app.services.outbox import OutboxError
 from app.services.platform_catalog_seed import seed_platform_catalog
 from app.services.platform_credentials import PlatformCredentialError
 from app.services.settings import SettingsError
+from app.services.subscriptions import SubscriptionError
 from app.services.sync import SyncError
 
 logger = logging.getLogger(__name__)
@@ -131,6 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(SettingsError, settings_exception_handler)
     application.add_exception_handler(OutboxError, outbox_exception_handler)
     application.add_exception_handler(PlatformCredentialError, settings_exception_handler)
+    application.add_exception_handler(SubscriptionError, subscription_exception_handler)
     application.add_exception_handler(
         NotificationTemplateError, notification_template_exception_handler
     )

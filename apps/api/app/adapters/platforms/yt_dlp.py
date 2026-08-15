@@ -31,6 +31,7 @@ import re
 import hashlib
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -57,9 +58,9 @@ from app.services.ytdlp_runtime import runtime_args
 
 logger = logging.getLogger(__name__)
 
-# Generous timeout: a YouTube channel playlist can take a while to resolve all
-# per-video metadata, and we never want a hung subprocess to block a worker.
-YTDLP_TIMEOUT_SECONDS = 180
+# A single child process must never be allowed to occupy a worker for minutes.
+# The sync executor supplies a tighter remaining-run budget when available.
+YTDLP_TIMEOUT_SECONDS = 90
 
 # yt-dlp's built-in network retry count. We set it explicitly (rather than
 # relying on yt-dlp's own default) so the value is visible and operator-tunable,
@@ -73,7 +74,8 @@ YTDLP_TIMEOUT_SECONDS = 180
 # anti-bot layer serves a stripped page. Those need a different recovery
 # strategy (a different extraction path), handled by
 # :data:`YTDLP_EXTRACTION_ATTEMPTS` / :func:`_recovery_args_for` below.
-YTDLP_DEFAULT_RETRIES = 10
+YTDLP_DEFAULT_RETRIES = 3
+YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS = 15
 
 # How many *extraction strategies* to try when yt-dlp exits non-zero with no
 # usable output. Attempt 0 is the plain command; later attempts append
@@ -87,9 +89,20 @@ YTDLP_ATTEMPT_BACKOFF_SECONDS = (1.5, 3.0)
 
 # Wall-clock ceiling for the cheap ``--flat-playlist`` catalogue read. It never
 # performs per-video extraction, so it must finish far sooner than a full dump;
-# when it does not, the caller silently reverts to the legacy single-shot path
-# instead of burning the sync budget.
-YTDLP_FLAT_TIMEOUT_SECONDS = 60
+# when it does not, the caller switches to the browser fallback on the first
+# page instead of repeating another expensive yt-dlp playlist extraction.
+YTDLP_FLAT_TIMEOUT_SECONDS = 30
+
+# Full per-video metadata is an enhancement over the flat catalogue. It must
+# remain bounded, but a fixed 25-second ceiling silently dropped the tail of a
+# 49-item YouTube page even when the individual requests were healthy.
+YTDLP_DETAIL_BATCH_TIMEOUT_SECONDS = 60
+
+# A single flat TikTok/Douyin process can enumerate a much larger window than
+# a per-video detail burst. Deep backfill uses this window and slices it across
+# the executor's normal 50-item pages, so the channel identity is resolved
+# once per sync run instead of once per page.
+YTDLP_DEEP_BACKFILL_WINDOW = 250
 
 # Default per-video extraction concurrency, per platform. Measured on this
 # deployment against a real YouTube channel (8 videos, full ``--dump-json``):
@@ -233,7 +246,7 @@ def _recovery_args_for(url: str, attempt: int) -> list[str]:
     if attempt < 1:
         return []
     host = (urlsplit(url).hostname or "").lower()
-    if "tiktok.com" in host:
+    if "tiktok.com" in host or url.lower().startswith("tiktokuser:"):
         index = (attempt - 1) % len(TIKTOK_RECOVERY_APP_INFO)
         return ["--extractor-args", f"tiktok:app_info={TIKTOK_RECOVERY_APP_INFO[index]}"]
     return []
@@ -277,6 +290,15 @@ YTDLP_FIELD_SPECS: tuple[tuple[str, str, str], ...] = (
     ("no_warnings", "no-warnings", "bool"),
 )
 YTDLP_SPEC_KEYS: frozenset[str] = frozenset(spec[0] for spec in YTDLP_FIELD_SPECS)
+
+
+class _FastListUnavailable(Exception):
+    """The cheap catalogue path could not run at all.
+
+    An empty, successful catalogue is different from a timeout/transport
+    failure. The former is a valid end-of-playlist signal; the latter must not
+    fall through to the slow full-playlist extraction path.
+    """
 
 
 def _build_descriptor(key: str, name: str) -> AdapterDescriptor:
@@ -376,6 +398,17 @@ class YtDlpAdapter(PlatformAdapter):
             return None
         quality = str(download.get("video_quality") or "best").strip().lower()
         vfmt = str(download.get("video_format") or "best").strip().lower()
+        # The download page historically used ``video_format`` for both a
+        # container and a format strategy. Treat the strategy value as a
+        # selector, not as an invalid ``[ext=bestvideo+bestaudio]`` filter.
+        # Numeric values from that page are resolution choices.
+        if vfmt in {"bestvideo", "bestvideo+bestaudio", "bestvideo+bestaudio/best"}:
+            if quality in ("best", ""):
+                return "bestvideo+bestaudio/best"
+            vfmt = "best"
+        elif vfmt.isdigit() and quality in ("best", ""):
+            quality = vfmt
+            vfmt = "best"
         if quality == "audio":
             return None
         constraints: list[str] = []
@@ -455,7 +488,15 @@ class YtDlpAdapter(PlatformAdapter):
             if match_base and fn.startswith(match_base + "."):
                 ext = os.path.splitext(fn)[1]
                 mid = fn[len(match_base) + 1 : -len(ext)]
-                lang = mid
+                # The public TikTok browser path marks the source kind in the
+                # filename. Keep manual language names clean while retaining
+                # an explicit suffix for an auto-generated duplicate.
+                if mid.endswith(".manual"):
+                    lang = mid[: -len(".manual")]
+                elif mid.endswith(".auto"):
+                    lang = f"{mid[: -len('.auto')]}-auto"
+                else:
+                    lang = mid
             subtitles.append({"lang": lang, "file": fn})
         result: dict[str, Any] = {"base": base}
         if thumbnail:
@@ -477,11 +518,53 @@ class YtDlpAdapter(PlatformAdapter):
             return f"https://www.tiktok.com/@{handle}"
         return f"https://www.douyin.com/@{handle}"
 
+    @staticmethod
+    def _first_playlist_entry(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        """Return the first real entry from a yt-dlp playlist-shaped object.
+
+        TikTok's user extractor returns a playlist when asked to resolve a
+        profile. The account identity is nested on the first video entry rather
+        than repeated at the playlist root. Treating that perfectly valid
+        response as an empty profile used to start a Playwright fallback, which
+        made an otherwise fast yt-dlp sync pay for a second page load (and often
+        hit TikTok's browser anti-bot wall).
+        """
+
+        raw_entries = data.get("entries")
+        if not isinstance(raw_entries, list):
+            return None
+        for entry in raw_entries:
+            if isinstance(entry, Mapping) and entry.get("id"):
+                return entry
+        return None
+
     def _videos_url(self, handle: str) -> str:
         if self.platform == "youtube":
             return f"https://www.youtube.com/@{handle}/videos"
         # TikTok / Douyin expose the video grid on the profile itself.
         return self._account_url(handle)
+
+    def _listing_url(self, handle: str, ctx: AdapterCallContext) -> str:
+        """Return the most stable yt-dlp catalogue locator for this run.
+
+        TikTok's username extractor can lose the secondary user id on deeper
+        pages even after the first profile probe succeeded. The first flat
+        profile entry already carries that real channel id, and yt-dlp's
+        ``tiktokuser:...`` locator avoids the failing username resolution.
+        Hermetic adapter calls without a sync timeout retain the public URL so
+        existing compatibility fixtures and standalone usage behave unchanged.
+        """
+
+        if self.platform == "tiktok" and getattr(ctx, "timeout_seconds", None) is not None:
+            cached = self._single_json_cache.get(self._account_url(handle))
+            data = cached[0] if cached is not None else {}
+            channel_id = data.get("channel_id")
+            entry = self._first_playlist_entry(data)
+            if not channel_id and entry is not None:
+                channel_id = entry.get("channel_id") or entry.get("uploader_id")
+            if isinstance(channel_id, str) and channel_id.strip():
+                return f"tiktokuser:{channel_id.strip()}"
+        return self._videos_url(handle)
 
     def _canonical_for(self, video_id: str, handle: str) -> str:
         if self.platform == "youtube":
@@ -510,10 +593,11 @@ class YtDlpAdapter(PlatformAdapter):
         return self._fb
 
     async def _browser_resolve(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
-        cached = self._browser_account_cache.get(locator)
+        cache_key = self._normalize_handle(locator)
+        cached = self._browser_account_cache.get(cache_key)
         if cached is None:
             cached = await self._fallback().resolve_account(ctx, locator)
-            self._browser_account_cache[locator] = cached
+            self._browser_account_cache[cache_key] = cached
         return cached
 
     async def _browser_analytics(
@@ -526,6 +610,18 @@ class YtDlpAdapter(PlatformAdapter):
         return cached
 
     # -- yt-dlp process ----------------------------------------------------
+
+    @staticmethod
+    def _call_timeout(ctx: AdapterCallContext | None, fallback: float) -> float:
+        """Return a bounded timeout for one adapter operation."""
+
+        raw = getattr(ctx, "timeout_seconds", None) if ctx is not None else None
+        if raw is None:
+            return fallback
+        try:
+            return min(fallback, max(0.0, float(raw)))
+        except (TypeError, ValueError):
+            return fallback
 
     @staticmethod
     def _render_structured(yt_cfg: Mapping[str, Any]) -> list[str]:
@@ -694,6 +790,9 @@ class YtDlpAdapter(PlatformAdapter):
             fmt = self._video_format_selector(download_config)
             if fmt:
                 flags += ["-f", fmt]
+            container = str(download_config.get("video_format") or "best").strip().lower()
+            if container in {"mp4", "webm", "mkv"}:
+                flags += ["--merge-output-format", container]
         return flags
 
     async def _run_yt_dlp(
@@ -709,6 +808,7 @@ class YtDlpAdapter(PlatformAdapter):
         download: Mapping[str, Any] | None = None,
         media_dir: str | None = None,
         progress_callback: Callable[[str], None] | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         """Run yt-dlp and return ``(parsed_entries, stderr_text)``.
 
@@ -756,6 +856,13 @@ class YtDlpAdapter(PlatformAdapter):
         )
         if not want_media:
             cmd.append("--skip-download")
+        # ``--dump-json`` makes yt-dlp simulate by default.  That is correct
+        # for metadata/listing calls, but it silently prevents every selected
+        # artifact (video, subtitles, thumbnail, info-json) from being
+        # written.  Explicitly opt out of simulation for any request that
+        # enables a file-producing toggle, including subtitle-only downloads.
+        if download_enabled:
+            cmd.append("--no-simulate")
         if playlist_start is not None:
             cmd += ["--playlist-start", str(playlist_start)]
         if playlist_end is not None:
@@ -771,8 +878,10 @@ class YtDlpAdapter(PlatformAdapter):
         # retry policy and an operator override (sync_settings.yt_dlp.retries)
         # wins when present. No bespoke retry loop wraps this call.
         effective_structured = dict(structured or {})
-        if "retries" not in effective_structured:
+        if effective_structured.get("retries") is None:
             effective_structured["retries"] = YTDLP_DEFAULT_RETRIES
+        if effective_structured.get("socket_timeout") is None:
+            effective_structured["socket_timeout"] = YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS
         cookie_path = self._materialize_cookie_file(effective_structured)
         render_structured = dict(effective_structured)
         if cookie_path:
@@ -816,8 +925,13 @@ class YtDlpAdapter(PlatformAdapter):
         out = b""
         err_text = ""
         last_returncode: int | None = None
+        raw_attempts = effective_structured.pop("extraction_attempts", YTDLP_EXTRACTION_ATTEMPTS)
         try:
-            for attempt in range(max(1, YTDLP_EXTRACTION_ATTEMPTS)):
+            extraction_attempts = max(1, min(YTDLP_EXTRACTION_ATTEMPTS, int(raw_attempts)))
+        except (TypeError, ValueError):
+            extraction_attempts = YTDLP_EXTRACTION_ATTEMPTS
+        try:
+            for attempt in range(extraction_attempts):
                 attempt_cmd = list(cmd)
                 recovery = _recovery_args_for(url, attempt)
                 if recovery:
@@ -830,7 +944,14 @@ class YtDlpAdapter(PlatformAdapter):
                         stderr=asyncio.subprocess.PIPE,
                     )
                     out, err = await self._communicate_with_timeout(
-                        proc, YTDLP_TIMEOUT_SECONDS, stderr_callback=progress_callback
+                        proc,
+                        self._call_timeout(
+                            None,
+                            timeout_seconds
+                            if timeout_seconds is not None
+                            else YTDLP_TIMEOUT_SECONDS,
+                        ),
+                        stderr_callback=progress_callback,
                     )
                 except TimeoutError as exc:
                     raise TransientAdapterError("yt-dlp subprocess timed out") from exc
@@ -841,7 +962,7 @@ class YtDlpAdapter(PlatformAdapter):
                     break
                 if _is_permanent_extractor_error(err_text):
                     break
-                if attempt + 1 >= max(1, YTDLP_EXTRACTION_ATTEMPTS):
+                if attempt + 1 >= extraction_attempts:
                     break
                 backoff = YTDLP_ATTEMPT_BACKOFF_SECONDS[
                     min(attempt, len(YTDLP_ATTEMPT_BACKOFF_SECONDS) - 1)
@@ -904,6 +1025,26 @@ class YtDlpAdapter(PlatformAdapter):
         ceiling = YTDLP_PLATFORM_FETCH_CONCURRENCY.get(self.platform, 2)
         return max(1, min(requested, ceiling))
 
+    def _progress_sink(self, ctx: AdapterCallContext) -> Callable[[str], None] | None:
+        """Forward useful yt-dlp progress without leaking expected fallback noise."""
+        sink = getattr(ctx, "progress_sink", None)
+        if not callable(sink):
+            return None
+
+        def emit(message: str) -> None:
+            # A TikTok profile often has no extractor-visible secondary user ID.
+            # That is the normal signal to use the authorized browser catalogue;
+            # exposing yt-dlp's raw stderr as ERROR makes a successful run look
+            # broken and hides the actionable browser progress that follows.
+            if (
+                self.platform == "tiktok"
+                and "Unable to extract secondary user ID" in str(message)
+            ):
+                return
+            sink(message)
+
+        return emit
+
     async def _flat_enumerate(
         self,
         url: str,
@@ -913,6 +1054,10 @@ class YtDlpAdapter(PlatformAdapter):
         dateafter: str | None,
         datebefore: str | None,
         structured: Mapping[str, Any] | None,
+        progress_callback: Callable[[str], None] | None = None,
+        timeout_seconds: float | None = None,
+        timeout_cap_seconds: float | None = None,
+        recovery: bool = False,
     ) -> list[dict[str, Any]]:
         """Read a channel window with ``--flat-playlist`` (catalogue only).
 
@@ -921,8 +1066,9 @@ class YtDlpAdapter(PlatformAdapter):
         comment counts. It is therefore only a catalogue used to decide which
         works deserve the expensive full extraction.
 
-        Returns ``[]`` on any failure so the caller can fall back to the legacy
-        single-shot extraction rather than failing the sync outright.
+        Raises ``_FastListUnavailable`` when the cheap catalogue path cannot
+        complete. A successful empty stdout remains an empty result so the
+        caller can apply its existing end-of-catalogue policy.
         """
         cmd: list[str] = [
             sys.executable,
@@ -945,7 +1091,15 @@ class YtDlpAdapter(PlatformAdapter):
         if datebefore:
             cmd += ["--datebefore", datebefore]
         effective = dict(structured or {})
-        effective.setdefault("retries", YTDLP_DEFAULT_RETRIES)
+        explicit_retries = effective.get("retries") is not None
+        tiktok_recovery = recovery and self.platform == "tiktok" and not explicit_retries
+        if effective.get("retries") is None:
+            # Deep TikTok pages get their own bounded app-info recovery below.
+            # Keeping yt-dlp's internal retry count at zero leaves time for the
+            # alternate extraction path inside the same call budget.
+            effective["retries"] = 0 if tiktok_recovery else YTDLP_DEFAULT_RETRIES
+        if effective.get("socket_timeout") is None:
+            effective["socket_timeout"] = YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS
         cookie_path = self._materialize_cookie_file(effective)
         render = dict(effective)
         if cookie_path:
@@ -955,18 +1109,73 @@ class YtDlpAdapter(PlatformAdapter):
             cmd += ["--cookies", cookie_path]
         cmd.append(url)
         out = b""
+        err = b""
+        returncode: int | None = None
+        flat_timeout: float = (
+            timeout_cap_seconds
+            if timeout_cap_seconds is not None
+            else YTDLP_FLAT_TIMEOUT_SECONDS
+        )
+        if timeout_seconds is not None:
+            flat_timeout = min(flat_timeout, max(0.0, float(timeout_seconds)))
+        deadline = time.monotonic() + flat_timeout
+        recovery_attempts = (
+            [0, 1, 2]
+            if tiktok_recovery
+            else [0]
+        )
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, _err = await self._communicate_with_timeout(proc, YTDLP_FLAT_TIMEOUT_SECONDS)
+            for attempt in recovery_attempts:
+                remaining = (
+                    flat_timeout
+                    if attempt == recovery_attempts[0]
+                    else deadline - time.monotonic()
+                )
+                if remaining <= 0:
+                    break
+                attempt_cmd = list(cmd)
+                recovery_args = _recovery_args_for(url, attempt)
+                if recovery_args:
+                    attempt_cmd[-1:-1] = recovery_args
+                    if progress_callback is not None:
+                        progress_callback(
+                            f"[recovery] TikTok 目录请求切换 app_info 通道（第 {attempt} 次）\n"
+                        )
+                proc = await asyncio.create_subprocess_exec(
+                    *attempt_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                out, err = await self._communicate_with_timeout(
+                    proc,
+                    remaining,
+                    stderr_callback=progress_callback,
+                )
+                returncode = proc.returncode
+                if returncode in (0, None) or out:
+                    break
+                err_text = err.decode("utf-8", "replace") if err else ""
+                permanent = _permanent_error_for(self.platform, err_text)
+                if permanent is not None:
+                    raise permanent
+                if attempt == recovery_attempts[-1]:
+                    break
+                logger.info(
+                    "yt-dlp flat listing attempt %s failed for %s; trying recovery path",
+                    attempt,
+                    url,
+                )
         except (TimeoutError, OSError) as exc:
             logger.info("flat enumeration unavailable for %s: %s", url, exc)
-            return []
+            raise _FastListUnavailable(str(exc)) from exc
         finally:
             self._cleanup_cookie_file(cookie_path)
+        if returncode not in (0, None) and not out:
+            err_text = err.decode("utf-8", "replace") if err else ""
+            permanent = _permanent_error_for(self.platform, err_text)
+            if permanent is not None:
+                raise permanent
+            raise _FastListUnavailable(err_text[:500] or "yt-dlp flat listing failed")
         entries: list[dict[str, Any]] = []
         for line in out.decode("utf-8", "replace").splitlines():
             line = line.strip()
@@ -986,6 +1195,8 @@ class YtDlpAdapter(PlatformAdapter):
         *,
         base_flags: Sequence[str],
         semaphore: asyncio.Semaphore,
+        progress_callback: Callable[[str], None] | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any] | None:
         """Fully extract a single video. Returns ``None`` when unavailable.
 
@@ -1001,7 +1212,23 @@ class YtDlpAdapter(PlatformAdapter):
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                out, _err = await self._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
+                out, _err = await self._communicate_with_timeout(
+                    proc,
+                    self._call_timeout(
+                        None,
+                        timeout_seconds
+                        if timeout_seconds is not None
+                        else YTDLP_TIMEOUT_SECONDS,
+                    ),
+                    # A YouTube channel can return a valid flat catalogue while
+                    # every full video request is rejected by the egress IP as
+                    # a VPN/proxy. Do not flood the sync timeline with one
+                    # identical yt-dlp error per video; the caller emits one
+                    # actionable aggregate summary and keeps the flat row.
+                    stderr_callback=(
+                        progress_callback if self.platform != "youtube" else None
+                    ),
+                )
             except (TimeoutError, OSError):
                 return None
             for line in out.decode("utf-8", "replace").splitlines():
@@ -1028,13 +1255,15 @@ class YtDlpAdapter(PlatformAdapter):
         media_dir: str | None,
         extra_args: Mapping[str, Any] | None,
         progress_callback: Callable[[str], None] | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Fully extract many videos in parallel, keyed by external id."""
         if not video_urls:
             return {}
         download_config: Mapping[str, Any] = download or {}
+        download_enabled = self._any_download_enabled(download_config)
         quality = str(download_config.get("video_quality") or "best").strip().lower()
-        want_media = self._any_download_enabled(download_config) and (
+        want_media = download_enabled and (
             download_config.get("download_video") or quality == "audio"
         )
         base: list[str] = [
@@ -1049,12 +1278,17 @@ class YtDlpAdapter(PlatformAdapter):
         base += runtime_args()
         if not want_media:
             base.append("--skip-download")
+        if download_enabled:
+            base.append("--no-simulate")
         if dateafter:
             base += ["--dateafter", dateafter]
         if datebefore:
             base += ["--datebefore", datebefore]
         effective = dict(structured or {})
-        effective.setdefault("retries", YTDLP_DEFAULT_RETRIES)
+        if effective.get("retries") is None:
+            effective["retries"] = YTDLP_DEFAULT_RETRIES
+        if effective.get("socket_timeout") is None:
+            effective["socket_timeout"] = YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS
         cookie_path = self._materialize_cookie_file(effective)
         render = dict(effective)
         if cookie_path:
@@ -1079,19 +1313,52 @@ class YtDlpAdapter(PlatformAdapter):
             progress_callback(
                 f"[fast] 并发解析 {len(ids)} 条新作品详情（并发度 {max(1, concurrency)}）…\n"
             )
-        try:
-            results = await asyncio.gather(
-                *(
-                    self._extract_one_video(video_urls[vid], base_flags=base, semaphore=semaphore)
-                    for vid in ids
+        tasks = {
+            asyncio.create_task(
+                self._extract_one_video(
+                    video_urls[vid],
+                    base_flags=base,
+                    semaphore=semaphore,
+                    progress_callback=progress_callback,
+                    timeout_seconds=timeout_seconds,
                 )
-            )
+            ): vid
+            for vid in ids
+        }
+        completed: set[asyncio.Task[dict[str, Any] | None]]
+        try:
+            if timeout_seconds is None:
+                await asyncio.gather(*tasks)
+                completed = set(tasks)
+            else:
+                waves = (len(ids) + max(1, concurrency) - 1) // max(1, concurrency)
+                sized_batch_timeout = min(
+                    YTDLP_DETAIL_BATCH_TIMEOUT_SECONDS,
+                    max(25.0, 12.0 + waves * 4.0),
+                )
+                batch_timeout = min(
+                    max(0.5, float(timeout_seconds)),
+                    sized_batch_timeout,
+                )
+                completed, pending = await asyncio.wait(tasks, timeout=batch_timeout)
+                if pending:
+                    if progress_callback is not None:
+                        progress_callback(
+                            f"[fast] 詳情批次达到时间预算，保留 {len(pending)} 条目录行，稍后补全\n"
+                        )
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
         finally:
             self._cleanup_cookie_file(cookie_path)
         details: dict[str, dict[str, Any]] = {}
-        for vid, entry in zip(ids, results, strict=True):
+        for task in completed:
+            try:
+                entry = task.result()
+            except Exception:  # noqa: BLE001 - one detail must not drop a page
+                entry = None
             if entry is not None:
-                details[vid] = entry
+                details[tasks[task]] = entry
         return details
 
     async def _run_yt_dlp_single(
@@ -1101,6 +1368,7 @@ class YtDlpAdapter(PlatformAdapter):
         playlist_end: int = 1,
         retries: int = YTDLP_DEFAULT_RETRIES,
         structured: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
         """Run yt-dlp with ``--dump-single-json`` and return the parsed object.
 
@@ -1130,7 +1398,10 @@ class YtDlpAdapter(PlatformAdapter):
             url,
         ]
         effective_structured = dict(structured or {})
-        effective_structured.setdefault("retries", int(retries))
+        if effective_structured.get("retries") is None:
+            effective_structured["retries"] = int(retries)
+        if effective_structured.get("socket_timeout") is None:
+            effective_structured["socket_timeout"] = YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS
         cookie_path = self._materialize_cookie_file(effective_structured)
         render_structured = dict(effective_structured)
         if cookie_path:
@@ -1162,7 +1433,15 @@ class YtDlpAdapter(PlatformAdapter):
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
-                    out, err = await self._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
+                    out, err = await self._communicate_with_timeout(
+                        proc,
+                        self._call_timeout(
+                            None,
+                            timeout_seconds
+                            if timeout_seconds is not None
+                            else YTDLP_TIMEOUT_SECONDS,
+                        ),
+                    )
                 except TimeoutError as exc:
                     raise TransientAdapterError("yt-dlp single-json timed out") from exc
 
@@ -1202,7 +1481,13 @@ class YtDlpAdapter(PlatformAdapter):
         return obj, err_text
 
     @staticmethod
-    async def extract_comments(url: str) -> list[dict[str, Any]]:
+    async def extract_comments(
+        url: str,
+        *,
+        config: Mapping[str, Any] | None = None,
+        limit: int = 20,
+        timeout_seconds: float | None = None,
+    ) -> list[dict[str, Any]]:
         """Best-effort comment extraction via yt-dlp.
 
         Uses yt-dlp's ``comments`` field (YouTube / TikTok / Douyin support it
@@ -1211,11 +1496,23 @@ class YtDlpAdapter(PlatformAdapter):
         callers never crash and the UI can show the required condition instead
         of a fabricated count.
         """
+        raw_config = config if isinstance(config, Mapping) else {}
+        raw_yt_config = raw_config.get("yt_dlp")
+        yt_config = dict(raw_yt_config) if isinstance(raw_yt_config, Mapping) else {}
+        if yt_config.get("retries") is None:
+            yt_config["retries"] = YTDLP_DEFAULT_RETRIES
+        if yt_config.get("socket_timeout") is None:
+            yt_config["socket_timeout"] = YTDLP_DEFAULT_SOCKET_TIMEOUT_SECONDS
+        cookie_path = YtDlpAdapter._materialize_cookie_file(yt_config)
+        render_config = dict(yt_config)
+        if cookie_path:
+            render_config["cookies_from_browser"] = ""
         cmd = [
             sys.executable,
             "-m",
             "yt_dlp",
             "--skip-download",
+            "--write-comments",
             "--no-warnings",
             "--no-progress",
             "--extractor-args",
@@ -1228,13 +1525,21 @@ class YtDlpAdapter(PlatformAdapter):
             url,
         ]
         cmd[cmd.index(url) : cmd.index(url)] = runtime_args()
+        cmd[cmd.index(url) : cmd.index(url)] = YtDlpAdapter._render_structured(render_config)
+        if cookie_path:
+            cmd[cmd.index(url) : cmd.index(url)] = ["--cookies", cookie_path]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, _ = await YtDlpAdapter._communicate_with_timeout(proc, YTDLP_TIMEOUT_SECONDS)
+            ceiling = YTDLP_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+            out, _ = await YtDlpAdapter._communicate_with_timeout(
+                proc, max(1.0, min(YTDLP_TIMEOUT_SECONDS, float(ceiling)))
+            )
         except (TimeoutError, OSError):
             return []
+        finally:
+            YtDlpAdapter._cleanup_cookie_file(cookie_path)
         if not out:
             return []
         raw = out.decode("utf-8", "replace").strip()
@@ -1247,6 +1552,15 @@ class YtDlpAdapter(PlatformAdapter):
         if not isinstance(payload, list):
             return []
         comments: list[dict[str, Any]] = []
+
+        def integer_or_none(value: Any) -> int | None:
+            if value is None or isinstance(value, bool):
+                return None
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return None
+
         for item in payload:
             if not isinstance(item, dict):
                 continue
@@ -1257,12 +1571,20 @@ class YtDlpAdapter(PlatformAdapter):
             comments.append(
                 {
                     "platform_comment_id": str(item.get("id") or uuid4()),
+                    "author_url": item.get("author_url"),
+                    "author_avatar_url": item.get("author_thumbnail") or item.get("author_avatar"),
                     "author_name": item.get("author") or item.get("author_name") or "未知用户",
                     "text": text,
-                    "like_count": item.get("like_count"),
-                    "reply_count": item.get("reply_count")
+                    "like_count": integer_or_none(item.get("like_count")),
+                    "reply_count": integer_or_none(item.get("reply_count"))
                     if item.get("reply_count") is not None
                     else (len(replies) if isinstance(replies, list) else None),
+                    "parent_comment_id": (
+                        str(item.get("parent_comment_id"))
+                        if item.get("parent_comment_id") is not None
+                        else None
+                    ),
+                    "is_reply": item.get("parent_comment_id") is not None,
                     "published_at": (
                         datetime.fromtimestamp(item["timestamp"], tz=UTC)
                         if isinstance(item.get("timestamp"), (int, float))
@@ -1270,7 +1592,19 @@ class YtDlpAdapter(PlatformAdapter):
                     ),
                 }
             )
-        return comments
+        def score(item: dict[str, Any]) -> tuple[int, int]:
+            def integer(value: Any) -> int:
+                try:
+                    return max(0, int(value or 0))
+                except (TypeError, ValueError):
+                    return 0
+
+            return (
+                integer(item.get("like_count")) + 3 * integer(item.get("reply_count")),
+                integer(item.get("like_count")),
+            )
+
+        return sorted(comments, key=score, reverse=True)[: max(1, min(int(limit or 20), 20))]
 
     def _resolve_retries(self, ctx: AdapterCallContext) -> int:
         """Resolve the yt-dlp ``--retries`` value from the call context.
@@ -1304,6 +1638,7 @@ class YtDlpAdapter(PlatformAdapter):
         playlist_end: int = 1,
         retries: int = YTDLP_DEFAULT_RETRIES,
         structured: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], str]:
         """``_run_yt_dlp_single`` with a per-instance memo.
 
@@ -1324,6 +1659,7 @@ class YtDlpAdapter(PlatformAdapter):
             playlist_end=playlist_end,
             retries=retries,
             structured=structured,
+            timeout_seconds=timeout_seconds,
         )
         self._single_json_cache[url] = result
         return result
@@ -1405,6 +1741,11 @@ class YtDlpAdapter(PlatformAdapter):
         if not url:
             url = self._canonical_for(video_id, handle)
         cover = self._extract_thumbnail(entry)
+        if not cover and self.platform == "youtube" and video_id:
+            # YouTube exposes a stable public thumbnail endpoint keyed by the
+            # video id. It keeps catalogue rows visible even when a flat or
+            # browser response omits the thumbnail object.
+            cover = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
         duration = entry.get("duration")
         published = self._parse_timestamp(entry)
         metrics = self._metrics_from_entry(entry)
@@ -1457,16 +1798,49 @@ class YtDlpAdapter(PlatformAdapter):
 
     async def resolve_account(self, ctx: AdapterCallContext, locator: str) -> PlatformAccountData:
         handle = self._normalize_handle(locator)
-        try:
-            data, _ = await self._run_yt_dlp_single_cached(
-                self._account_url(handle),
-                playlist_end=1,
-                retries=self._resolve_retries(ctx),
-                structured=self._yt_config(ctx),
-            )
-        except YTDLP_BROWSER_FALLBACK_ERRORS:
-            data = {}
-        display = data.get("uploader") or data.get("channel")
+        account_url = self._account_url(handle)
+        # TikTok/Douyin user URLs are playlist-shaped. A full single-video
+        # extraction here can spend the entire account timeout resolving formats
+        # even though identity only needs the first flat entry. The standalone
+        # yt-dlp workflow uses this cheap path, so account monitoring should too.
+        use_fast_profile_probe = (
+            self.platform in ("tiktok", "douyin")
+            and getattr(ctx, "timeout_seconds", None) is not None
+        )
+        if use_fast_profile_probe:
+            try:
+                entries = await self._flat_enumerate(
+                    account_url,
+                    playlist_start=1,
+                    playlist_end=1,
+                    dateafter=None,
+                    datebefore=None,
+                    structured=self._yt_config(ctx),
+                    progress_callback=self._progress_sink(ctx),
+                    timeout_seconds=getattr(ctx, "timeout_seconds", None),
+                )
+                data = {"entries": entries} if entries else {}
+                self._single_json_cache[account_url] = (data, "")
+            except (*YTDLP_BROWSER_FALLBACK_ERRORS, _FastListUnavailable):
+                data = {}
+        else:
+            try:
+                data, _ = await self._run_yt_dlp_single_cached(
+                    account_url,
+                    playlist_end=1,
+                    retries=self._resolve_retries(ctx),
+                    structured=self._yt_config(ctx),
+                    timeout_seconds=getattr(ctx, "timeout_seconds", None),
+                )
+            except YTDLP_BROWSER_FALLBACK_ERRORS:
+                data = {}
+        playlist_entry = self._first_playlist_entry(data)
+        display = (
+            data.get("uploader")
+            or data.get("channel")
+            or (playlist_entry or {}).get("uploader")
+            or (playlist_entry or {}).get("channel")
+        )
         if not display:
             logger.info(
                 "yt_dlp account extraction failed for %s/%s; using browser fallback",
@@ -1481,23 +1855,29 @@ class YtDlpAdapter(PlatformAdapter):
         avatar = self._extract_thumbnail(data)
         description = data.get("description")
         channel_id = data.get("channel_id") or data.get("uploader_id")
+        if channel_id is None and playlist_entry is not None:
+            channel_id = playlist_entry.get("channel_id") or playlist_entry.get("uploader_id")
         language = (
             "en" if self.platform == "youtube" else ("zh" if self.platform == "douyin" else None)
         )
         result = PlatformAccountData(
             external_id=handle,
             username=handle,
-            display_name=display,
+            display_name=str(display),
             profile_url=self._account_url(handle),
             avatar_url=avatar,
-            description=description,
+            description=str(description) if description is not None else None,
             country=None,
             language=language,
             is_verified=None,
             source_kind="live",
             provider=self.key,
             fetched_at=ctx.observed_at,
-            metadata={"method": "yt_dlp", "channel_id": channel_id},
+            metadata={
+                "method": "yt_dlp",
+                "channel_id": channel_id,
+                "profile_from_playlist_entry": playlist_entry is not None,
+            },
         )
         # yt-dlp is the primary, self-sufficient source. We deliberately do NOT
         # trigger a browser fallback just because the avatar/description are
@@ -1514,15 +1894,54 @@ class YtDlpAdapter(PlatformAdapter):
         self, ctx: AdapterCallContext, external_id: str
     ) -> PlatformMetricsData:
         handle = self._normalize_handle(external_id)
+        # If profile resolution already had to use the browser fallback, do not
+        # launch a second yt-dlp process for the same account. The browser result
+        # is authoritative for whatever public profile fields it exposed; the
+        # remaining counters stay explicitly unavailable instead of spending
+        # another 60-90 seconds on a request that just failed once.
+        cached_profile = self._browser_account_cache.get(handle)
+        if cached_profile is not None:
+            profile_meta = (
+                dict(cached_profile.metadata)
+                if isinstance(cached_profile.metadata, Mapping)
+                else {}
+            )
+            follower_raw = profile_meta.get("follower_count")
+            follower = (
+                int(follower_raw)
+                if isinstance(follower_raw, (int, float)) and not isinstance(follower_raw, bool)
+                else None
+            )
+            cached_metrics: dict[str, int | float | None] = {
+                "follower_count": follower,
+                "video_count": None,
+                "total_view_count": None,
+            }
+            return PlatformMetricsData(
+                external_id=handle,
+                captured_at=ctx.observed_at,
+                metrics=cached_metrics,
+                source_kind="live",
+                provider=cached_profile.provider,
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=tuple(k for k, v in cached_metrics.items() if v is None),
+                metadata={
+                    "method": "browser_profile_cache",
+                    "analytics_fetched": True,
+                    "analytics_source": "browser_profile",
+                },
+            )
         try:
             data, _ = await self._run_yt_dlp_single_cached(
                 self._account_url(handle),
                 playlist_end=1,
                 retries=self._resolve_retries(ctx),
                 structured=self._yt_config(ctx),
+                timeout_seconds=getattr(ctx, "timeout_seconds", None),
             )
         except YTDLP_BROWSER_FALLBACK_ERRORS:
             data = {}
+        playlist_entry = self._first_playlist_entry(data)
         # ``analytics_fetched`` tells the sync engine whether yt-dlp actually
         # returned an account object. TikTok/Douyin user pages frequently omit
         # follower / video / view counts through yt-dlp, yet the fetch still
@@ -1563,7 +1982,11 @@ class YtDlpAdapter(PlatformAdapter):
         # and are surfaced via ``unavailable_metrics`` rather than misreported
         # as a degraded sync. YouTube keeps using yt-dlp's channel JSON, which
         # does carry these metrics.
-        if self.platform in ("tiktok", "douyin") and all(v is None for v in metrics.values()):
+        if (
+            self.platform in ("tiktok", "douyin")
+            and all(v is None for v in metrics.values())
+            and playlist_entry is None
+        ):
             try:
                 fb = await self._browser_analytics(ctx, handle)
                 merged: dict[str, int | float | None] = dict(metrics)
@@ -1583,6 +2006,13 @@ class YtDlpAdapter(PlatformAdapter):
                     handle,
                     exc,
                 )
+        elif self.platform in ("tiktok", "douyin") and playlist_entry is not None:
+            # The profile extractor returned a real playlist with channel
+            # identity and content entries. It does not expose account-level
+            # follower/video totals, but that is a truthful source limitation,
+            # not a failed request. Do not launch a second browser navigation for
+            # fields that the successful yt-dlp response cannot provide.
+            analytics_source = "yt_dlp_playlist"
 
         unavailable = tuple(k for k, v in metrics.items() if v is None)
         return PlatformMetricsData(
@@ -1613,6 +2043,23 @@ class YtDlpAdapter(PlatformAdapter):
         self._cache.clear()
 
         cfg = ctx.config or {}
+        # Account resolution and content listing are one logical sync run. If
+        # the TikTok/Douyin profile already had to use the authorized browser
+        # fallback, probing the same handle with yt-dlp again only repeats the
+        # known secondary-id failure and burns another 30-60 seconds before
+        # returning to the browser. Reuse the successful browser path for the
+        # catalogue immediately; its cursor-aware pagination remains intact.
+        if self.platform in ("tiktok", "douyin") and handle in self._browser_account_cache:
+            sink = getattr(ctx, "progress_sink", None)
+            if sink is not None:
+                sink("[fast] 账号资料已由授权浏览器获取，直接读取浏览器作品目录\n")
+            return await self._fallback().list_contents(
+                ctx,
+                external_account_id,
+                published_after=published_after,
+                cursor=cursor,
+                page_size=page_size,
+            )
         raw_yt_cfg = cfg.get("yt_dlp")
         yt_cfg: dict[str, Any] = raw_yt_cfg if isinstance(raw_yt_cfg, dict) else {}
         dateafter = yt_cfg.get("dateafter")
@@ -1644,28 +2091,100 @@ class YtDlpAdapter(PlatformAdapter):
             playlist_start = int(yt_cfg["playlist_start"])
         else:
             playlist_start = offset + 1
-        playlist_end = offset + window
         # Fast path: enumerate the window flat (cheap), then fully extract only
-        # the works that actually need it, in parallel. Falls back to the legacy
-        # single-shot extraction whenever it cannot produce a catalogue.
+        # the works that actually need it, in parallel. A hard fast-path failure
+        # goes to the browser fallback on the first page; an empty successful
+        # result keeps the existing legacy compatibility path below.
         entries: list[dict[str, Any]] | None = None
         concurrency = self._fetch_concurrency(ctx)
-        if concurrency > 1 or getattr(ctx, "skip_known", False):
-            entries = await self._fast_list_entries(
-                ctx,
-                handle,
-                playlist_start=playlist_start,
-                playlist_end=playlist_end,
-                dateafter=dateafter,
-                datebefore=datebefore,
-                extra_args=extra_args if isinstance(extra_args, dict) else None,
-                structured=yt_cfg if isinstance(yt_cfg, dict) else None,
-                download=download_cfg,
-                media_dir=media_dir,
-                concurrency=concurrency,
-            )
+        real_sync_call = getattr(ctx, "timeout_seconds", None) is not None
+        deep_backfill = (
+            real_sync_call
+            and bool(getattr(ctx, "sync_backfill", False))
+            and cursor is not None
+        )
+        catalogue_cache = getattr(ctx, "catalogue_cache", None)
+        cache_key = f"{self.platform}:{handle}"
+        cached_catalogue = (
+            catalogue_cache.get(cache_key)
+            if deep_backfill and isinstance(catalogue_cache, dict)
+            else None
+        )
+        using_cached_catalogue = False
+        if isinstance(cached_catalogue, dict):
+            base_offset = int(cached_catalogue.get("base_offset", offset))
+            cached_entries = cached_catalogue.get("entries")
+            relative_offset = offset - base_offset
+            if isinstance(cached_entries, list) and relative_offset < len(cached_entries):
+                entries = cached_entries[relative_offset:]
+                using_cached_catalogue = True
+            elif isinstance(catalogue_cache, dict):
+                catalogue_cache.pop(cache_key, None)
+        playlist_end = offset + (
+            YTDLP_DEEP_BACKFILL_WINDOW if deep_backfill and not using_cached_catalogue else window
+        )
+        if (concurrency > 1 or getattr(ctx, "skip_known", False)) and not using_cached_catalogue:
+            try:
+                entries = await self._fast_list_entries(
+                    ctx,
+                    handle,
+                    playlist_start=playlist_start,
+                    playlist_end=playlist_end,
+                    dateafter=dateafter,
+                    datebefore=datebefore,
+                    extra_args=extra_args if isinstance(extra_args, dict) else None,
+                    structured=yt_cfg if isinstance(yt_cfg, dict) else None,
+                    download=download_cfg,
+                    media_dir=media_dir,
+                    concurrency=concurrency,
+                    deep_backfill=deep_backfill,
+                )
+            except (
+                TransientAdapterError,
+                LoginRequiredError,
+                PermissionDeniedError,
+                AdapterNotFoundError,
+                _FastListUnavailable,
+            ) as exc:
+                logger.warning(
+                    "yt_dlp fast listing unavailable for %s/%s: %s; browser fallback",
+                    self.platform,
+                    handle,
+                    exc,
+                )
+                if cursor is None:
+                    return await self._fallback().list_contents(
+                        ctx,
+                        external_account_id,
+                        published_after=published_after,
+                        cursor=cursor,
+                        page_size=page_size,
+                    )
+                # A deep-page failure must keep the durable cursor alive. The
+                # sync executor will finalize the already-ingested prefix and
+                # retry this page on the next run.
+                raise
+        if (
+            deep_backfill
+            and not using_cached_catalogue
+            and isinstance(entries, list)
+            and isinstance(catalogue_cache, dict)
+        ):
+            catalogue_cache[cache_key] = {
+                "base_offset": offset,
+                "entries": entries,
+            }
         if entries is not None:
-            return self._page_from_entries(
+            if not entries and cursor is not None and real_sync_call:
+                # An empty non-first probe is ambiguous: it can be a genuine
+                # end, but TikTok also returns an empty successful process when
+                # its secondary-id lookup is temporarily throttled. Preserve
+                # the cursor and let the sync engine retry next time rather
+                # than silently declaring an incomplete catalogue complete.
+                raise TransientAdapterError(
+                    "yt-dlp returned an empty non-first catalogue page; cursor retained"
+                )
+            page = self._page_from_entries(
                 entries,
                 ctx,
                 handle,
@@ -1675,9 +2194,25 @@ class YtDlpAdapter(PlatformAdapter):
                 media_dir=media_dir,
                 media_root=media_root,
             )
+            if deep_backfill and isinstance(catalogue_cache, dict):
+                cached = catalogue_cache.get(cache_key)
+                if isinstance(cached, dict) and isinstance(cached.get("entries"), list):
+                    cached_end = int(cached.get("base_offset", offset)) + len(cached["entries"])
+                    if offset + len(page.items) >= cached_end:
+                        catalogue_cache.pop(cache_key, None)
+            return page
+        if entries is None and cursor is not None and real_sync_call:
+            # The flat probe can return ``None`` both for an unsupported
+            # extractor and for an empty/ambiguous response. A deep page must
+            # never fall through to the legacy extractor and then clear the
+            # durable cursor on an empty result.
+            raise TransientAdapterError(
+                "yt-dlp could not confirm a non-first catalogue page; cursor retained"
+            )
+        listing_url = self._listing_url(handle, ctx)
         try:
             entries, _ = await self._run_yt_dlp(
-                self._videos_url(handle),
+                listing_url,
                 playlist_start=playlist_start,
                 playlist_end=playlist_end,
                 dateafter=dateafter,
@@ -1687,8 +2222,51 @@ class YtDlpAdapter(PlatformAdapter):
                 download=download_cfg,
                 media_dir=media_dir,
                 progress_callback=getattr(ctx, "progress_sink", None),
+                timeout_seconds=getattr(ctx, "timeout_seconds", None),
             )
         except YTDLP_BROWSER_FALLBACK_ERRORS as exc:
+            if (
+                self.platform == "youtube"
+                and "/videos" in listing_url
+                and "does not have a videos tab" in str(exc).lower()
+            ):
+                # Keep the legacy/sequential path resilient when the fast
+                # listing policy is disabled or unavailable. A Shorts-only
+                # channel has no /videos tab, but its root still exposes all
+                # uploads through yt-dlp.
+                sink = getattr(ctx, "progress_sink", None)
+                if callable(sink):
+                    sink(
+                        "[youtube] 频道没有 Videos 标签，切换根频道目录读取全部上传作品\n"
+                    )
+                try:
+                    entries, _ = await self._run_yt_dlp(
+                        self._account_url(handle),
+                        playlist_start=playlist_start,
+                        playlist_end=playlist_end,
+                        dateafter=dateafter,
+                        datebefore=datebefore,
+                        extra_args=extra_args if isinstance(extra_args, dict) else None,
+                        structured=yt_cfg if isinstance(yt_cfg, dict) else None,
+                        download=download_cfg,
+                        media_dir=media_dir,
+                        progress_callback=getattr(ctx, "progress_sink", None),
+                        timeout_seconds=getattr(ctx, "timeout_seconds", None),
+                    )
+                except YTDLP_BROWSER_FALLBACK_ERRORS:
+                    pass
+                else:
+                    if entries:
+                        return self._page_from_entries(
+                            entries,
+                            ctx,
+                            handle,
+                            window=window,
+                            offset=offset,
+                            max_items=max_items,
+                            media_dir=media_dir,
+                            media_root=media_root,
+                        )
             logger.warning(
                 "yt_dlp list_contents failed for %s/%s: %s; browser fallback",
                 self.platform,
@@ -1795,22 +2373,51 @@ class YtDlpAdapter(PlatformAdapter):
         download: Mapping[str, Any] | None,
         media_dir: str | None,
         concurrency: int,
+        deep_backfill: bool,
     ) -> list[dict[str, Any]] | None:
         """Enumerate flat, then fully extract only the works that need it.
 
-        Returns ``None`` when the catalogue could not be read, which tells the
-        caller to fall back to the legacy single-shot extraction. Returning an
-        empty list is a *valid* result meaning "this window has no works".
+        Returns ``None`` when a successful flat read is empty, which preserves
+        the legacy compatibility path for extractors that do not support flat
+        mode. Hard transport/time-limit failures propagate as
+        ``_FastListUnavailable`` so the caller can avoid a duplicate slow read.
         """
-        sink = getattr(ctx, "progress_sink", None)
-        flat = await self._flat_enumerate(
-            self._videos_url(handle),
-            playlist_start=playlist_start,
-            playlist_end=playlist_end,
-            dateafter=dateafter,
-            datebefore=datebefore,
-            structured=structured,
-        )
+        sink = self._progress_sink(ctx)
+        listing_url = self._listing_url(handle, ctx)
+        try:
+            flat = await self._flat_enumerate(
+                listing_url,
+                playlist_start=playlist_start,
+                playlist_end=playlist_end,
+                dateafter=dateafter,
+                datebefore=datebefore,
+                structured=structured,
+                progress_callback=sink,
+                timeout_seconds=getattr(ctx, "timeout_seconds", None),
+                timeout_cap_seconds=60 if deep_backfill else None,
+                recovery=deep_backfill,
+            )
+        except _FastListUnavailable as exc:
+            # Shorts-only channels (and some newer channel layouts) do not
+            # expose a /videos tab. yt-dlp can still enumerate the complete
+            # upload catalogue from the channel root. Retry only this specific
+            # URL mismatch so a real timeout or rate limit is not doubled.
+            if self.platform != "youtube" or "does not have a videos tab" not in str(exc).lower():
+                raise
+            if sink is not None:
+                sink("[youtube] 频道没有 Videos 标签，切换根频道目录读取全部上传作品\n")
+            flat = await self._flat_enumerate(
+                self._account_url(handle),
+                playlist_start=playlist_start,
+                playlist_end=playlist_end,
+                dateafter=dateafter,
+                datebefore=datebefore,
+                structured=structured,
+                progress_callback=sink,
+                timeout_seconds=getattr(ctx, "timeout_seconds", None),
+                timeout_cap_seconds=60 if deep_backfill else None,
+                recovery=deep_backfill,
+            )
         if not flat:
             # Empty can mean "end of catalogue" *or* "flat mode unsupported for
             # this extractor". We cannot tell them apart, so defer to the legacy
@@ -1819,42 +2426,66 @@ class YtDlpAdapter(PlatformAdapter):
 
         known: frozenset[str] = getattr(ctx, "known_external_ids", frozenset()) or frozenset()
         skip_known = bool(getattr(ctx, "skip_known", False))
+        # Deep TikTok/Douyin backfill pages must stay catalogue-first. Full
+        # detail extraction for every older work creates a burst of 429s even
+        # when the flat playlist endpoint is healthy. The first page and
+        # routine incremental probes still use full extraction.
+        deep_backfill_flat_only = (
+            self.platform in ("tiktok", "douyin")
+            and deep_backfill
+        )
         needs_detail: dict[str, str] = {}
-        for entry in flat:
-            vid = str(entry.get("id") or "")
-            if not vid:
-                continue
-            if skip_known and vid in known:
-                # Already stored and the policy leaves known works untouched:
-                # the flat entry still refreshes view_count, which is the only
-                # metric that meaningfully moves for an unchanged work.
-                continue
-            url = entry.get("webpage_url") or entry.get("url") or self._canonical_for(vid, handle)
-            needs_detail[vid] = str(url)
+        if not deep_backfill_flat_only:
+            for entry in flat:
+                vid = str(entry.get("id") or "")
+                if not vid:
+                    continue
+                if skip_known and vid in known:
+                    # Already stored and the policy leaves known works untouched:
+                    # the flat entry still refreshes view_count, which is the only
+                    # metric that meaningfully moves for an unchanged work.
+                    continue
+                url = entry.get("webpage_url") or entry.get("url") or self._canonical_for(vid, handle)
+                needs_detail[vid] = str(url)
 
         if sink is not None:
             sink(
                 f"[fast] 目录枚举 {len(flat)} 条，其中 {len(needs_detail)} 条需要完整解析"
                 f"（已入库跳过 {len(flat) - len(needs_detail)} 条）\n"
             )
-        details = await self._extract_details(
-            needs_detail,
-            concurrency=concurrency,
-            dateafter=dateafter,
-            datebefore=datebefore,
-            structured=structured,
-            download=download,
-            media_dir=media_dir,
-            extra_args=extra_args,
-            progress_callback=sink,
+        if deep_backfill_flat_only and sink is not None:
+            sink("[fast] 深分页保留 TikTok/Douyin 目录行，跳过逐条详情请求以避免 429\n")
+        details = (
+            await self._extract_details(
+                needs_detail,
+                concurrency=concurrency,
+                dateafter=dateafter,
+                datebefore=datebefore,
+                structured=structured,
+                download=download,
+                media_dir=media_dir,
+                extra_args=extra_args,
+                progress_callback=sink,
+                timeout_seconds=getattr(ctx, "timeout_seconds", None),
+            )
+            if needs_detail
+            else {}
         )
+        missing_detail_count = len(needs_detail) - len(details)
+        if missing_detail_count and sink is not None and self.platform == "youtube":
+            sink(
+                f"[fast] YouTube 详情补全失败 {missing_detail_count}/{len(needs_detail)} 条；"
+                "已保留目录中的标题、封面、时长和播放数据，未伪造详情字段\n"
+            )
 
         merged: list[dict[str, Any]] = []
         for entry in flat:
             vid = str(entry.get("id") or "")
             detail = details.get(vid)
             if detail is None:
-                if vid in needs_detail:
+                if vid in needs_detail or (
+                    deep_backfill_flat_only and not (skip_known and vid in known)
+                ):
                     # Detail extraction failed for a work we wanted in full. The
                     # flat catalogue row is still truthful (real title, real view
                     # count) so we keep it rather than dropping the work; the
@@ -1879,6 +2510,7 @@ class YtDlpAdapter(PlatformAdapter):
                     url,
                     structured={"ignore_errors": True, "no_warnings": True},
                     progress_callback=getattr(ctx, "progress_sink", None),
+                    timeout_seconds=getattr(ctx, "timeout_seconds", None),
                 )
             except YTDLP_BROWSER_FALLBACK_ERRORS:
                 entries = []
