@@ -39,6 +39,13 @@ class WorkspaceMembershipSummary(BaseModel):
     role: WorkspaceRole
 
 
+class WorkspaceMemberRead(BaseModel):
+    id: UUID
+    display_name: str
+    email: str
+    role: WorkspaceRole
+
+
 class CurrentUserResponse(BaseModel):
     user: UserSummary
     memberships: list[WorkspaceMembershipSummary]

@@ -9,7 +9,9 @@ from app.models.automation import (
     NotificationDeliveryAttempt,
 )
 from app.models.download import Download
+from app.models.editorial import EditorialItem
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
+from app.models.editorial_view import EditorialSavedView
 from app.models.embedding import ContentEmbedding, Vector, encode_vector
 from app.models.generation import (
     GenerationRun,
@@ -85,6 +87,8 @@ __all__ = [
     "DeadLetterEvent",
     "DerivedMetric",
     "Download",
+    "EditorialItem",
+    "EditorialSavedView",
     "SubtitleJob",
     "EventArticle",
     "ExternalCallAttempt",

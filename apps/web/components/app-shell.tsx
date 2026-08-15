@@ -16,6 +16,7 @@ import {
   Bot,
   ChevronDown,
   CircleUserRound,
+  ClipboardCheck,
   Download,
   FileText,
   Gauge,
@@ -131,6 +132,7 @@ const navigationGroups: ReadonlyArray<{
     items: [
       ["选题库", "/topics", BookMarked],
       ["内容创作", "/generate", Sparkles],
+      ["审核队列", "/editorial", ClipboardCheck],
       ["视频下载", "/download", Download],
       ["规则中心", "/rules", GitBranch],
     ],

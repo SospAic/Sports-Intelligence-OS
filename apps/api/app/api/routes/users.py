@@ -1,11 +1,15 @@
 from typing import cast
 
 from fastapi import APIRouter
+from sqlalchemy import select
 
-from app.api.dependencies import CurrentAuth
+from app.api.dependencies import CurrentAuth, CurrentWorkspace, DatabaseSession
+from app.models.user import User
+from app.models.workspace import WorkspaceMembership
 from app.schemas.auth import (
     CurrentUserResponse,
     UserSummary,
+    WorkspaceMemberRead,
     WorkspaceMembershipSummary,
     WorkspaceRole,
 )
@@ -34,3 +38,29 @@ async def current_user(auth: CurrentAuth) -> CurrentUserResponse:
         ),
         memberships=memberships,
     )
+
+
+@router.get("/workspace-members", response_model=list[WorkspaceMemberRead])
+async def workspace_members(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> list[WorkspaceMemberRead]:
+    rows = await db.execute(
+        select(WorkspaceMembership, User)
+        .join(User, User.id == WorkspaceMembership.user_id)
+        .where(
+            WorkspaceMembership.workspace_id == workspace.workspace_id,
+            WorkspaceMembership.status == "active",
+            User.status == "active",
+        )
+        .order_by(User.display_name.asc(), User.email_display.asc())
+    )
+    return [
+        WorkspaceMemberRead(
+            id=user.id,
+            display_name=user.display_name or user.email_display,
+            email=user.email_display,
+            role=membership.role,
+        )
+        for membership, user in rows.all()
+    ]

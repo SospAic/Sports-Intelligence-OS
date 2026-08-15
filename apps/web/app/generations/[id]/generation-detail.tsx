@@ -3,6 +3,7 @@
 import type { GenerationRun, ProblemDetails } from "@sio/shared-types";
 import {
   Clipboard,
+  ClipboardCheck,
   Download,
   FileCheck2,
   RefreshCw,
@@ -108,6 +109,29 @@ export function GenerationDetail({
     if (!value) return;
     await navigator.clipboard.writeText(value);
     setStatus(`${label}已复制`);
+  }
+
+  async function submitForReview() {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/v1/editorial-items", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": await csrf(),
+          "X-Workspace-Id": workspaceId,
+        },
+        body: JSON.stringify({ generation_run_id: run.id }),
+      });
+      if (!response.ok) await fail(response);
+      setStatus("已提交到编辑审核队列");
+      router.push("/editorial");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : "提交审核失败");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function download(format: "json" | "txt") {
@@ -323,6 +347,14 @@ export function GenerationDetail({
                 type="button"
               >
                 <Save size={15} /> {run.is_saved ? "取消采用" : "保存并采用"}
+              </button>
+              <button
+                className={`${secondaryButtonClass} mt-2 w-full`}
+                disabled={busy}
+                onClick={() => void submitForReview()}
+                type="button"
+              >
+                <ClipboardCheck size={15} /> 提交编辑审核
               </button>
             </section>
           </div>

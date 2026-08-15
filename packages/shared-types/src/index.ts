@@ -479,6 +479,62 @@ export interface GenerationRunPage {
   total: number;
 }
 
+export type EditorialStatus =
+  | "draft"
+  | "in_review"
+  | "approved"
+  | "rejected"
+  | "archived";
+
+export interface EditorialItem {
+  id: string;
+  workspace_id: string;
+  generation_run_id: string;
+  created_by: string;
+  assignee_id: string | null;
+  title: string;
+  status: EditorialStatus;
+  priority: number;
+  due_at: string | null;
+  content_snapshot: Record<string, unknown>;
+  source_snapshot: Record<string, unknown>;
+  requested_at: string | null;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  review_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EditorialItemPage {
+  items: EditorialItem[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface EditorialMember {
+  id: string;
+  display_name: string;
+  email: string;
+  role: WorkspaceRole;
+}
+
+export interface EditorialSavedView {
+  id: string;
+  workspace_id: string;
+  created_by: string;
+  name: string;
+  status: EditorialStatus | null;
+  assignee_id: string | null;
+  overdue: boolean;
+  unassigned: boolean;
+  priority_min: number | null;
+  priority_max: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PlatformRecord extends PlatformSummary {
   category: string;
   enabled: boolean;

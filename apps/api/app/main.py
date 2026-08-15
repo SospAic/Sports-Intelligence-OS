@@ -11,6 +11,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.api.router import api_router
 from app.api.routes.automation import automation_exception_handler
+from app.api.routes.editorial import editorial_exception_handler
 from app.api.routes.editorial_rules import editorial_rule_exception_handler
 from app.api.routes.generation import generation_exception_handler
 from app.api.routes.health import router as health_router
@@ -31,6 +32,7 @@ from app.providers.llm.registry import build_llm_provider_registry
 from app.providers.news.registry import build_news_provider_registry
 from app.providers.notifications.registry import build_notification_provider_registry
 from app.services.automation import AutomationError
+from app.services.editorial import EditorialError
 from app.services.editorial_rules import EditorialRuleError
 from app.services.generation import GenerationError
 from app.services.monitoring import MonitoringError
@@ -128,6 +130,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(SyncError, sync_exception_handler)
     application.add_exception_handler(NewsError, news_exception_handler)
     application.add_exception_handler(EditorialRuleError, editorial_rule_exception_handler)
+    application.add_exception_handler(EditorialError, editorial_exception_handler)
     application.add_exception_handler(GenerationError, generation_exception_handler)
     application.add_exception_handler(AutomationError, automation_exception_handler)
     application.add_exception_handler(SettingsError, settings_exception_handler)

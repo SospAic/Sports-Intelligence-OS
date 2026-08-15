@@ -4,6 +4,7 @@ from app.api.routes import (
     auth,
     automation,
     download,
+    editorial,
     editorial_rules,
     generation,
     media,
@@ -38,5 +39,6 @@ api_router.include_router(settings.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(media.router)
 api_router.include_router(download.router)
+api_router.include_router(editorial.router)
 api_router.include_router(video_search.router)
 api_router.include_router(semantic_search.router)

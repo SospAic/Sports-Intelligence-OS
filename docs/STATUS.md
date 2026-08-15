@@ -1791,6 +1791,31 @@ representative evaluation set; automatic media deletion/retention is not
 enabled; and production image pinning, backup/restore drills and cross-host
 HA require deployment infrastructure outside this local Compose workspace.
 
+## 2026-08-15 全面产品审查与编辑审核队列
+
+- 完成全项目功能审查，覆盖认证/工作区、账号作品、新闻热点/事件、评论、规则、Prompt/生成、视频/字幕/媒体、语义检索、自动化/通知、存储生命周期、任务运维、权限审计、测试和部署门禁。详细结论与后续路线见 `docs/PRODUCT_AUDIT_2026-08-15.md`。
+- 参考 Sprout Social Smart Inbox、Hootsuite Listening、Buffer 审批流、Hudl Assist 的“数据点关联视频”和 Stats Perform OptaAI Studio 的“可信数据到故事”链路，本轮选择补齐生成后的团队协作断点，而不是在缺少真实凭证时继续堆叠平台数量。
+- 新增 `editorial_items` 与迁移 `20260815_0003_editorial_items.py`。审核条目保存生成成品快照、来源快照、负责人、优先级、截止时间、审核备注和状态时间；创建接口按生成运行幂等，避免同一成品重复进入队列。
+- 新增编辑审核 API：`GET/POST /api/v1/editorial-items`、`GET/PATCH /api/v1/editorial-items/{item_id}`。状态机明确限制为 `draft → in_review → approved/rejected → archived`，禁止草稿直接批准，批准仅限 owner/admin/editor；审核通过不表示已发布到第三方平台。
+- 生成详情页新增“提交编辑审核”，后台导航新增“审核队列”。审核页面支持全部/草稿/待审核/已批准/已退回/逾期筛选、审核备注、批准、退回、重新编辑和归档，并显式显示 Mock Provider 来源。
+- 验证：Python compileall 通过；Ruff 通过；mypy 通过（203 个 API 源文件）；前端 TypeScript 通过；Vitest 通过（21 个文件 / 75 项）；ESLint 通过（0 错误 / 12 个既有警告）；根目录契约测试 35 项通过；审核状态机纯函数 smoke 通过。
+- API 新增 pytest 已执行，但共享 PostgreSQL fixture 在 `postgres:5432` 主机名无法解析时阻断 3 项测试；这不是测试通过，待 Docker/PostgreSQL 环境恢复后补跑。
+- 本轮 Docker 门禁仍为 BLOCKED：宿主机没有 Docker CLI/Daemon，未宣称镜像重建、Compose 启动、迁移、健康检查或备份恢复成功；没有删除卷或清空数据库。
+
+下一入口：恢复 Docker/PostgreSQL 后补做 `20260815_0003` 迁移和审核队列 API 集成测试；随后推进队列视图保存、成员/频道权限、Notes/批量操作、审核通过后的发布 Adapter 契约和从订阅告警直接创建审核条目。
+
+## 2026-08-15 编辑审核团队工作台扩展
+
+- 在 `editorial_items` 基础上新增迁移 `20260815_0004_editorial_workbench.py` 和 `editorial_saved_views` 表。保存视图按工作区共享，支持状态、逾期、负责人/未分派和优先级范围，重名和非法优先级范围会被拒绝。
+- 新增 `GET /api/v1/workspace-members`，只返回当前工作区的活跃成员和最小展示字段；审核 API 新增负责人筛选、未分派筛选和优先级范围筛选。
+- 新增 `PATCH /api/v1/editorial-items/bulk`，一次最多更新 100 条，复用审核状态机和“批准仅限 owner/admin/editor”权限，逐条记录 `editorial_item.bulk_updated` 审计事件。
+- 新增 `GET/POST/PATCH/DELETE /api/v1/editorial-views`，保存视图的创建、修改、删除均经过 CSRF、工作区隔离和审计；管理员可以管理其他成员创建的视图，普通成员只能管理自己创建的视图。
+- 审核页面升级为团队工作台：成员目录、逐条分派、负责人/优先级过滤、当前页多选、批量状态/分派、保存/应用/删除共享视图均已接入；未分派状态不会被当作“全部负责人”。
+- 验证：Ruff 通过；mypy 通过（204 个 API 源文件）；前端 TypeScript 通过；ESLint 通过（0 错误）。新增后端 pytest 已执行，但 5 项测试均在共享 PostgreSQL fixture 初始化阶段被 `postgres:5432` 无法解析阻断，不能计为通过；Alembic 当前 head 已到 `20260815_0004`，迁移历史需要 Docker/PostgreSQL 实际执行确认。
+- Docker 部署门禁仍为 BLOCKED：宿主机未发现 Docker CLI/Daemon，因此未宣称镜像重建、`docker compose up -d`、迁移、API/Web 健康检查或端到端页面成功；没有执行 `docker compose down -v`、删除卷或清空数据库。
+
+下一入口：恢复 Docker/PostgreSQL 后先执行 `20260815_0004` 迁移和审核工作台集成测试；随后补成员邀请与频道级权限、Notes/评论协作，再设计官方授权边界内的排期和发布 Adapter 契约。
+
 ## 2026-08-15 Storage lifecycle governance and release-gate follow-up
 
 - Implemented the storage lifecycle policy and migration
