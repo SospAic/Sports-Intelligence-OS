@@ -1939,3 +1939,10 @@ explicitly enable it.
 - Docker 部署门禁：本轮宿主环境未发现 Docker CLI/Daemon，`docker version` 与 `docker compose ps` 均无法执行，因此未宣称镜像重建、Compose 更新、迁移、容器健康检查或登录回归成功；未删除卷或重置数据库。浏览器回归入口被本地浏览器策略拦截，不能据此冒充 UI 端到端通过。
 
 下一入口：恢复 Docker CLI/Daemon 后立即重建受影响的 Web、API、Worker、Beat 镜像并执行 Compose 门禁；随后补真实登录态下的顶部信息弹窗、下载默认设置和账号对比页面回归，再处理 12 个既有 ESLint 警告与跨平台行业基准数据接入。
+
+## 2026-08-16 本轮 Docker 部署门禁复验
+
+- Docker Desktop 已恢复可用（Docker 4.86.0、Engine 29.7.2，context `desktop-linux`）。按门禁重建 `api`、`worker`、`beat`、`web` 镜像并执行 `docker compose up -d api worker beat web`，四个受影响服务已更新运行。
+- 容器迁移状态为 `20260816_0001 (head)`；API `/health/live` 与 `/health/ready` 均返回 200，ready 检查显示 `database=ok`、`redis=ok`；Web `/login` 返回 200，登录入口和邮箱/密码输入框均可见。
+- `docker compose ps` 显示 API、Web、Postgres、Redis 健康，Worker、Beat、Browser、Translation、字幕 Worker 均运行；本轮未执行删除卷、数据库重置或备份恢复等不可逆操作。
+- 初次从错误工作目录执行 `alembic current` 产生配置路径错误，改为容器内 `/workspace/apps/api` 工作目录后已正常返回当前 head；该错误不影响部署结果。
