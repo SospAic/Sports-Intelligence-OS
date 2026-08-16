@@ -10,6 +10,7 @@ from app.models.automation import (
 )
 from app.models.download import Download
 from app.models.editorial import EditorialItem
+from app.models.editorial_comment import EditorialComment
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
 from app.models.editorial_view import EditorialSavedView
 from app.models.embedding import ContentEmbedding, Vector, encode_vector
@@ -88,6 +89,7 @@ __all__ = [
     "DerivedMetric",
     "Download",
     "EditorialItem",
+    "EditorialComment",
     "EditorialSavedView",
     "SubtitleJob",
     "EventArticle",

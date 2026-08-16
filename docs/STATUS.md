@@ -1906,3 +1906,15 @@ explicitly enable it.
   user's requested full-project publication on branch
   `codex/full-repair-real-data`; external platform, notification, ASR/translation,
   backup/restore and HA canaries remain credential/infrastructure gated.
+
+## 2026-08-16 编辑审核协作线程与全项目扩展路线
+
+- 在全项目审查基础上，优先补齐“生成 → 审核 → 协作 → 交付”的团队协作断点。行业参考模式包括 Buffer 草稿审批/Notes、Sprout Social Smart Inbox 的队列化协作，以及 Hudl/Stats Perform 对事实、数据和内容结果的关联追踪；本轮只借鉴工作流，不宣称第三方集成完成。
+- 新增 `editorial_comments` 模型和迁移 `20260816_0001_editorial_comments.py`。评论按工作区和审核条目隔离，正文不可编辑/删除，解决状态可标记或重新打开；创建/解决动作分别写入 `editorial_comment.created`、`editorial_comment.resolution_changed` 审计。
+- 新增 `GET/POST /api/v1/editorial-items/{item_id}/comments` 和 `PATCH /api/v1/editorial-items/{item_id}/comments/{comment_id}`。创建允许 owner/admin/editor/analyst，解决允许 owner/admin/editor，所有写入接口启用 CSRF；viewer 仍可读取但不能写入。
+- 审核工作台每条目新增“协作”线程面板，显示作者、时间、待处理/已解决状态、空/加载/错误状态和评论输入；审核备注继续保留为条目级结论，避免与讨论原文混淆。
+- 全项目后续方向已更新至 `docs/EDITORIAL_COLLABORATION.md` 和 `docs/PRODUCT_AUDIT_2026-08-15.md`：P0 真实凭证 canary、索引漂移兼容迁移和协作指标；P1 成员邀请/频道权限、事实-素材-字幕关联、排期/发布 Adapter、订阅告警直达审核；P2 可信评分、热点生命周期和语义检索新鲜度。
+- 验证：`alembic upgrade head` 成功，当前 head 为 `20260816_0001`；API Ruff、compileall、mypy（205 个源文件）通过；协作评论集成测试 `6 passed`；前端 TypeScript、Web production build、Vitest `21 files / 75 tests` 通过；API 分片实际为 77 个默认分片通过，`test_platform_session_capture.py` 因 `net` 标记默认 6 项跳过并在显式 `-m net` 下 6 passed；分片 runner 已修正退出码 5 的 skipped 误报；受影响 API/Worker/Beat/字幕 Worker/Web 镜像已重建并通过 `docker compose up -d` 更新。
+- 运行态验收通过：API `/health/live` 与 `/health/ready` 返回 200，ready 显示 `database=ok`、`redis=ok`；Web `/login` 返回 200 且登录入口存在；Compose API、Web、Postgres、Redis、Browser、Translation 均健康/运行，Worker、Beat、字幕 Worker 已启动；运行中迁移为 `20260816_0001 (head)`。`alembic check` 仍报告既有索引漂移（保存视图 workspace 索引、媒体生命周期索引），不影响本次增量迁移，已列入 P0 单独处理。
+
+下一入口：先补运行态门禁结果和既有索引漂移兼容迁移，再推进成员邀请与频道级权限；对外发布必须在官方授权边界内以 Adapter 契约单独验收。

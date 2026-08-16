@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  EditorialComment,
   EditorialItem,
   EditorialItemPage,
   EditorialMember,
@@ -13,6 +14,7 @@ import {
   ClipboardCheck,
   Clock3,
   Filter,
+  MessageSquare,
   RotateCcw,
   Save,
   Trash2,
@@ -69,6 +71,9 @@ export function EditorialClient() {
   const [bulkAssignee, setBulkAssignee] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [commentBusy, setCommentBusy] = useState(false);
   const canReview = ["owner", "admin", "editor"].includes(role ?? "");
   const canEdit = ["owner", "admin", "editor", "analyst"].includes(role ?? "");
   const canManageViews = ["owner", "admin"].includes(role ?? "");
@@ -98,6 +103,15 @@ export function EditorialClient() {
       });
     },
     enabled: Boolean(workspaceId),
+  });
+  const selectedItem = itemsForSelection(query.data?.items ?? [], selectedItemId);
+  const commentsQuery = useQuery({
+    queryKey: ["editorial-comments", workspaceId, selectedItemId],
+    queryFn: () =>
+      apiRequest<EditorialComment[]>(`/editorial-items/${selectedItemId}/comments`, {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId && selectedItemId),
   });
 
   async function refreshQueue() {
@@ -142,6 +156,51 @@ export function EditorialClient() {
       notify(error instanceof Error ? error.message : "批量更新失败", "error");
     } finally {
       setBulkBusy(false);
+    }
+  }
+
+  async function addComment() {
+    if (!workspaceId || !selectedItemId || !commentDraft.trim()) {
+      notify("请先填写协作评论", "error");
+      return;
+    }
+    setCommentBusy(true);
+    try {
+      await apiRequest<EditorialComment>(`/editorial-items/${selectedItemId}/comments`, {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ body: commentDraft.trim() }),
+      });
+      setCommentDraft("");
+      notify("协作评论已添加");
+      await queryClient.invalidateQueries({ queryKey: ["editorial-comments", workspaceId, selectedItemId] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "协作评论添加失败", "error");
+    } finally {
+      setCommentBusy(false);
+    }
+  }
+
+  async function toggleComment(comment: EditorialComment) {
+    if (!workspaceId || !selectedItemId) return;
+    setCommentBusy(true);
+    try {
+      await apiRequest<EditorialComment>(
+        `/editorial-items/${selectedItemId}/comments/${comment.id}`,
+        {
+          method: "PATCH",
+          workspaceId,
+          csrf: true,
+          body: JSON.stringify({ resolved: !comment.resolved_at }),
+        },
+      );
+      notify(comment.resolved_at ? "评论已重新打开" : "评论已标记为已解决");
+      await queryClient.invalidateQueries({ queryKey: ["editorial-comments", workspaceId, selectedItemId] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "评论状态更新失败", "error");
+    } finally {
+      setCommentBusy(false);
     }
   }
 
@@ -437,6 +496,7 @@ export function EditorialClient() {
                       )
                     }
                     onUpdate={updateItem}
+                    onOpenCollaboration={() => setSelectedItemId(item.id)}
                     selected={selectedIds.includes(item.id)}
                   />
                 ))}
@@ -444,6 +504,26 @@ export function EditorialClient() {
             </>
           )}
         </Panel>
+        {selectedItem && (
+          <EditorialCollaborationPanel
+            canComment={canEdit}
+            canResolve={canReview}
+            comments={commentsQuery.data ?? []}
+            commentsError={commentsQuery.error instanceof Error ? commentsQuery.error.message : null}
+            commentsLoading={commentsQuery.isLoading}
+            commentDraft={commentDraft}
+            item={selectedItem}
+            members={members}
+            onAddComment={() => void addComment()}
+            onChangeDraft={setCommentDraft}
+            onClose={() => {
+              setSelectedItemId(null);
+              setCommentDraft("");
+            }}
+            onToggleComment={(comment) => void toggleComment(comment)}
+            busy={commentBusy}
+          />
+        )}
       </div>
     </main>
   );
@@ -458,6 +538,7 @@ function EditorialRow({
   selected,
   onSelect,
   onUpdate,
+  onOpenCollaboration,
 }: {
   item: EditorialItem;
   members: EditorialMember[];
@@ -467,6 +548,7 @@ function EditorialRow({
   selected: boolean;
   onSelect: (checked: boolean) => void;
   onUpdate: (item: EditorialItem, changes: Record<string, unknown>) => Promise<void>;
+  onOpenCollaboration: () => void;
 }) {
   const [note, setNote] = useState(item.review_note ?? "");
   const source = item.source_snapshot;
@@ -524,6 +606,9 @@ function EditorialRow({
           {assignee && <p className="text-[11px] text-slate-600">负责人：{assignee.display_name}</p>}
         </div>
         <div className="flex flex-wrap justify-end gap-2">
+          <button className={secondaryButtonClass} onClick={onOpenCollaboration} type="button">
+            <MessageSquare size={14} /> 协作
+          </button>
           {canEdit && note !== (item.review_note ?? "") && (
             <button className={secondaryButtonClass} disabled={busy} onClick={() => void onUpdate(item, { review_note: note })} type="button">
               保存备注
@@ -558,4 +643,102 @@ function EditorialRow({
       </div>
     </article>
   );
+}
+
+function EditorialCollaborationPanel({
+  item,
+  comments,
+  members,
+  canComment,
+  canResolve,
+  commentsLoading,
+  commentsError,
+  commentDraft,
+  busy,
+  onChangeDraft,
+  onAddComment,
+  onToggleComment,
+  onClose,
+}: {
+  item: EditorialItem;
+  comments: EditorialComment[];
+  members: EditorialMember[];
+  canComment: boolean;
+  canResolve: boolean;
+  commentsLoading: boolean;
+  commentsError: string | null;
+  commentDraft: string;
+  busy: boolean;
+  onChangeDraft: (value: string) => void;
+  onAddComment: () => void;
+  onToggleComment: (comment: EditorialComment) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-5 py-4">
+        <div>
+          <p className="text-xs font-semibold tracking-[0.18em] text-cyan-300 uppercase">Collaboration Thread</p>
+          <h2 className="mt-2 text-lg font-medium text-white">{item.title}</h2>
+          <p className="mt-1 text-xs text-slate-500">评论原文不可删除；解决状态只表示当前协作结论。</p>
+        </div>
+        <button className="text-xs text-slate-500 hover:text-slate-300" onClick={onClose} type="button">
+          关闭
+        </button>
+      </div>
+      <div className="space-y-3 p-5">
+        {commentsLoading ? (
+          <p className="text-sm text-slate-500">加载协作线程…</p>
+        ) : commentsError ? (
+          <p className="text-sm text-rose-300">{commentsError}</p>
+        ) : comments.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-700 p-5 text-center text-sm text-slate-500">
+            还没有评论。把事实核对、素材请求或审核意见留在这里，团队成员都能看到。
+          </p>
+        ) : (
+          comments.map((comment) => {
+            const author = members.find((member) => member.id === comment.author_id);
+            return (
+              <article className={`rounded-lg border p-4 ${comment.resolved_at ? "border-emerald-900/60 bg-emerald-950/10" : "border-slate-800 bg-slate-950/30"}`} key={comment.id}>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-medium text-slate-300">{author?.display_name ?? comment.author_id.slice(0, 8)}</span>
+                  <span className="text-slate-600">{new Date(comment.created_at).toLocaleString("zh-CN")}</span>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-300">{comment.body}</p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  {comment.resolved_at ? <Badge tone="success">已解决</Badge> : <Badge tone="warning">待处理</Badge>}
+                  {canResolve && (
+                    <button className="text-xs text-cyan-300 hover:text-cyan-200" disabled={busy} onClick={() => onToggleComment(comment)} type="button">
+                      {comment.resolved_at ? "重新打开" : "标记已解决"}
+                    </button>
+                  )}
+                </div>
+              </article>
+            );
+          })
+        )}
+        {canComment && (
+          <div className="border-t border-slate-800 pt-4">
+            <textarea
+              className={`${inputClass} min-h-24 w-full resize-y`}
+              disabled={busy}
+              onChange={(event) => onChangeDraft(event.target.value)}
+              placeholder="写下事实核对、素材请求或下一步意见…"
+              value={commentDraft}
+            />
+            <div className="mt-2 flex justify-end">
+              <button className={buttonClass} disabled={busy || !commentDraft.trim()} onClick={onAddComment} type="button">
+                <MessageSquare size={14} /> 添加评论
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function itemsForSelection(items: EditorialItem[], itemId: string | null): EditorialItem | null {
+  if (!itemId) return null;
+  return items.find((item) => item.id === itemId) ?? null;
 }

@@ -13,6 +13,9 @@ from app.core.problems import problem_response
 from app.schemas.editorial import (
     EditorialBulkResult,
     EditorialBulkUpdate,
+    EditorialCommentCreate,
+    EditorialCommentRead,
+    EditorialCommentUpdate,
     EditorialItemCreate,
     EditorialItemPage,
     EditorialItemRead,
@@ -21,7 +24,11 @@ from app.schemas.editorial import (
     EditorialSavedViewRead,
     EditorialSavedViewUpdate,
 )
-from app.services.editorial import EditorialError, EditorialService
+from app.services.editorial import (
+    EditorialCommentNotFound,
+    EditorialError,
+    EditorialService,
+)
 
 router = APIRouter(tags=["editorial"])
 Page = Annotated[int, Query(ge=1)]
@@ -146,6 +153,63 @@ async def create_editorial_item(
 ) -> EditorialItemRead:
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     return await service(db).create_item(workspace.workspace_id, auth.user.id, payload)
+
+
+@router.get(
+    "/editorial-items/{item_id}/comments",
+    response_model=list[EditorialCommentRead],
+)
+async def list_editorial_comments(
+    item_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> list[EditorialCommentRead]:
+    return await service(db).list_comments(workspace.workspace_id, item_id)
+
+
+@router.post(
+    "/editorial-items/{item_id}/comments",
+    response_model=EditorialCommentRead,
+    status_code=201,
+)
+async def create_editorial_comment(
+    item_id: UUID,
+    payload: EditorialCommentCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> EditorialCommentRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(db).create_comment(
+        workspace.workspace_id,
+        item_id,
+        auth.user.id,
+        payload,
+    )
+
+
+@router.patch(
+    "/editorial-items/{item_id}/comments/{comment_id}",
+    response_model=EditorialCommentRead,
+)
+async def update_editorial_comment(
+    item_id: UUID,
+    comment_id: UUID,
+    payload: EditorialCommentUpdate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> EditorialCommentRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    comment = await service(db).get_comment(workspace.workspace_id, comment_id)
+    if comment.editorial_item_id != item_id:
+        raise EditorialCommentNotFound()
+    return await service(db).update_comment(
+        workspace.workspace_id,
+        comment_id,
+        auth.user.id,
+        payload,
+    )
 
 
 @router.get("/editorial-items/{item_id}", response_model=EditorialItemRead)

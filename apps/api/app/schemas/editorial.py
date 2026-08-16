@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 EditorialStatus = Literal["draft", "in_review", "approved", "rejected", "archived"]
 
@@ -65,6 +65,40 @@ class EditorialItemPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class EditorialCommentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1, max_length=10000)
+
+    @field_validator("body")
+    @classmethod
+    def normalize_body(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("评论内容不能为空")
+        return normalized
+
+
+class EditorialCommentUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    resolved: bool
+
+
+class EditorialCommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    workspace_id: UUID
+    editorial_item_id: UUID
+    author_id: UUID
+    body: str
+    resolved_at: datetime | None
+    resolved_by: UUID | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class EditorialBulkUpdate(BaseModel):

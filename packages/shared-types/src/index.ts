@@ -513,6 +513,18 @@ export interface EditorialItemPage {
   total: number;
 }
 
+export interface EditorialComment {
+  id: string;
+  workspace_id: string;
+  editorial_item_id: string;
+  author_id: string;
+  body: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface EditorialMember {
   id: string;
   display_name: string;

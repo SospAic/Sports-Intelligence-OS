@@ -10,12 +10,16 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.editorial import EditorialItem
+from app.models.editorial_comment import EditorialComment
 from app.models.editorial_view import EditorialSavedView
 from app.models.generation import GenerationRun
 from app.models.workspace import WorkspaceMembership
 from app.schemas.editorial import (
     EditorialBulkResult,
     EditorialBulkUpdate,
+    EditorialCommentCreate,
+    EditorialCommentRead,
+    EditorialCommentUpdate,
     EditorialItemCreate,
     EditorialItemPage,
     EditorialItemRead,
@@ -37,6 +41,11 @@ class EditorialError(RuntimeError):
 class EditorialNotFound(EditorialError):
     def __init__(self, message: str = "审核条目不存在") -> None:
         super().__init__(message, code="editorial_item_not_found", status_code=404)
+
+
+class EditorialCommentNotFound(EditorialError):
+    def __init__(self, message: str = "协作评论不存在") -> None:
+        super().__init__(message, code="editorial_comment_not_found", status_code=404)
 
 
 class EditorialConflict(EditorialError):
@@ -127,6 +136,83 @@ class EditorialService:
 
     async def get_item(self, workspace_id: UUID, item_id: UUID) -> EditorialItemRead:
         return EditorialItemRead.model_validate(await self._item(workspace_id, item_id))
+
+    async def list_comments(
+        self, workspace_id: UUID, item_id: UUID
+    ) -> list[EditorialCommentRead]:
+        await self._item(workspace_id, item_id)
+        comments = list(
+            (
+                await self.session.scalars(
+                    select(EditorialComment)
+                    .where(
+                        EditorialComment.workspace_id == workspace_id,
+                        EditorialComment.editorial_item_id == item_id,
+                    )
+                    .order_by(EditorialComment.created_at.asc(), EditorialComment.id.asc())
+                )
+            ).all()
+        )
+        return [EditorialCommentRead.model_validate(comment) for comment in comments]
+
+    async def get_comment(
+        self, workspace_id: UUID, comment_id: UUID
+    ) -> EditorialCommentRead:
+        return EditorialCommentRead.model_validate(await self._comment(workspace_id, comment_id))
+
+    async def create_comment(
+        self,
+        workspace_id: UUID,
+        item_id: UUID,
+        actor_id: UUID,
+        payload: EditorialCommentCreate,
+    ) -> EditorialCommentRead:
+        await self._item(workspace_id, item_id)
+        comment = EditorialComment(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            editorial_item_id=item_id,
+            author_id=actor_id,
+            body=payload.body,
+        )
+        self.session.add(comment)
+        self._audit(
+            workspace_id,
+            actor_id,
+            "editorial_comment.created",
+            comment.id,
+            {"editorial_item_id": str(item_id), "body_length": len(payload.body)},
+            resource_type="editorial_comment",
+        )
+        await self.session.commit()
+        await self.session.refresh(comment)
+        return EditorialCommentRead.model_validate(comment)
+
+    async def update_comment(
+        self,
+        workspace_id: UUID,
+        comment_id: UUID,
+        actor_id: UUID,
+        payload: EditorialCommentUpdate,
+    ) -> EditorialCommentRead:
+        comment = await self._comment(workspace_id, comment_id)
+        if payload.resolved:
+            comment.resolved_at = datetime.now(UTC)
+            comment.resolved_by = actor_id
+        else:
+            comment.resolved_at = None
+            comment.resolved_by = None
+        self._audit(
+            workspace_id,
+            actor_id,
+            "editorial_comment.resolution_changed",
+            comment.id,
+            {"resolved": payload.resolved, "editorial_item_id": str(comment.editorial_item_id)},
+            resource_type="editorial_comment",
+        )
+        await self.session.commit()
+        await self.session.refresh(comment)
+        return EditorialCommentRead.model_validate(comment)
 
     async def create_item(
         self,
@@ -359,6 +445,17 @@ class EditorialService:
             raise EditorialNotFound()
         return item
 
+    async def _comment(self, workspace_id: UUID, comment_id: UUID) -> EditorialComment:
+        comment = await self.session.scalar(
+            select(EditorialComment).where(
+                EditorialComment.workspace_id == workspace_id,
+                EditorialComment.id == comment_id,
+            )
+        )
+        if comment is None:
+            raise EditorialCommentNotFound()
+        return comment
+
     async def _view(self, workspace_id: UUID, view_id: UUID) -> EditorialSavedView:
         view = await self.session.scalar(
             select(EditorialSavedView).where(
@@ -421,6 +518,7 @@ class EditorialService:
         action: str,
         resource_id: UUID,
         changes: dict[str, Any] | None = None,
+        resource_type: str = "editorial_item",
     ) -> None:
         self.session.add(
             build_audit_entry(
@@ -429,7 +527,7 @@ class EditorialService:
                 actor_type="user",
                 actor_id=actor_id,
                 action=action,
-                resource_type="editorial_item",
+                resource_type=resource_type,
                 resource_id=resource_id,
                 change_summary_json=changes or {},
                 trace_id=uuid4(),

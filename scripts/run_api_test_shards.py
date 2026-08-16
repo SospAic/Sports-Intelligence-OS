@@ -35,9 +35,17 @@ def main() -> int:
             check=False,
         )
         duration = time.monotonic() - started
-        status = "passed" if completed.returncode == 0 else "failed"
+        # Pytest returns 5 when collection produces no runnable tests. The
+        # default project configuration excludes ``net`` tests, so a module
+        # marked entirely with ``pytestmark = pytest.mark.net`` is a valid
+        # skipped shard rather than a failing shard. Explicit net runs remain
+        # part of the separate network-gated verification job.
+        status = {
+            0: "passed",
+            5: "skipped",
+        }.get(completed.returncode, "failed")
         results.append(f"{relative}\t{status}\t{duration:.2f}s")
-        if completed.returncode != 0:
+        if completed.returncode not in {0, 5}:
             failed = True
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
