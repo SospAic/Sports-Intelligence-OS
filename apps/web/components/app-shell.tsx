@@ -444,8 +444,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="border-t border-slate-800 p-3">
         <Tooltip label={collapsed ? "展开导航" : "收起导航"}>
           <button
+            aria-label={collapsed ? "展开导航" : "收起导航"}
             className="hidden w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-slate-400 hover:bg-slate-900 lg:flex"
             onClick={() => setCollapsed((value) => !value)}
+            type="button"
           >
             <PanelLeftClose
               size={17}
@@ -484,8 +486,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Menu size={21} />
             </button>
-            <div className="flex min-w-0 flex-1 items-center" />
-            <div className="relative min-w-0 w-full max-w-xl flex-[0_1_36rem]">
+            <div className="hidden min-w-0 flex-1 items-center lg:flex" />
+            <div className="relative min-w-0 w-full max-w-xl flex-1">
               <Search
                 className="absolute top-1/2 left-3 -translate-y-1/2 text-slate-500"
                 size={16}
@@ -612,7 +614,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
-            <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+            <div className="flex shrink-0 items-center justify-end gap-1.5">
             <ThemeToggle />
             <LanguageSwitcher />
             <div className="relative hidden shrink-0 md:block">
