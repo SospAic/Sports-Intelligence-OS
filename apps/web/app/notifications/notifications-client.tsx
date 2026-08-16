@@ -1,13 +1,14 @@
 "use client";
 
 import type {
+  InboxReadStateRecord,
   NotificationDeliveryPage,
   OperationTaskPage,
 } from "@sio/shared-types";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Bell, CheckCheck, ListChecks } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import {
@@ -32,7 +33,9 @@ export function NotificationsClient() {
   const { workspaceId } = useWorkspace();
   const [kind, setKind] = useState<KindFilter>("all");
   const [status, setStatus] = useState("");
-  const [readIds, setReadIds] = useState<Set<string>>(() => new Set());
+  const [optimisticReadIds, setOptimisticReadIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const tasks = useQuery({
     queryKey: ["notification-history-tasks", workspaceId],
     queryFn: () =>
@@ -52,61 +55,87 @@ export function NotificationsClient() {
     enabled: Boolean(workspaceId),
   });
 
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("sio-read-inbox-items");
-      const ids = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(ids)) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the optional browser-only read marker
-        setReadIds(
-          new Set(ids.filter((id): id is string => typeof id === "string")),
-        );
-      }
-    } catch {
-      // History remains usable without local read persistence.
-    }
-  }, []);
-
   const items = useMemo(
     () =>
       buildInboxItems(tasks.data?.items ?? [], deliveries.data?.items ?? []),
     [deliveries.data?.items, tasks.data?.items],
+  );
+  const readStateQuery = useQuery<InboxReadStateRecord[]>({
+    queryKey: [
+      "notification-history-read-states",
+      workspaceId,
+      items.map((item) => item.id).join(","),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      items.forEach((item) => params.append("item_key", item.id));
+      return apiRequest<InboxReadStateRecord[]>(
+        `/inbox/read-states?${params.toString()}`,
+        { workspaceId: workspaceId! },
+      );
+    },
+    enabled: Boolean(workspaceId) && items.length > 0,
+    staleTime: 10_000,
+  });
+  const readIds = useMemo(
+    () =>
+      new Set([
+        ...(readStateQuery.data ?? []).map((state) => state.item_key),
+        ...optimisticReadIds,
+      ]),
+    [optimisticReadIds, readStateQuery.data],
   );
   const filtered = items.filter(
     (item) => (kind === "all" || item.kind === kind) && (!status || item.status === status),
   );
   const unreadCount = items.filter((item) => !readIds.has(item.id)).length;
 
-  function markRead(id: string) {
-    setReadIds((previous) => {
+  async function markRead(id: string) {
+    setOptimisticReadIds((previous) => {
       const next = new Set(previous);
       next.add(id);
-      try {
-        window.localStorage.setItem(
-          "sio-read-inbox-items",
-          JSON.stringify(Array.from(next)),
-        );
-      } catch {
-        // Continue without local persistence when browser storage is blocked.
-      }
       return next;
     });
+    try {
+      await apiRequest("/inbox/read-states", {
+        method: "POST",
+        body: JSON.stringify({ item_key: id }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await readStateQuery.refetch();
+    } catch {
+      setOptimisticReadIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
   }
 
-  function markAllRead() {
-    setReadIds((previous) => {
+  async function markAllRead() {
+    const ids = items.map((item) => item.id);
+    if (!ids.length) return;
+    setOptimisticReadIds((previous) => {
       const next = new Set(previous);
-      items.forEach((item) => next.add(item.id));
-      try {
-        window.localStorage.setItem(
-          "sio-read-inbox-items",
-          JSON.stringify(Array.from(next)),
-        );
-      } catch {
-        // Continue without local persistence when browser storage is blocked.
-      }
+      ids.forEach((id) => next.add(id));
       return next;
     });
+    try {
+      await apiRequest("/inbox/read-states/bulk", {
+        method: "POST",
+        body: JSON.stringify({ item_keys: ids }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await readStateQuery.refetch();
+    } catch {
+      setOptimisticReadIds((previous) => {
+        const next = new Set(previous);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
   }
 
   const error = tasks.error ?? deliveries.error;
@@ -115,12 +144,12 @@ export function NotificationsClient() {
       <PageHeader
         eyebrow="OPERATIONS INBOX"
         title="信息历史"
-        description="集中查看同步、通知投递和后台任务；数据来自已持久化的真实运行记录，未读标记保存在当前浏览器。"
+        description="集中查看同步、通知投递和后台任务；数据来自真实运行记录，已读状态按工作区和用户持久化。"
         actions={
           <button
             className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-600"
             disabled={!unreadCount}
-            onClick={markAllRead}
+            onClick={() => void markAllRead()}
             type="button"
           >
             <CheckCheck size={15} /> 全部标为已读
@@ -180,7 +209,7 @@ export function NotificationsClient() {
                   className="flex items-start gap-3 px-5 py-4 transition hover:bg-slate-900/70"
                   href={item.href}
                   key={item.id}
-                  onClick={() => markRead(item.id)}
+                  onClick={() => void markRead(item.id)}
                 >
                   <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-slate-900 text-cyan-300">
                     {item.kind === "sync" ? (

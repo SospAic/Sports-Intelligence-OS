@@ -3,6 +3,7 @@
 import type {
   CurrentUserResponse,
   HealthResponse,
+  InboxReadStateRecord,
   MonitoringAccountPage,
   NotificationDeliveryPage,
   OperationTaskPage,
@@ -174,7 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const searchListRef = useRef<HTMLDivElement>(null);
   const [userOpen, setUserOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
-  const [readInboxIds, setReadInboxIds] = useState<Set<string>>(
+  const [optimisticReadInboxIds, setOptimisticReadInboxIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [syncPopoverOpen, setSyncPopoverOpen] = useState(false);
@@ -284,6 +285,31 @@ export function AppShell({ children }: { children: ReactNode }) {
       ),
     [deliveryQuery.data?.items, taskQuery.data?.items],
   );
+  const inboxReadStateQuery = useQuery<InboxReadStateRecord[]>({
+    queryKey: [
+      "shell-inbox-read-states",
+      workspaceId,
+      inboxItems.map((item) => item.id).join(","),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      inboxItems.forEach((item) => params.append("item_key", item.id));
+      return apiRequest<InboxReadStateRecord[]>(
+        `/inbox/read-states?${params.toString()}`,
+        { workspaceId: workspaceId! },
+      );
+    },
+    enabled: Boolean(workspaceId) && inboxItems.length > 0,
+    staleTime: 10_000,
+  });
+  const readInboxIds = useMemo(
+    () =>
+      new Set([
+        ...(inboxReadStateQuery.data ?? []).map((state) => state.item_key),
+        ...optimisticReadInboxIds,
+      ]),
+    [inboxReadStateQuery.data, optimisticReadInboxIds],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -329,21 +355,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [authPage, shortcutsOpen]);
 
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("sio-read-inbox-items");
-      const ids = raw ? JSON.parse(raw) : [];
-      if (Array.isArray(ids)) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the optional browser-only read marker
-        setReadInboxIds(
-          new Set(ids.filter((id): id is string => typeof id === "string")),
-        );
-      }
-    } catch {
-      // Local read markers are optional; the persisted records remain intact.
-    }
-  }, []);
-
   const context = useMemo(
     () => ({
       currentUser,
@@ -382,35 +393,51 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
   const unreadInboxItems = inboxItems.filter((item) => !readInboxIds.has(item.id));
   const visibleInboxItems = unreadInboxItems.slice(0, 5);
-  function markInboxRead(id: string) {
-    setReadInboxIds((previous) => {
+  async function markInboxRead(id: string) {
+    setOptimisticReadInboxIds((previous) => {
       const next = new Set(previous);
       next.add(id);
-      try {
-        window.localStorage.setItem(
-          "sio-read-inbox-items",
-          JSON.stringify(Array.from(next)),
-        );
-      } catch {
-        // Continue without local persistence when browser storage is blocked.
-      }
       return next;
     });
+    try {
+      await apiRequest("/inbox/read-states", {
+        method: "POST",
+        body: JSON.stringify({ item_key: id }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await inboxReadStateQuery.refetch();
+    } catch {
+      setOptimisticReadInboxIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
   }
-  function markAllInboxRead() {
-    setReadInboxIds((previous) => {
+  async function markAllInboxRead() {
+    const ids = unreadInboxItems.map((item) => item.id);
+    if (!ids.length) return;
+    setOptimisticReadInboxIds((previous) => {
       const next = new Set(previous);
-      inboxItems.forEach((item) => next.add(item.id));
-      try {
-        window.localStorage.setItem(
-          "sio-read-inbox-items",
-          JSON.stringify(Array.from(next)),
-        );
-      } catch {
-        // Continue without local persistence when browser storage is blocked.
-      }
+      ids.forEach((id) => next.add(id));
       return next;
     });
+    try {
+      await apiRequest("/inbox/read-states/bulk", {
+        method: "POST",
+        body: JSON.stringify({ item_keys: ids }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await inboxReadStateQuery.refetch();
+    } catch {
+      setOptimisticReadInboxIds((previous) => {
+        const next = new Set(previous);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
   }
   const syncing =
     syncQuery.data?.items.filter(
@@ -846,7 +873,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                       <button
                         className="rounded px-2 py-1 text-[11px] text-cyan-300 hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-600"
                         disabled={!unreadInboxItems.length}
-                        onClick={markAllInboxRead}
+                        onClick={() => void markAllInboxRead()}
                         type="button"
                       >
                         全部已读
@@ -870,7 +897,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                             href={item.href}
                             key={item.id}
                             onClick={() => {
-                              markInboxRead(item.id);
+                              void markInboxRead(item.id);
                               setInboxOpen(false);
                             }}
                           >

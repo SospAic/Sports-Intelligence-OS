@@ -21,6 +21,7 @@ from app.models.generation import (
     PromptCollection,
     PromptVersion,
 )
+from app.models.inbox import InboxReadState
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
@@ -97,6 +98,7 @@ __all__ = [
     "GenerationRun",
     "GenerationStep",
     "GenerationWorkflow",
+    "InboxReadState",
     "LLMProviderSetting",
     "LoginAttempt",
     "MediaArtifact",

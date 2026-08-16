@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -21,6 +21,10 @@ class EditorialComment(TimestampMixin, Base):
 
     __tablename__ = "editorial_comments"
     __table_args__ = (
+        CheckConstraint(
+            "length(btrim(body)) > 0",
+            name="editorial_comment_body_not_blank",
+        ),
         Index(
             "ix_editorial_comments_workspace_item_created",
             "workspace_id",

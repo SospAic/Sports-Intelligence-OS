@@ -1946,3 +1946,14 @@ explicitly enable it.
 - 容器迁移状态为 `20260816_0001 (head)`；API `/health/live` 与 `/health/ready` 均返回 200，ready 检查显示 `database=ok`、`redis=ok`；Web `/login` 返回 200，登录入口和邮箱/密码输入框均可见。
 - `docker compose ps` 显示 API、Web、Postgres、Redis 健康，Worker、Beat、Browser、Translation、字幕 Worker 均运行；本轮未执行删除卷、数据库重置或备份恢复等不可逆操作。
 - 初次从错误工作目录执行 `alembic current` 产生配置路径错误，改为容器内 `/workspace/apps/api` 工作目录后已正常返回当前 head；该错误不影响部署结果。
+
+## 2026-08-17 全项目审查与运营信息中心可靠性修复
+
+- 完成全项目功能矩阵审查，覆盖认证/工作区、账号与作品、新闻热点、趋势、规则、Prompt/生成、编辑审核、媒体字幕、语义检索、自动化通知、运维存储、前端路由、测试与部署；审查报告见 `docs/PRODUCT_AUDIT_2026-08-17.md`。
+- 结合 Sprout Social Smart Inbox、Buffer 协作审批、Hootsuite Trend Research 和 Tubular 的公开产品模式，确定后续优先级：P0 为发布后表现归因、事件级热点生命周期、真实 canary/SLO、索引漂移与恢复；P1 为统一运营队列、证据包、排期/发布 Adapter 和检索可解释性。
+- 将首页铃铛及 `/notifications` 的已读状态从浏览器 `localStorage` 改为后端持久化。新增 `inbox_read_states` 与迁移 `20260817_0001_inbox_read_states.py`，提供工作区/用户隔离的读取、单条幂等写入和批量去重写入 API；网络失败时只保留临时乐观状态并回滚，不伪造持久化成功。
+- 修正既有 ORM 与迁移定义的漂移：补齐编辑评论非空约束、保存视图工作区复合索引、媒体生命周期工作区/保留级别复合索引，避免 Alembic 在后续部署中反复生成错误的索引操作；未删除数据、未重置数据库、未删除卷。
+- 静态与前端验证：API compileall 通过；Web TypeScript 通过；Vitest 24 个文件 / 78 项通过；ESLint 0 错误 / 12 个既有警告；`git diff --check` 通过。Docker 容器内已完成的前一轮验证包含 API 迁移至 `20260817_0001 (head)`、Inbox 测试 2 passed、Ruff 通过、API live/ready 200 和 Web `/login` 200。
+- 本轮最后一次门禁复核时宿主终端无法解析 `docker`（`docker compose ps` 原始错误为 “The term 'docker' is not recognized...”），因此在 Docker CLI 恢复前不宣称本轮追加模型对齐已完成镜像重建或 Compose 更新；待环境恢复后优先重跑 API/Worker/Beat/Web 构建、启动、`alembic check`、健康检查、登录入口和信息中心回归。
+
+下一入口：先补齐 Docker 门禁及真实登录态回归，再实现发布/表现归因与事件级热点榜单；随后扩展统一运营队列的标签、保存视图、批量处理和 SLA。

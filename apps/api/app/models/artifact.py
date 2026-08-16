@@ -45,6 +45,7 @@ class MediaArtifact(TimestampMixin, Base):
             name="media_artifact_retention_class",
         ),
         Index("ix_media_artifacts_workspace_status", "workspace_id", "status"),
+        Index("ix_media_artifacts_workspace_retention", "workspace_id", "retention_class"),
         Index("ix_media_artifacts_content_kind", "content_item_id", "artifact_kind"),
         Index("ix_media_artifacts_download_kind", "download_id", "artifact_kind"),
     )
@@ -66,7 +67,7 @@ class MediaArtifact(TimestampMixin, Base):
     relative_path: Mapped[str] = mapped_column(String(2048), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", index=True)
     retention_class: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="managed", index=True
+        String(16), nullable=False, default="managed"
     )
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_accessed_at: Mapped[datetime | None] = mapped_column(

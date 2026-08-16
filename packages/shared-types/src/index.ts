@@ -1102,6 +1102,13 @@ export interface NotificationDeliveryPage {
   total: number;
 }
 
+export interface InboxReadStateRecord {
+  item_key: string;
+  item_kind: "task" | "notification";
+  item_id: string;
+  read_at: string;
+}
+
 export interface SyncRunRecord {
   id: string;
   workspace_id: string;
