@@ -5,6 +5,7 @@ import type {
   HealthResponse,
   MonitoringAccountPage,
   NotificationDeliveryPage,
+  OperationTaskPage,
   SyncRunPage,
 } from "@sio/shared-types";
 import { useQueries, useQuery } from "@tanstack/react-query";
@@ -25,7 +26,6 @@ import {
   Menu,
   Newspaper,
   PanelLeftClose,
-  Plus,
   ScrollText,
   Search,
   ScanSearch,
@@ -52,6 +52,8 @@ import {
 
 import { apiRequest } from "@/lib/browser-api";
 import { accountDisplayName } from "@/lib/account-label";
+import { buildInboxItems, inboxKindLabel, inboxStatusLabel } from "@/lib/inbox";
+import { formatRelativeTime } from "@/lib/format";
 import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { LanguageSwitcher } from "@/components/language-switcher";
@@ -171,7 +173,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const searchListRef = useRef<HTMLDivElement>(null);
   const [userOpen, setUserOpen] = useState(false);
-  const [quickOpen, setQuickOpen] = useState(false);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [readInboxIds, setReadInboxIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [syncPopoverOpen, setSyncPopoverOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -213,6 +218,24 @@ export function AppShell({ children }: { children: ReactNode }) {
     enabled: Boolean(workspaceId),
     refetchInterval: 30_000,
   });
+  const taskQuery = useQuery<OperationTaskPage>({
+    queryKey: ["shell-operations", workspaceId],
+    queryFn: () =>
+      apiRequest<OperationTaskPage>("/operations/tasks?page=1&page_size=30", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((item) =>
+        ["queued", "pending", "running", "syncing", "retrying"].includes(
+          item.status,
+        ),
+      )
+        ? 5_000
+        : 30_000;
+    },
+  });
   const healthQuery = useQuery<HealthResponse>({
     queryKey: ["shell-health"],
     queryFn: fetchReadyHealth,
@@ -252,6 +275,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       refetchInterval: 5_000,
     })),
   });
+
+  const inboxItems = useMemo(
+    () =>
+      buildInboxItems(
+        taskQuery.data?.items ?? [],
+        deliveryQuery.data?.items ?? [],
+      ),
+    [deliveryQuery.data?.items, taskQuery.data?.items],
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(
@@ -297,6 +329,21 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [authPage, shortcutsOpen]);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("sio-read-inbox-items");
+      const ids = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(ids)) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate the optional browser-only read marker
+        setReadInboxIds(
+          new Set(ids.filter((id): id is string => typeof id === "string")),
+        );
+      }
+    } catch {
+      // Local read markers are optional; the persisted records remain intact.
+    }
+  }, []);
+
   const context = useMemo(
     () => ({
       currentUser,
@@ -333,9 +380,38 @@ export function AppShell({ children }: { children: ReactNode }) {
       </WorkspaceContext.Provider>
     );
   }
-  const failedDeliveries =
-    deliveryQuery.data?.items.filter((item) => item.status === "failed")
-      .length ?? 0;
+  const unreadInboxItems = inboxItems.filter((item) => !readInboxIds.has(item.id));
+  const visibleInboxItems = unreadInboxItems.slice(0, 5);
+  function markInboxRead(id: string) {
+    setReadInboxIds((previous) => {
+      const next = new Set(previous);
+      next.add(id);
+      try {
+        window.localStorage.setItem(
+          "sio-read-inbox-items",
+          JSON.stringify(Array.from(next)),
+        );
+      } catch {
+        // Continue without local persistence when browser storage is blocked.
+      }
+      return next;
+    });
+  }
+  function markAllInboxRead() {
+    setReadInboxIds((previous) => {
+      const next = new Set(previous);
+      inboxItems.forEach((item) => next.add(item.id));
+      try {
+        window.localStorage.setItem(
+          "sio-read-inbox-items",
+          JSON.stringify(Array.from(next)),
+        );
+      } catch {
+        // Continue without local persistence when browser storage is blocked.
+      }
+      return next;
+    });
+  }
   const syncing =
     syncQuery.data?.items.filter(
       (item) => item.sync_status === "queued" || item.sync_status === "syncing",
@@ -622,7 +698,10 @@ export function AppShell({ children }: { children: ReactNode }) {
                 aria-label={`同步状态：${queueHealth.label}`}
                 title={queueHealth.label}
                 className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs text-slate-400 transition hover:bg-slate-900 hover:text-slate-200"
-                onClick={() => setSyncPopoverOpen((value) => !value)}
+                onClick={() => {
+                  setInboxOpen(false);
+                  setSyncPopoverOpen((value) => !value);
+                }}
               >
                 <Activity
                   size={15}
@@ -730,52 +809,118 @@ export function AppShell({ children }: { children: ReactNode }) {
               )}
             </div>
             <div className="relative">
-              <Tooltip label="快速创建">
+              <Tooltip label="未读信息">
                 <button
-                  aria-label="快速创建"
-                  className="grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
-                  onClick={() => setQuickOpen((value) => !value)}
+                  aria-label={`未读信息，${unreadInboxItems.length} 条`}
+                  className="relative grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
+                  onClick={() => {
+                    setSyncPopoverOpen(false);
+                    setInboxOpen((value) => !value);
+                  }}
+                  type="button"
                 >
-                  <Plus size={18} />
+                  <Bell size={18} />
+                  {unreadInboxItems.length > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] text-white">
+                      {unreadInboxItems.length > 99
+                        ? "99+"
+                        : unreadInboxItems.length}
+                    </span>
+                  )}
                 </button>
               </Tooltip>
-              {quickOpen && (
-                <div className="absolute top-11 right-0 w-44 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/accounts?create=1"
-                  >
-                    添加账号
-                  </Link>
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/generate"
-                  >
-                    创建内容
-                  </Link>
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/automations/new"
-                  >
-                    新建自动化
-                  </Link>
+              {inboxOpen && (
+                <div
+                  aria-label="未读信息中心"
+                  className="absolute top-11 right-0 z-50 w-[min(25rem,calc(100vw-2rem))] rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+                  role="dialog"
+                >
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">未读信息</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        同步、通知与后台任务的最近记录
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className="rounded px-2 py-1 text-[11px] text-cyan-300 hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-600"
+                        disabled={!unreadInboxItems.length}
+                        onClick={markAllInboxRead}
+                        type="button"
+                      >
+                        全部已读
+                      </button>
+                      <button
+                        aria-label="关闭未读信息"
+                        className="grid size-6 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-white"
+                        onClick={() => setInboxOpen(false)}
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto p-2">
+                    {visibleInboxItems.length ? (
+                      <div className="space-y-1">
+                        {visibleInboxItems.map((item) => (
+                          <Link
+                            className="flex items-start gap-3 rounded-lg p-3 transition hover:bg-slate-900"
+                            href={item.href}
+                            key={item.id}
+                            onClick={() => {
+                              markInboxRead(item.id);
+                              setInboxOpen(false);
+                            }}
+                          >
+                            <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-slate-900 text-cyan-300">
+                              {item.kind === "sync" ? (
+                                <Activity size={15} />
+                              ) : item.kind === "notification" ? (
+                                <Bell size={15} />
+                              ) : (
+                                <ListChecks size={15} />
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="truncate text-sm text-slate-200">
+                                  {item.title}
+                                </span>
+                                <span className="shrink-0 text-[10px] text-cyan-300">
+                                  {inboxKindLabel(item.kind)}
+                                </span>
+                              </span>
+                              <span className="mt-1 block truncate text-xs text-slate-500">
+                                {item.detail}
+                              </span>
+                              <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                                <span>{formatRelativeTime(item.timestamp)}</span>
+                                <span>{inboxStatusLabel(item.status)}</span>
+                              </span>
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="py-8 text-center text-sm text-slate-500">
+                        暂无未读信息
+                      </p>
+                    )}
+                  </div>
+                  <div className="border-t border-slate-800 p-3">
+                    <Link
+                      className="block text-center text-xs text-cyan-300 hover:text-cyan-200"
+                      href="/notifications"
+                      onClick={() => setInboxOpen(false)}
+                    >
+                      更多 · 查看信息历史
+                    </Link>
+                  </div>
                 </div>
               )}
             </div>
-            <Tooltip label="通知中心">
-              <Link
-                aria-label={`通知中心，${failedDeliveries} 条失败`}
-                href="/notification-channels#deliveries"
-                className="relative grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
-              >
-                <Bell size={18} />
-                {failedDeliveries > 0 && (
-                  <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] text-white">
-                    {failedDeliveries}
-                  </span>
-                )}
-              </Link>
-            </Tooltip>
             <div className="relative">
               <button
                 aria-label="用户菜单"

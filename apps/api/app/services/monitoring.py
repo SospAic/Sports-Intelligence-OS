@@ -514,7 +514,7 @@ class MonitoringService:
             raise MonitoringNotFoundError("accounts not found in workspace: " + ", ".join(missing))
 
         rows: list[AccountComparisonRow] = []
-        total_followers = total_views = 0
+        total_followers = total_views = total_videos = 0
         best_followers_id = best_views_id = best_engagement_id = None
         best_followers_v = best_views_v = best_engagement_v = None
 
@@ -583,6 +583,8 @@ class MonitoringService:
                     if best_views_v is None or latest.total_view_count > best_views_v:
                         best_views_v = latest.total_view_count
                         best_views_id = account.id
+                if latest.video_count is not None:
+                    total_videos += latest.video_count
                 if latest.engagement_rate is not None:
                     eng = float(latest.engagement_rate)
                     if best_engagement_v is None or eng > best_engagement_v:
@@ -593,7 +595,7 @@ class MonitoringService:
             account_count=len(rows),
             total_followers=total_followers or None,
             total_views=total_views or None,
-            total_videos=None,
+            total_videos=total_videos or None,
             best_followers_account_id=best_followers_id,
             best_views_account_id=best_views_id,
             best_engagement_account_id=best_engagement_id,

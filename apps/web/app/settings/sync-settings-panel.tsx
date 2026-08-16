@@ -305,7 +305,7 @@ const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
   { key: "write_subtitles", label: "下载字幕 (write_subtitles)", type: "bool" },
   {
     key: "write_auto_subtitles",
-    label: "下载自动生成字幕 (write_auto_subtitles)",
+    label: "自动生成字幕 (write_auto_subtitles)",
     type: "bool",
     help: "平台自动语音识别字幕，质量低于人工字幕",
   },
@@ -405,7 +405,7 @@ const DOWNLOAD_FIELDS: DownloadFieldDef[] = [
 const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
   write_thumbnail: true,
   write_subtitles: true,
-  write_auto_subtitles: false,
+  write_auto_subtitles: true,
   subtitle_langs: "zh.*,en.*",
   download_video: false,
   video_quality: "best",
@@ -414,7 +414,7 @@ const DEFAULT_DOWNLOAD: Record<string, YtFieldValue> = {
   bitrate: "",
   naming_rule: "id",
   write_info_json: false,
-  fetch_comments: false,
+  fetch_comments: true,
 };
 
 export function SyncSettingsPanel() {

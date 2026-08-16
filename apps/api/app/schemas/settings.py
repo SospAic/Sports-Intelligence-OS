@@ -290,15 +290,16 @@ class YtDlpDownloadSettings(BaseModel):
     ``video_format``. Produced files are written under the workspace media root
     and referenced from ``ContentItem.media`` for the detail page to render.
 
-    Defaults follow the chosen policy: cover thumbnail + subtitles on, auto
-    subtitles / video / info-json off (video is heavy — opt in deliberately).
+    Defaults follow the chosen policy: cover thumbnail + manual/automatic
+    subtitles and hot comments on, while video / info-json remain off (video
+    is heavy — opt in deliberately).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     write_thumbnail: bool = True
     write_subtitles: bool = True
-    write_auto_subtitles: bool = False
+    write_auto_subtitles: bool = True
     subtitle_langs: str = Field(default="zh.*,en.*", max_length=256)
     download_video: bool = False
     video_format: str = Field(default="best", max_length=256)
@@ -313,10 +314,10 @@ class YtDlpDownloadSettings(BaseModel):
     # Output file-name rule: id / title / uploader / date_title.
     naming_rule: str = Field(default="id", max_length=256)
     write_info_json: bool = False
-    # Optional: a sync request per work, therefore disabled by default. The
-    # executor applies a bounded platform-specific concurrency and stores only
-    # the current Top 20 engagement-ranked comments.
-    fetch_comments: bool = False
+    # Optional per-work enrichment. The executor applies a bounded
+    # platform-specific concurrency and stores only the current Top 20
+    # engagement-ranked comments.
+    fetch_comments: bool = True
 
     @model_validator(mode="after")
     def _validate_video_prereq(self) -> YtDlpDownloadSettings:
@@ -406,7 +407,7 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
     "download": {
         "write_thumbnail": True,
         "write_subtitles": True,
-        "write_auto_subtitles": False,
+        "write_auto_subtitles": True,
         "subtitle_langs": "zh.*,en.*",
         "download_video": False,
         "video_quality": "best",
@@ -415,6 +416,6 @@ DEFAULT_SYNC_SETTINGS_CONFIG: dict[str, Any] = {
         "bitrate": "",
         "naming_rule": "id",
         "write_info_json": False,
-        "fetch_comments": False,
+        "fetch_comments": True,
     },
 }
