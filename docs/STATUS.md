@@ -2032,3 +2032,11 @@ explicitly enable it.
 - 本轮门禁验证：`docker compose build api worker beat` 成功；`docker compose up -d api worker beat` 成功；迁移 `20260817_0007 (head)`；`alembic check` 无漂移（仅保留既有 pgvector 类型识别警告）；Ruff、mypy 通过；后端关联测试 `33 passed`；Web Vitest `24 files / 78 tests passed`；API live/ready、Web 登录/信息中心/视频检索/SLO/权利页面均返回 200；未登录访问 SLO 与权利 API 均返回 401。
 
 下一入口：外部真实平台/新闻/LLM/通知 canary、发布 Adapter、私有 Analytics、生产备份恢复和跨主机 HA 仍需凭证或基础设施条件；在这些条件具备前，不将其标记为完成。
+
+## 2026-08-17 保存查询与观察性实验闭环
+
+- 保存查询：`SearchQuery` 新增命名保存状态，提供工作区隔离的保存/取消保存 API 和 `saved_only` 查询；保存与取消保存写入审计，前端检索面板支持命名保存及取消保存。
+- 观察性实验：新增 `content_experiments`、`content_experiment_variants` 与迁移 `20260817_0009_content_experiments.py`；实验/变体/发布归因均按工作区校验，变体必须关联监控作品或发布记录，重复变体和证据不一致会被拒绝。
+- 报告只读取固定窗口中 `measurement_status=measured` 的真实归因，显示播放、互动率、完播率、来源和证据，并强制声明 `observational` 与非因果限制；页面入口为 `/operations/experiments`，契约见 `docs/OBSERVATIONAL_EXPERIMENTS.md`。
+- 最终验证：API 相关业务回归 `65 passed`；Ruff 通过；mypy `Success: no issues found in 224 source files`；Web Next production build、ESLint、Vitest `24 files / 78 tests` 通过；Alembic 为 `20260817_0009 (head)` 且无漂移（仅 pgvector 类型识别警告）；Docker Compose 更新 API/Worker/Beat/Web 后全部健康，API live/ready、登录入口和新增页面探针均返回 200，受保护 API 未登录返回 401。
+- 本轮未完成且需要外部条件的事项：真实平台/新闻/LLM/通知 canary、正式发布 Adapter、授权私有 Analytics、生产备份恢复/跨主机 HA，以及片段/关键帧证据索引。不得将这些事项标为真实完成。

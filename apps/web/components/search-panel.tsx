@@ -29,7 +29,13 @@ interface SearchAnalysis {
 }
 
 interface SearchResponse {
-  query: { id: string; query_text: string; platform_scope: string };
+  query: {
+    id: string;
+    query_text: string;
+    platform_scope: string;
+    is_saved: boolean;
+    saved_name: string | null;
+  };
   analysis: SearchAnalysis;
   results: SearchResult[];
   notice: string | null;
@@ -61,6 +67,8 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [data, setData] = useState<SearchResponse | null>(null);
+  const [savedName, setSavedName] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const run = async () => {
     if (!query.trim()) {
@@ -79,11 +87,38 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
       });
       setData(res);
       setNotice(res.notice ?? null);
+      setSavedName(res.query.saved_name ?? "");
     } catch (e) {
       setError((e as Error).message);
       notify(`搜索失败：${(e as Error).message}`, "error");
     } finally {
       setRunning(false);
+    }
+  };
+
+  const saveCurrentQuery = async (isSaved: boolean) => {
+    if (!data) return;
+    setSaving(true);
+    try {
+      const saved = await apiRequest<SearchResponse["query"]>(
+        `/trends/search/${data.query.id}/saved`,
+        {
+          method: "PATCH",
+          csrf: true,
+          workspaceId,
+          body: JSON.stringify({
+            is_saved: isSaved,
+            saved_name: savedName.trim() || null,
+          }),
+        },
+      );
+      setData({ ...data, query: saved });
+      setSavedName(saved.saved_name ?? "");
+      notify(isSaved ? "检索已保存到工作区" : "已取消保存检索", "success");
+    } catch (e) {
+      notify(`保存检索失败：${(e as Error).message}`, "error");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -177,6 +212,36 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
               value={`${((a.volume_estimate?.total_views ?? 0) / 10000).toFixed(1)} 万`}
             />
             <StatCard label="整体情绪" value={a.sentiment ?? "—"} />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-cyan-900/40 bg-cyan-950/10 p-3">
+            <span className="text-xs text-slate-400">工作区检索</span>
+            <input
+              aria-label="保存检索名称"
+              value={savedName}
+              onChange={(event) => setSavedName(event.target.value)}
+              placeholder="保存名称（可选）"
+              className="min-w-48 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600"
+              disabled={saving}
+            />
+            <button
+              type="button"
+              onClick={() => void saveCurrentQuery(true)}
+              disabled={saving}
+              className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-50"
+            >
+              {saving ? "保存中…" : data.query.is_saved ? "更新保存" : "保存检索"}
+            </button>
+            {data.query.is_saved && (
+              <button
+                type="button"
+                onClick={() => void saveCurrentQuery(false)}
+                disabled={saving}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 disabled:opacity-50"
+              >
+                取消保存
+              </button>
+            )}
           </div>
 
           {a.summary && (

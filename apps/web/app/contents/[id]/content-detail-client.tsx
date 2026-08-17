@@ -564,10 +564,12 @@ function useDownloadModal(content: ContentRecord, workspaceId: string) {
   );
 
   useEffect(() => {
-    if (!download || ["done", "empty", "failed"].includes(download.status)) return;
+    const downloadId = download?.id;
+    const downloadStatus = download?.status;
+    if (!downloadId || !downloadStatus || ["done", "empty", "failed"].includes(downloadStatus)) return;
     const timer = setInterval(async () => {
       try {
-        const rec = await apiRequest<DownloadRead>(`/downloads/${download.id}`, {
+        const rec = await apiRequest<DownloadRead>(`/downloads/${downloadId}`, {
           workspaceId,
         });
         setDownload(rec);
@@ -1140,11 +1142,13 @@ function SubtitleDownloadModal({
   }, [content.id, content.language, existingGeneratedLanguages, generatedLanguages, onJobChange, workspaceId]);
 
   useEffect(() => {
-    if (!subtitleJob || !["queued", "running"].includes(subtitleJob.status)) return;
+    const subtitleJobId = subtitleJob?.id;
+    const subtitleJobStatus = subtitleJob?.status;
+    if (!subtitleJobId || !subtitleJobStatus || !["queued", "running"].includes(subtitleJobStatus)) return;
     const timer = window.setInterval(async () => {
       try {
         const next = await apiRequest<SubtitleJobRead | null>(
-          `/media/${content.id}/subtitle-jobs/${subtitleJob.id}`,
+          `/media/${content.id}/subtitle-jobs/${subtitleJobId}`,
           { workspaceId },
         );
         if (next) {
@@ -1161,15 +1165,17 @@ function SubtitleDownloadModal({
   }, [content.id, onJobChange, subtitleJob?.id, subtitleJob?.status, workspaceId]);
 
   useEffect(() => {
+    const subtitleJobId = subtitleJob?.id;
+    const subtitleJobStatus = subtitleJob?.status;
     if (
-      subtitleJob &&
-      (subtitleJob.status === "succeeded" || subtitleJob.status === "degraded") &&
-      completionNotified.current !== subtitleJob.id
+      subtitleJobId &&
+      (subtitleJobStatus === "succeeded" || subtitleJobStatus === "degraded") &&
+      completionNotified.current !== subtitleJobId
     ) {
-      completionNotified.current = subtitleJob.id;
+      completionNotified.current = subtitleJobId;
       onCompleted?.();
     }
-  }, [onCompleted, subtitleJob?.status]);
+  }, [onCompleted, subtitleJob?.id, subtitleJob?.status]);
 
   const submitSubtitleForm = async () => {
     setGenerationError(null);
@@ -1538,11 +1544,13 @@ export function ContentDetailClient({ id }: { id: string }) {
           source_provider?: string;
         }
       | undefined) ?? undefined;
+  const refetchItem = item.refetch;
+  const refetchComments = comments.refetch;
   useEffect(() => {
     if (!collectingComments) return;
     const timer = setInterval(async () => {
-      const next = await item.refetch();
-      await comments.refetch();
+      const next = await refetchItem();
+      await refetchComments();
       const status = (next.data?.metadata?.comment_sync as
         | { status?: string }
         | undefined)?.status;
@@ -1556,7 +1564,7 @@ export function ContentDetailClient({ id }: { id: string }) {
       }
     }, 1500);
     return () => clearInterval(timer);
-  }, [collectingComments, comments.refetch, item.refetch]);
+  }, [collectingComments, refetchComments, refetchItem]);
   const [dlVideo, setDlVideo] = useState(false);
   const [dlMetadata, setDlMetadata] = useState(false);
   const subtitleTracks = item.data?.media?.subtitles?.filter((track) => track?.file) ?? [];

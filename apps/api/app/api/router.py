@@ -6,6 +6,7 @@ from app.api.routes import (
     download,
     editorial,
     editorial_rules,
+    experiments,
     generation,
     inbox,
     media,
@@ -32,6 +33,7 @@ api_router.include_router(view_preferences.router)
 api_router.include_router(monitoring.router)
 api_router.include_router(news.router)
 api_router.include_router(editorial_rules.router)
+api_router.include_router(experiments.router)
 api_router.include_router(generation.router)
 api_router.include_router(automation.router)
 api_router.include_router(topics.router)

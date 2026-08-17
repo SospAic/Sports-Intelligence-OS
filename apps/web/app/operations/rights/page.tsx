@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { useToast } from "@/components/toast";
 import {
@@ -77,17 +77,17 @@ export default function MediaRightsPage() {
     enabled: Boolean(workspaceId),
   });
 
-  useEffect(() => {
-    if (!selected) return;
-    setRightsStatus(selected.rights_status === "unknown" ? "pending_review" : selected.rights_status);
-    setLicenseType(selected.license_type ?? "");
-    setRightsHolder(selected.rights_holder ?? "");
-    setTerritories(selected.territories.join(", "));
-    setValidUntil(selected.valid_until?.slice(0, 10) ?? "");
-    setEvidenceUrl(selected.evidence_url ?? "");
-    setEvidenceNote(selected.evidence_note ?? "");
-    setSourceKind(selected.source_kind);
-  }, [selected]);
+  const selectItem = (item: RightsItem) => {
+    setSelected(item);
+    setRightsStatus(item.rights_status === "unknown" ? "pending_review" : item.rights_status);
+    setLicenseType(item.license_type ?? "");
+    setRightsHolder(item.rights_holder ?? "");
+    setTerritories(item.territories.join(", "));
+    setValidUntil(item.valid_until?.slice(0, 10) ?? "");
+    setEvidenceUrl(item.evidence_url ?? "");
+    setEvidenceNote(item.evidence_note ?? "");
+    setSourceKind(item.source_kind);
+  };
 
   const update = useMutation({
     mutationFn: () =>
@@ -108,7 +108,7 @@ export default function MediaRightsPage() {
       }),
     onSuccess: async (item) => {
       notify("素材权利状态已保存");
-      setSelected(item);
+      selectItem(item);
       await queryClient.invalidateQueries({ queryKey: ["media-rights", workspaceId] });
     },
     onError: (error: Error) => notify(error.message || "素材权利保存失败", "error"),
@@ -147,7 +147,7 @@ export default function MediaRightsPage() {
                 <button
                   key={item.artifact_id}
                   type="button"
-                  onClick={() => setSelected(item)}
+                  onClick={() => selectItem(item)}
                   className={`flex w-full items-start justify-between gap-4 px-5 py-4 text-left transition hover:bg-slate-900/70 ${selected?.artifact_id === item.artifact_id ? "bg-cyan-950/20" : ""}`}
                 >
                   <span className="min-w-0">

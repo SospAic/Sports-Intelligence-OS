@@ -9,7 +9,6 @@ import {
   FileDown,
   Layers,
   Network,
-  Pencil,
   Play,
   Plus,
   Printer,
@@ -269,13 +268,6 @@ function formatInterval(seconds: number): string {
   return `每 ${Math.round(seconds / 3600)} 小时`;
 }
 
-function formatSeconds(value: number | undefined): string {
-  if (value == null || !Number.isFinite(value)) return "时间未知";
-  const minutes = Math.floor(value / 60);
-  const seconds = Math.floor(value % 60);
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
 function formatDuration(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "时长未知";
   const minutes = Math.floor(value / 60);
@@ -385,9 +377,8 @@ export function VideoSearchClient() {
   const [name, setName] = useState("");
 
   /* ----- LLM-only config ----- */
-  const [interval, setInterval] = useState(3600);
-  const [minScore, setMinScore] = useState(0.65);
-
+  const interval = 3600;
+  const minScore = 0.65;
   /* ----- Local-only config ----- */
   const [mode, setMode] = useState<SearchMode>("hybrid");
   const [chunkKinds, setChunkKinds] = useState<ChunkKind[]>([]);
@@ -398,7 +389,6 @@ export function VideoSearchClient() {
   const [searching, setSearching] = useState(false);
   const [plan, setPlan] = useState<LLMPlan | null>(null);
   const [localResults, setLocalResults] = useState<SearchResponse | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   /** Which report format is currently being rendered server-side, if any. */
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
@@ -625,7 +615,6 @@ export function VideoSearchClient() {
         body: JSON.stringify(body),
       });
       setLocalResults(response);
-      setExpanded(new Set());
       setResultFilter("local");
       scrollToSection(section3Ref);
     } catch (error) {
@@ -960,7 +949,6 @@ export function VideoSearchClient() {
             />
           ) : (
             <LocalEngineTab
-              queryText={queryText}
               mode={mode}
               setMode={setMode}
               chunkKinds={chunkKinds}
@@ -1046,15 +1034,6 @@ export function VideoSearchClient() {
                   heat={summaryById.get(item.id)?.heat}
                   creatingTopic={creatingTopicId === item.candidateId}
                   onCreateTopic={item.candidateId ? () => void createTopicFromCandidate(item.candidateId!) : undefined}
-                  expanded={expanded.has(item.id)}
-                  onToggle={() =>
-                    setExpanded((current) => {
-                      const next = new Set(current);
-                      if (next.has(item.id)) next.delete(item.id);
-                      else next.add(item.id);
-                      return next;
-                    })
-                  }
                 />
               ))}
             </div>
@@ -1167,7 +1146,6 @@ function LLMEngineTab({
 /* ========================================================================== */
 
 function LocalEngineTab({
-  queryText,
   mode,
   setMode,
   chunkKinds,
@@ -1179,7 +1157,6 @@ function LocalEngineTab({
   searching,
   onSearch,
 }: {
-  queryText: string;
   mode: SearchMode;
   setMode: (mode: SearchMode) => void;
   chunkKinds: ChunkKind[];
@@ -1348,16 +1325,12 @@ function UnifiedResultCard({
   heat,
   creatingTopic,
   onCreateTopic,
-  expanded,
-  onToggle,
 }: {
   result: UnifiedResult;
   sentiment?: "positive" | "neutral" | "negative";
   heat?: number;
   creatingTopic: boolean;
   onCreateTopic?: () => void;
-  expanded: boolean;
-  onToggle: () => void;
 }) {
   return (
     <article className="flex gap-4 rounded-xl border border-slate-800 bg-slate-950/40 p-4">

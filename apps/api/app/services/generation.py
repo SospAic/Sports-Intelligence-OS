@@ -490,7 +490,6 @@ class GenerationService:
             for item in sources
             if item.get("source_id") is not None
         }
-        research = next((step for step in run.steps if step.step_key == "research_input"), None)
         facts = next((step for step in run.steps if step.step_key == "normalize_facts"), None)
         timeline = next((step for step in run.steps if step.step_key == "build_timeline"), None)
         qualification = next(
@@ -508,12 +507,15 @@ class GenerationService:
             qualification_output if isinstance(qualification_output, dict) else {}
         )
 
+        evidence_status: Literal["available", "partial", "unavailable"]
         if not sources:
             evidence_status = "unavailable"
             evidence_detail = "冻结输入中没有独立来源，核实状态保持为未完成。"
         elif run.verification_status == "corroborated" and len(source_ids) >= 2:
             evidence_status = "available"
-            evidence_detail = f"冻结输入中有 {len(sources)} 条来源，且至少两条来源具备不同 source_id。"
+            evidence_detail = (
+                f"冻结输入中有 {len(sources)} 条来源，且至少两条来源具备不同 source_id。"
+            )
         else:
             evidence_status = "partial"
             evidence_detail = f"冻结输入中有 {len(sources)} 条来源，但尚未达到交叉核实条件。"

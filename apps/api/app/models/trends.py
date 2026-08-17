@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -203,6 +204,8 @@ class SearchQuery(TimestampMixin, Base):
     )
     query_text: Mapped[str] = mapped_column(String(2000), nullable=False)
     platform_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="all")
+    saved_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    is_saved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="completed")
     requested_by: Mapped[UUID | None] = mapped_column(nullable=True)
     result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

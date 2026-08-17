@@ -15,7 +15,7 @@ import math
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.models.trends import SearchAnalysis, SearchQuery
 from app.providers.llm.base import LLMProvider
 from app.providers.registry import ProviderRegistry
+from app.services.audit import build_audit_entry
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import PLATFORM_LABELS, SEARCHABLE_PLATFORMS, yt_search
 
@@ -68,9 +69,15 @@ class SearchAnalysisService:
         self.settings = settings
 
     async def list_queries(
-        self, workspace_id: UUID, page: int = 1, page_size: int = 20
+        self,
+        workspace_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        saved_only: bool = False,
     ) -> tuple[list[SearchQuery], int]:
         stmt = select(SearchQuery).where(SearchQuery.workspace_id == workspace_id)
+        if saved_only:
+            stmt = stmt.where(SearchQuery.is_saved.is_(True))
         total = await self.session.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = await self.session.scalars(
             stmt.order_by(SearchQuery.created_at.desc())
@@ -78,6 +85,46 @@ class SearchAnalysisService:
             .limit(page_size)
         )
         return list(rows.all()), int(total or 0)
+
+    async def save_query(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        query_id: UUID,
+        *,
+        is_saved: bool,
+        saved_name: str | None,
+    ) -> SearchQuery:
+        query = await self.session.scalar(
+            select(SearchQuery).where(
+                SearchQuery.workspace_id == workspace_id,
+                SearchQuery.id == query_id,
+            )
+        )
+        if query is None:
+            raise ValueError("搜索记录不存在或不属于当前工作区")
+        query.is_saved = is_saved
+        query.saved_name = saved_name if is_saved else None
+        self.session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="search_query.saved" if is_saved else "search_query.unsaved",
+                resource_type="search_query",
+                resource_id=query.id,
+                change_summary_json={
+                    "is_saved": is_saved,
+                    "saved_name": query.saved_name,
+                },
+                trace_id=uuid4(),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await self.session.commit()
+        await self.session.refresh(query)
+        return query
 
     async def get_analysis(
         self, workspace_id: UUID, query_id: UUID
@@ -174,6 +221,8 @@ class SearchAnalysisService:
             workspace_id=workspace_id,
             query_text=query_text,
             platform_scope=platform,
+            saved_name=None,
+            is_saved=False,
             status="completed",
             requested_by=actor_id,
             result_count=len(all_results),

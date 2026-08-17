@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # ---------------------------------------------------------------------------
 # 话题
@@ -282,6 +282,8 @@ class SearchQueryRead(BaseModel):
     workspace_id: UUID
     query_text: str
     platform_scope: str
+    saved_name: str | None = None
+    is_saved: bool
     status: str
     requested_by: UUID | None = None
     result_count: int
@@ -315,6 +317,19 @@ class SearchQueryPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class SearchQuerySaveRequest(BaseModel):
+    is_saved: bool = True
+    saved_name: str | None = Field(default=None, max_length=200)
+
+    @field_validator("saved_name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
 
 
 class SearchAnalysisResponse(BaseModel):

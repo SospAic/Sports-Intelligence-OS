@@ -11,7 +11,7 @@ import {
 import { useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
-import { Badge, Panel, StatePanel, buttonClass } from "@/components/ui";
+import { Panel, StatePanel, buttonClass } from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { apiRequest } from "@/lib/browser-api";
 

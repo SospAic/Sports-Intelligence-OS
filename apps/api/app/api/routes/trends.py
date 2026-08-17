@@ -25,6 +25,7 @@ from app.schemas.trends import (
     SearchAnalysisResponse,
     SearchQueryPage,
     SearchQueryRead,
+    SearchQuerySaveRequest,
     SearchRequest,
     TrendAggregate,
     TrendDashboard,
@@ -452,16 +453,44 @@ async def list_searches(
     request: Request,
     page: Page = 1,
     page_size: PageSize = 20,
+    saved_only: bool = False,
 ) -> SearchQueryPage:
     """List past smart-search queries for the workspace."""
     svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
-    items, total = await svc.list_queries(workspace.workspace_id, page=page, page_size=page_size)
+    items, total = await svc.list_queries(
+        workspace.workspace_id, page=page, page_size=page_size, saved_only=saved_only
+    )
     return SearchQueryPage(
         items=[SearchQueryRead.model_validate(i) for i in items],
         page=page,
         page_size=page_size,
         total=total,
     )
+
+
+@router.patch("/search/{query_id}/saved", response_model=SearchQueryRead)
+async def save_search(
+    query_id: UUID,
+    payload: SearchQuerySaveRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SearchQueryRead:
+    """Persist a named workspace search without changing its analysis evidence."""
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
+    try:
+        query = await svc.save_query(
+            workspace.workspace_id,
+            auth.user.id,
+            query_id,
+            is_saved=payload.is_saved,
+            saved_name=payload.saved_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SearchQueryRead.model_validate(query)
 
 
 @router.get("/search/{query_id}", response_model=SearchAnalysisResponse)

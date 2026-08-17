@@ -19,7 +19,7 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
@@ -135,6 +135,27 @@ export function PublicationsClient() {
     enabled: Boolean(workspaceId && showCreate),
   });
 
+  const refreshAttribution = useCallback(async (publicationId: string) => {
+    if (!workspaceId) return;
+    setRefreshingId(publicationId);
+    try {
+      await apiRequest(`/publications/${publicationId}/attribution/refresh`, {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+      });
+      notify("归因窗口已按真实内容快照刷新");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["publications"] }),
+        queryClient.invalidateQueries({ queryKey: ["publication-detail", workspaceId, publicationId] }),
+      ]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "归因刷新失败", "error");
+    } finally {
+      setRefreshingId(null);
+    }
+  }, [notify, queryClient, workspaceId]);
+
   const selected = detail.data;
   const columns = useMemo<ColumnDef<PublicationRecord, unknown>[]>(
     () => [
@@ -211,29 +232,8 @@ export function PublicationsClient() {
         ),
       },
     ],
-    [canEdit, refreshingId],
+    [canEdit, refreshingId, refreshAttribution],
   );
-
-  async function refreshAttribution(publicationId: string) {
-    if (!workspaceId) return;
-    setRefreshingId(publicationId);
-    try {
-      await apiRequest(`/publications/${publicationId}/attribution/refresh`, {
-        method: "POST",
-        workspaceId,
-        csrf: true,
-      });
-      notify("归因窗口已按真实内容快照刷新");
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["publications"] }),
-        queryClient.invalidateQueries({ queryKey: ["publication-detail", workspaceId, publicationId] }),
-      ]);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "归因刷新失败", "error");
-    } finally {
-      setRefreshingId(null);
-    }
-  }
 
   async function createPublication() {
     if (!workspaceId || !form.title.trim()) return;

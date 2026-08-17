@@ -14,6 +14,7 @@ from app.models.editorial_comment import EditorialComment
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
 from app.models.editorial_view import EditorialSavedView
 from app.models.embedding import ContentEmbedding, Vector, encode_vector
+from app.models.experiments import ContentExperiment, ContentExperimentVariant
 from app.models.generation import (
     GenerationRun,
     GenerationStep,
@@ -84,6 +85,8 @@ __all__ = [
     "AutomationRule",
     "AutomationRuntimeState",
     "ContentEmbedding",
+    "ContentExperiment",
+    "ContentExperimentVariant",
     "ContentItem",
     "ContentSnapshot",
     "CommentSnapshot",
