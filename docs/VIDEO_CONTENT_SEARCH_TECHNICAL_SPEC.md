@@ -131,6 +131,7 @@ class VideoContentAnalyzer(Protocol):
 - 外部 URL 必须是公网可访问地址，禁止访问内网、回环、云元数据地址。
 - 只处理公开或已授权媒体；不自动绕过验证码、登录或反爬。
 - 结果展示 `source_kind=live/imported/mock`，Mock 只用于测试。
+- 已通过内容证据核验的候选可调用 `POST /api/v1/video-search/results/{candidate_id}/topic` 加入选题库；该操作保留候选 URL、Provider、抓取/分析时间、匹配分数和原始证据，使用候选 UUID 作为手工选题的 `source_id`，不把外部视频伪装成已接入的监控作品。
 - 证据允许人工复核；模型输出不是事实认证。
 
 ## 9. 验收标准

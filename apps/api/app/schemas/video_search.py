@@ -159,6 +159,15 @@ class VideoSearchCandidatePage(BaseModel):
     total: int
 
 
+class VideoSearchTopicCreate(BaseModel):
+    """Optional overrides when promoting a matched search candidate to a topic."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=1000)
+    summary: str | None = Field(default=None, max_length=20_000)
+    priority: int = Field(default=60, ge=0, le=100)
+    notes: str | None = Field(default=None, max_length=20_000)
+
+
 class VideoSearchCapabilities(BaseModel):
     analyzer_key: str
     configured: bool

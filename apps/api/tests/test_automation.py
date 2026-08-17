@@ -1,11 +1,13 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 from pytest import MonkeyPatch
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -96,7 +98,9 @@ def test_notification_config_encryption_masking_and_provider_contracts() -> None
     assert "secret-token" not in str(masked["url"])
     assert "Bearer secret" not in str(masked)
 
-    settings = Settings(environment="test", secret_key="test-notification-registry-secret")
+    settings = Settings(
+        environment="test", secret_key=SecretStr("test-notification-registry-secret")
+    )
     registry = build_notification_provider_registry(settings)
     assert set(registry.keys()) == {
         "email",
@@ -181,7 +185,7 @@ def test_http_notification_providers_emit_channel_specific_payloads(
     assert generic[1]["title"] == "标题"
     assert generic[2]["x-sio-signature-sha256"]
     assert captured[1][1]["chat_id"] == "123"
-    assert captured[2][1]["content"].startswith("标题")
+    assert str(captured[2][1]["content"]).startswith("标题")
     assert captured[3][1]["msg_type"] == "text"
     assert captured[3][1]["sign"]
     assert "timestamp=" in captured[4][0] and "sign=" in captured[4][0]
@@ -213,7 +217,13 @@ def test_automation_api_cooldown_dedup_and_delivery(
 
     # The test-delivery endpoint performs a real send. Stub the provider's I/O
     # so the test runs offline without faking any data provenance.
-    async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
+    async def fake_send(
+        self: object,
+        config: Any,
+        message: Any,
+        *,
+        idempotency_key: str,
+    ) -> NotificationReceipt:
         del config, message, idempotency_key
         return NotificationReceipt(status="delivered", external_id="stub-test-1")
 
@@ -328,6 +338,54 @@ def test_automation_api_cooldown_dedup_and_delivery(
     assert health_payload["deliveries"] == 2
     assert health_payload["successful_attempts"] == 1
     assert health_payload["channels"][0]["success_rate"] == 1.0
+
+
+def test_automation_replay_returns_explanation_without_persisting_or_executing(
+    client: TestClient,
+) -> None:
+    csrf = authenticate(client)
+    headers = {"X-CSRF-Token": csrf}
+    rule = client.post(
+        "/api/v1/automations",
+        headers=headers,
+        json={
+            "name": "只读回放规则",
+            "entity_type": "content",
+            "trigger_type": "entity_updated",
+            "condition_tree": {"field": "view_count", "operator": "gte", "value": 100},
+            "schedule": {},
+            "cooldown_seconds": 0,
+            "deduplication_window": 0,
+            "enabled": True,
+            "actions": [
+                {"action_type": "save_content", "sort_order": 0, "config": {}, "enabled": True}
+            ],
+        },
+    )
+    assert rule.status_code == 201, rule.text
+    rule_id = rule.json()["id"]
+
+    replay = client.post(
+        "/api/v1/automations/replay",
+        headers=headers,
+        json={
+            "rule_id": rule_id,
+            "entity_type": "content",
+            "entity_id": str(uuid4()),
+            "facts": {"view_count": 120},
+            "source_kind": "live",
+        },
+    )
+    assert replay.status_code == 200, replay.text
+    result = replay.json()[0]
+    assert result["matched"] is True
+    assert result["execution_status"] == "matched"
+    assert result["source_kind"] == "live"
+    assert result["actions"][0]["would_execute"] is True
+
+    evaluations = client.get("/api/v1/automation-evaluations")
+    assert evaluations.status_code == 200
+    assert evaluations.json()["total"] == 0
 
 
 def test_automation_notification_uses_published_template(client: TestClient) -> None:
@@ -497,7 +555,13 @@ def test_generation_failure_does_not_block_following_notification(
 
     # The notification action performs a real send. Stub the provider's I/O
     # offline so the test runs without faking any data provenance.
-    async def fake_send(self, config, message, *, idempotency_key):  # noqa: ANN001
+    async def fake_send(
+        self: object,
+        config: Any,
+        message: Any,
+        *,
+        idempotency_key: str,
+    ) -> NotificationReceipt:
         del config, message, idempotency_key
         return NotificationReceipt(status="delivered", external_id="stub-fallback-1")
 

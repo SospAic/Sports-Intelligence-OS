@@ -37,7 +37,8 @@ class InboxReadState(Base):
             name="uq_inbox_read_states_user_item",
         ),
         CheckConstraint(
-            "item_kind IN ('task', 'notification')",
+            "item_kind IN ("
+            "'task', 'notification', 'editorial_comment', 'subscription_event', 'dead_letter')",
             name="inbox_read_state_item_kind",
         ),
         Index("ix_inbox_read_states_workspace_user_read", "workspace_id", "user_id", "read_at"),

@@ -4,8 +4,24 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-InboxQueueItemKind = Literal["task", "notification"]
+from app.schemas.inbox import InboxItemKind
+
+InboxQueueItemKind = InboxItemKind
 InboxQueueStateValue = Literal["open", "in_progress", "completed"]
+InboxSlaStatus = Literal["overdue", "due_soon", "on_track", "completed"]
+
+
+class InboxItemRead(BaseModel):
+    """An immutable source record projected into the shared operations inbox."""
+
+    item_key: str
+    item_kind: InboxItemKind
+    item_id: UUID
+    title: str
+    detail: str
+    status: str
+    timestamp: datetime
+    href: str
 
 
 class InboxQueueStatePatch(BaseModel):
@@ -49,6 +65,29 @@ class InboxQueueStateRead(BaseModel):
     due_at: datetime | None
     updated_by: UUID | None
     updated_at: datetime
+
+
+class InboxSlaItemRead(BaseModel):
+    item_key: str
+    item_kind: InboxQueueItemKind
+    item_id: UUID
+    state: InboxQueueStateValue
+    sla_status: InboxSlaStatus
+    due_at: datetime
+    minutes_to_due: int
+    labels: list[str]
+    assignee_id: UUID | None
+    updated_at: datetime
+
+
+class InboxSlaSummaryRead(BaseModel):
+    as_of: datetime
+    window_minutes: int
+    overdue_count: int
+    due_soon_count: int
+    on_track_count: int
+    completed_count: int
+    items: list[InboxSlaItemRead]
 
 
 class InboxSavedViewCreate(BaseModel):

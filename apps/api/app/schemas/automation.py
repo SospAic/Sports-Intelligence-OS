@@ -143,6 +143,31 @@ class AutomationEvaluateRequest(StrictModel):
     test_mode: bool = False
 
 
+class AutomationReplayRequest(StrictModel):
+    """Evaluate rules against supplied facts without writing or executing actions."""
+
+    rule_id: UUID | None = None
+    entity_type: EntityType
+    entity_id: UUID
+    facts: dict[str, Any]
+    previous: dict[str, Any] = Field(default_factory=dict)
+    trigger_type: str = Field(default="entity_updated", min_length=1, max_length=64)
+    source_kind: Literal["live", "imported"]
+
+
+class AutomationReplayResult(BaseModel):
+    rule_id: UUID
+    rule_name: str
+    entity_type: EntityType
+    entity_id: UUID
+    matched: bool
+    condition_result: dict[str, Any]
+    actions: list[dict[str, Any]]
+    execution_status: Literal["matched", "not_matched"]
+    source_kind: Literal["live", "imported"]
+    evaluated_at: datetime
+
+
 class AutomationEvaluationRead(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

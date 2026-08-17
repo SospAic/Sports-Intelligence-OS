@@ -2003,3 +2003,32 @@ explicitly enable it.
 - `evidence_status` 严格依据实际来源和生成运行核实状态返回 `available / partial / unavailable`；没有来源时不补 URL、不调用模型、不宣称事实已核实。
 - 详细契约见 `docs/GENERATION_EVIDENCE_PACKAGE.md`。
 - 新增生成 API 回归断言，验证用户导入文本的证据状态为 `unavailable` 且保留输入哈希与步骤审计信息。
+
+## 2026-08-17 统一队列扩展适配器
+
+- 新增 `GET /api/v1/inbox/items`，把未解决审核评论、匹配/投递异常订阅事件和待处理死信投影为统一队列项；原领域接口仍保留为权威详情和实际处理入口。
+- 已读回执和共享队列状态的 item key 扩展为 `editorial_comment`、`subscription_event`、`dead_letter`，新增迁移 `20260817_0006_inbox_item_adapters.py`；不修改评论、订阅或死信原始业务状态。
+- 信息历史页增加上述三类筛选和共享处理状态维护，仍保留真实来源时间、状态和跳转入口。
+- 下一步：补 SLA 到期扫描与升级策略；真实外部 canary、平台私有分析、跨主机恢复仍需外部条件。
+
+## 2026-08-17 检索结果到选题联动
+
+- 新增 `POST /api/v1/video-search/results/{candidate_id}/topic`：仅允许 `matched` 且具备内容证据的真实候选进入选题库；候选 URL、Provider、抓取/分析时间、匹配分数和证据快照写入选题元数据，重复提交按候选 `source_id` 幂等返回既有选题。
+- 视频搜索页的 LLM 命中卡片增加“加入选题库”操作；本地语义检索结果继续走已有内容来源边界，不被误写成外部平台视频候选。
+- 下一步：补统一队列 SLA 到期扫描/升级，以及保存检索查询和证据包图谱；真实外部 canary、平台私有分析、跨主机恢复仍需外部条件。
+
+## 2026-08-17 统一队列 SLA 扫描与升级证据
+
+- 新增 `GET /api/v1/inbox/sla`，按共享 `due_at` 计算逾期、未来 60 分钟到期、按计划和已完成数量；信息历史页增加 SLA 汇总卡和逾期标签。
+- Celery Beat 每 60 秒执行 `app.tasks.system.sweep_inbox_sla`，仅对逾期的开放/处理中队列项添加 `sla_overdue` 共享标签，并写入一次 `inbox.sla_overdue` 系统事件；截止时间恢复或队列完成后清除该标签。原始业务状态和外部通知投递状态不被改写。
+- 下一步：在明确配置真实通知目标后增加可配置升级策略和 canary；备份恢复、真实平台凭证、私有 Analytics 与跨主机 HA 仍需外部条件。
+
+## 2026-08-17 可靠性 SLO、规则回放与素材权利中心
+
+- 新增 `GET /api/v1/reliability/slo` 与“可靠性 SLO”页面。指标只从真实的同步运行、外部调用尝试、通知投递尝试、任务运行和统一队列状态派生；空窗口显示空状态，不补 mock 成功率，也不把内部记录解释成第三方可用性。
+- 新增只读 `POST /api/v1/automations/replay`，可按规则、实体、事实和历史状态回放条件树，返回解释树与“将执行的动作计划”，不会写入评估记录、运行状态或发送通知。
+- 新增 `media_artifact_rights` 与迁移 `20260817_0007_media_artifact_rights.py`，提供工作区隔离的素材权利状态、许可、地域、有效期、证据、来源和核验审计；前端入口为 `/operations/rights`，契约见 `docs/MEDIA_RIGHTS.md`。
+- 数据真实性边界：未登记权利的素材明确显示 `unknown`；`approved` 需要许可类型或证据 URL；本地系统不推断商业授权，也未接入外部版权数据库。
+- 本轮门禁验证：`docker compose build api worker beat` 成功；`docker compose up -d api worker beat` 成功；迁移 `20260817_0007 (head)`；`alembic check` 无漂移（仅保留既有 pgvector 类型识别警告）；Ruff、mypy 通过；后端关联测试 `33 passed`；Web Vitest `24 files / 78 tests passed`；API live/ready、Web 登录/信息中心/视频检索/SLO/权利页面均返回 200；未登录访问 SLO 与权利 API 均返回 401。
+
+下一入口：外部真实平台/新闻/LLM/通知 canary、发布 Adapter、私有 Analytics、生产备份恢复和跨主机 HA 仍需凭证或基础设施条件；在这些条件具备前，不将其标记为完成。

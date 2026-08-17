@@ -1,9 +1,11 @@
 "use client";
 
 import type {
+  InboxExtendedItemRecord,
   InboxReadStateRecord,
   InboxQueueStateRecord,
   InboxSavedViewRecord,
+  InboxSlaSummaryRecord,
   NotificationDeliveryPage,
   OperationTaskPage,
 } from "@sio/shared-types";
@@ -30,7 +32,14 @@ import {
 } from "@/lib/inbox";
 import { formatDate } from "@/lib/format";
 
-type KindFilter = "all" | "sync" | "notification" | "task";
+type KindFilter =
+  | "all"
+  | "sync"
+  | "notification"
+  | "task"
+  | "editorial_comment"
+  | "subscription_event"
+  | "dead_letter";
 
 export function NotificationsClient() {
   const { workspaceId } = useWorkspace();
@@ -61,11 +70,29 @@ export function NotificationsClient() {
       ),
     enabled: Boolean(workspaceId),
   });
+  const extendedItems = useQuery<InboxExtendedItemRecord[]>({
+    queryKey: ["notification-history-extended-items", workspaceId],
+    queryFn: () =>
+      apiRequest<InboxExtendedItemRecord[]>("/inbox/items?limit=100", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+  });
+  const sla = useQuery<InboxSlaSummaryRecord>({
+    queryKey: ["notification-history-sla", workspaceId],
+    queryFn: () => apiRequest<InboxSlaSummaryRecord>("/inbox/sla?window_minutes=60&limit=100", { workspaceId: workspaceId! }),
+    enabled: Boolean(workspaceId),
+    refetchInterval: 60_000,
+  });
 
   const items = useMemo(
     () =>
-      buildInboxItems(tasks.data?.items ?? [], deliveries.data?.items ?? []),
-    [deliveries.data?.items, tasks.data?.items],
+      buildInboxItems(
+        tasks.data?.items ?? [],
+        deliveries.data?.items ?? [],
+        extendedItems.data ?? [],
+      ),
+    [deliveries.data?.items, extendedItems.data, tasks.data?.items],
   );
   const readStateQuery = useQuery<InboxReadStateRecord[]>({
     queryKey: [
@@ -208,7 +235,15 @@ export function NotificationsClient() {
     const nextKind = filters.kind;
     const nextStatus = filters.status;
     const nextQueueState = filters.queue_state;
-    if (nextKind === "all" || nextKind === "sync" || nextKind === "notification" || nextKind === "task") {
+    if (
+      nextKind === "all" ||
+      nextKind === "sync" ||
+      nextKind === "notification" ||
+      nextKind === "task" ||
+      nextKind === "editorial_comment" ||
+      nextKind === "subscription_event" ||
+      nextKind === "dead_letter"
+    ) {
       setKind(nextKind);
     }
     setStatus(typeof nextStatus === "string" ? nextStatus : "");
@@ -237,13 +272,19 @@ export function NotificationsClient() {
     }
   }
 
-  const error = tasks.error ?? deliveries.error ?? queueStateQuery.error ?? views.error;
+  const error =
+    tasks.error ??
+    deliveries.error ??
+    extendedItems.error ??
+    sla.error ??
+    queueStateQuery.error ??
+    views.error;
   return (
     <main className="mx-auto min-w-0 max-w-[1100px] space-y-6 px-4 py-7 lg:px-8">
       <PageHeader
         eyebrow="OPERATIONS INBOX"
         title="信息历史"
-        description="集中查看同步、通知投递和后台任务；数据来自真实运行记录，已读状态按工作区和用户持久化。"
+        description="集中查看同步、通知投递、后台任务、审核评论、订阅告警和待重放死信；数据来自真实运行记录，已读状态按工作区和用户持久化。"
         actions={
           <button
             className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-600"
@@ -256,9 +297,35 @@ export function NotificationsClient() {
         }
       />
 
+      {sla.data && (
+        <Panel className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-200">队列 SLA</h2>
+              <p className="mt-1 text-xs text-slate-500">截止时间来自共享队列状态；逾期项由 Beat 加标签并写入审计事件，不改变原业务状态。</p>
+            </div>
+            <span className="text-xs text-slate-600">未来 {sla.data.window_minutes} 分钟</span>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-4">
+            <SlaMetric label="已逾期" value={sla.data.overdue_count} tone="danger" />
+            <SlaMetric label="即将到期" value={sla.data.due_soon_count} tone="warning" />
+            <SlaMetric label="按计划" value={sla.data.on_track_count} tone="success" />
+            <SlaMetric label="已完成" value={sla.data.completed_count} tone="neutral" />
+          </div>
+        </Panel>
+      )}
+
       <Panel className="p-4">
         <div className="flex flex-wrap items-center gap-2">
-          {(["all", "sync", "notification", "task"] as const).map((value) => (
+          {([
+            "all",
+            "sync",
+            "notification",
+            "task",
+            "editorial_comment",
+            "subscription_event",
+            "dead_letter",
+          ] as const).map((value) => (
             <button
               className={`rounded-lg px-3 py-2 text-xs transition ${kind === value ? "bg-cyan-400/15 text-cyan-200" : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"}`}
               key={value}
@@ -332,7 +399,7 @@ export function NotificationsClient() {
         </button>
       </div>
 
-      {tasks.isLoading || deliveries.isLoading ? (
+      {tasks.isLoading || deliveries.isLoading || extendedItems.isLoading || sla.isLoading ? (
         <Panel className="p-4">
           <SkeletonRows />
         </Panel>
@@ -344,6 +411,8 @@ export function NotificationsClient() {
           onRetry={() => {
             void tasks.refetch();
             void deliveries.refetch();
+            void extendedItems.refetch();
+            void sla.refetch();
           }}
         />
       ) : (
@@ -381,6 +450,7 @@ export function NotificationsClient() {
                         {inboxKindLabel(item.kind)}
                       </Badge>
                       {!readIds.has(item.id) && <Badge tone="warning">未读</Badge>}
+                      {state?.labels.includes("sla_overdue") && <Badge tone="danger">SLA逾期</Badge>}
                     </span>
                     <span className="mt-1 block truncate text-sm text-slate-400">
                       {item.detail}
@@ -448,5 +518,24 @@ export function NotificationsClient() {
         </Panel>
       )}
     </main>
+  );
+}
+
+function SlaMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "danger" | "warning" | "success" | "neutral";
+}) {
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+        <span>{label}</span>
+        <Badge tone={tone}>{value}</Badge>
+      </div>
+    </div>
   );
 }

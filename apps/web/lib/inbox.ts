@@ -1,11 +1,18 @@
 import type {
+  InboxExtendedItemRecord,
   NotificationDeliveryRecord,
   OperationTaskRecord,
 } from "@sio/shared-types";
 
 import { operationTaskLabel } from "@/lib/operation-labels";
 
-export type InboxItemKind = "sync" | "notification" | "task";
+export type InboxItemKind =
+  | "sync"
+  | "notification"
+  | "task"
+  | "editorial_comment"
+  | "subscription_event"
+  | "dead_letter";
 
 export interface InboxItem {
   id: string;
@@ -29,6 +36,9 @@ const ENTITY_LABELS: Record<string, string> = {
 export function inboxKindLabel(kind: InboxItemKind): string {
   if (kind === "sync") return "同步";
   if (kind === "notification") return "通知";
+  if (kind === "editorial_comment") return "审核评论";
+  if (kind === "subscription_event") return "订阅告警";
+  if (kind === "dead_letter") return "死信";
   return "任务";
 }
 
@@ -81,8 +91,18 @@ function deliveryItem(delivery: NotificationDeliveryRecord): InboxItem {
 export function buildInboxItems(
   tasks: OperationTaskRecord[],
   deliveries: NotificationDeliveryRecord[],
+  extended: InboxExtendedItemRecord[] = [],
 ): InboxItem[] {
-  return [...tasks.map(taskItem), ...deliveries.map(deliveryItem)].sort(
+  const extendedItems: InboxItem[] = extended.map((item) => ({
+    id: item.item_key,
+    kind: item.item_kind,
+    title: item.title,
+    detail: item.detail,
+    status: item.status,
+    timestamp: item.timestamp,
+    href: item.href,
+  }));
+  return [...tasks.map(taskItem), ...deliveries.map(deliveryItem), ...extendedItems].sort(
     (a, b) => {
       const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
       const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;

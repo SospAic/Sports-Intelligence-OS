@@ -23,6 +23,7 @@ from app.models.generation import (
 )
 from app.models.inbox import InboxReadState
 from app.models.inbox_queue import InboxQueueState, InboxSavedView
+from app.models.media_rights import MediaArtifactRights
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
@@ -106,6 +107,7 @@ __all__ = [
     "LLMProviderSetting",
     "LoginAttempt",
     "MediaArtifact",
+    "MediaArtifactRights",
     "NewsScoringConfig",
     "NewsSyncRun",
     "NotificationChannel",

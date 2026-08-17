@@ -17,6 +17,8 @@ from app.schemas.automation import (
     AutomationEvaluateRequest,
     AutomationEvaluationPage,
     AutomationEvaluationRead,
+    AutomationReplayRequest,
+    AutomationReplayResult,
     AutomationRuleCreate,
     AutomationRuleDetail,
     AutomationRulePage,
@@ -111,6 +113,21 @@ async def evaluate_rules(
 ) -> list[AutomationEvaluationRead]:
     require_workspace_role(workspace, {"owner", "admin", "editor"})
     return await service(request, db).evaluate(workspace.workspace_id, auth.user.id, payload)
+
+
+@router.post("/automations/replay", response_model=list[AutomationReplayResult])
+async def replay_rules(
+    payload: AutomationReplayRequest,
+    request: Request,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> list[AutomationReplayResult]:
+    """Dry-run matching rules without persisting evaluations or executing actions."""
+
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    del auth
+    return await service(request, db).replay(workspace.workspace_id, payload)
 
 
 @router.get("/automations/{rule_id}", response_model=AutomationRuleDetail)

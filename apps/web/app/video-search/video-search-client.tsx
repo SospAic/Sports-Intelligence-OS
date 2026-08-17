@@ -177,6 +177,7 @@ type PlanDraft = {
 type UnifiedResult = {
   engine: Engine;
   id: string;
+  candidateId?: string;
   title: string;
   url: string;
   cover_url: string | null;
@@ -401,6 +402,7 @@ export function VideoSearchClient() {
   const [resultFilter, setResultFilter] = useState<ResultFilter>("all");
   /** Which report format is currently being rendered server-side, if any. */
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [creatingTopicId, setCreatingTopicId] = useState<string | null>(null);
 
   /* ----- auto-scroll anchors: after each step's submit, glide to the next section ----- */
   const section2Ref = useRef<HTMLDivElement>(null);
@@ -573,6 +575,28 @@ export function VideoSearchClient() {
     }
   };
 
+  const createTopicFromCandidate = async (candidateId: string) => {
+    if (!workspaceId || creatingTopicId) return;
+    setCreatingTopicId(candidateId);
+    try {
+      const topic = await apiRequest<{ id: string; title: string }>(
+        `/video-search/results/${candidateId}/topic`,
+        {
+          method: "POST",
+          csrf: true,
+          workspaceId,
+          body: JSON.stringify({}),
+        },
+      );
+      notify(`已加入选题库：${topic.title}`, "success");
+      void queryClient.invalidateQueries({ queryKey: ["topics"] });
+    } catch (error) {
+      notify(`加入选题失败：${(error as Error).message}`, "error");
+    } finally {
+      setCreatingTopicId(null);
+    }
+  };
+
   /* ----- Step 2 (local tab): one-shot semantic query reusing plan inputs ----- */
   const runLocalSearch = async () => {
     if (!workspaceId) return;
@@ -624,6 +648,7 @@ export function VideoSearchClient() {
       list.push({
         engine: "llm",
         id: item.id,
+        candidateId: item.id,
         title: item.title ?? item.canonical_url,
         url: item.canonical_url,
         cover_url: item.cover_url,
@@ -1019,6 +1044,8 @@ export function VideoSearchClient() {
                   result={item}
                   sentiment={summaryById.get(item.id)?.sentiment}
                   heat={summaryById.get(item.id)?.heat}
+                  creatingTopic={creatingTopicId === item.candidateId}
+                  onCreateTopic={item.candidateId ? () => void createTopicFromCandidate(item.candidateId!) : undefined}
                   expanded={expanded.has(item.id)}
                   onToggle={() =>
                     setExpanded((current) => {
@@ -1319,12 +1346,16 @@ function UnifiedResultCard({
   result,
   sentiment,
   heat,
+  creatingTopic,
+  onCreateTopic,
   expanded,
   onToggle,
 }: {
   result: UnifiedResult;
   sentiment?: "positive" | "neutral" | "negative";
   heat?: number;
+  creatingTopic: boolean;
+  onCreateTopic?: () => void;
   expanded: boolean;
   onToggle: () => void;
 }) {
@@ -1382,6 +1413,21 @@ function UnifiedResultCard({
 
         {result.snippet && (
           <p className="mt-2 text-xs leading-5 text-slate-300">{result.snippet}</p>
+        )}
+
+        {onCreateTopic && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={`${secondaryButtonClass} h-8 px-2.5 text-xs`}
+              onClick={onCreateTopic}
+              disabled={creatingTopic}
+            >
+              <Plus size={13} />
+              {creatingTopic ? "加入中…" : "加入选题库"}
+            </button>
+            <span className="text-[11px] text-slate-600">保留原视频 URL、抓取时间和内容证据</span>
+          </div>
         )}
       </div>
     </article>

@@ -11,6 +11,7 @@ from app.api.dependencies import (
     DatabaseSession,
     require_workspace_role,
 )
+from app.schemas.topics import TopicRead
 from app.schemas.video_search import (
     VideoSearchCandidatePage,
     VideoSearchCandidateRead,
@@ -24,8 +25,12 @@ from app.schemas.video_search import (
     VideoSearchRunResponse,
     VideoSearchSummaryRead,
     VideoSearchSummaryRequest,
+    VideoSearchTopicCreate,
 )
-from app.services.video_content_search import VideoContentSearchService
+from app.services.video_content_search import (
+    VideoContentSearchService,
+    VideoSearchCandidateError,
+)
 
 router = APIRouter(prefix="/video-search", tags=["video-search"])
 Page = Annotated[int, Query(ge=1)]
@@ -195,6 +200,34 @@ async def list_results(
         page_size=page_size,
         total=total,
     )
+
+
+@router.post(
+    "/results/{candidate_id}/topic",
+    response_model=TopicRead,
+    status_code=201,
+)
+async def create_topic_from_result(
+    candidate_id: UUID,
+    payload: VideoSearchTopicCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> TopicRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    try:
+        return await _service(request, db).create_topic_from_candidate(
+            workspace.workspace_id,
+            auth.user.id,
+            candidate_id,
+            payload,
+        )
+    except VideoSearchCandidateError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "detail": str(exc)},
+        ) from exc
 
 
 @router.post("/summarize", response_model=VideoSearchSummaryRead)

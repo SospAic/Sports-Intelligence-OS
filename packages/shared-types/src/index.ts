@@ -1199,14 +1199,24 @@ export interface NotificationDeliveryPage {
 
 export interface InboxReadStateRecord {
   item_key: string;
-  item_kind: "task" | "notification";
+  item_kind:
+    | "task"
+    | "notification"
+    | "editorial_comment"
+    | "subscription_event"
+    | "dead_letter";
   item_id: string;
   read_at: string;
 }
 
 export interface InboxQueueStateRecord {
   item_key: string;
-  item_kind: "task" | "notification";
+  item_kind:
+    | "task"
+    | "notification"
+    | "editorial_comment"
+    | "subscription_event"
+    | "dead_letter";
   item_id: string;
   state: "open" | "in_progress" | "completed";
   labels: string[];
@@ -1214,6 +1224,45 @@ export interface InboxQueueStateRecord {
   due_at: string | null;
   updated_by: string | null;
   updated_at: string;
+}
+
+export interface InboxExtendedItemRecord {
+  item_key: string;
+  item_kind: "editorial_comment" | "subscription_event" | "dead_letter";
+  item_id: string;
+  title: string;
+  detail: string;
+  status: string;
+  timestamp: string;
+  href: string;
+}
+
+export interface InboxSlaItemRecord {
+  item_key: string;
+  item_kind:
+    | "task"
+    | "notification"
+    | "editorial_comment"
+    | "subscription_event"
+    | "dead_letter";
+  item_id: string;
+  state: "open" | "in_progress" | "completed";
+  sla_status: "overdue" | "due_soon" | "on_track" | "completed";
+  due_at: string;
+  minutes_to_due: number;
+  labels: string[];
+  assignee_id: string | null;
+  updated_at: string;
+}
+
+export interface InboxSlaSummaryRecord {
+  as_of: string;
+  window_minutes: number;
+  overdue_count: number;
+  due_soon_count: number;
+  on_track_count: number;
+  completed_count: number;
+  items: InboxSlaItemRecord[];
 }
 
 export interface InboxSavedViewRecord {

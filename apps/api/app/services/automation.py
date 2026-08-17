@@ -44,6 +44,8 @@ from app.schemas.automation import (
     AutomationEvaluateRequest,
     AutomationEvaluationPage,
     AutomationEvaluationRead,
+    AutomationReplayRequest,
+    AutomationReplayResult,
     AutomationRuleCreate,
     AutomationRuleDetail,
     AutomationRulePage,
@@ -302,6 +304,63 @@ class AutomationService:
             evaluation = await self._evaluate_rule(workspace_id, actor_id, rule, payload, event_key)
             evaluations.append(AutomationEvaluationRead.model_validate(evaluation))
         return evaluations
+
+    async def replay(
+        self, workspace_id: UUID, payload: AutomationReplayRequest
+    ) -> list[AutomationReplayResult]:
+        """Run a no-write rule simulation with an explanation tree.
+
+        The replay deliberately bypasses runtime state, deduplication, action
+        creation and external providers. It is an operator aid, not evidence
+        that a real event would be delivered successfully.
+        """
+
+        if payload.rule_id is not None:
+            rule = await self.repo.rule(workspace_id, payload.rule_id)
+            if rule is None:
+                raise AutomationNotFound("自动化规则不存在")
+            rules = [rule]
+        else:
+            rules = await self.repo.matching_rules(
+                workspace_id, payload.entity_type, payload.trigger_type
+            )
+
+        results: list[AutomationReplayResult] = []
+        evaluated_at = datetime.now(UTC)
+        for rule in rules:
+            self._validate_tree(rule.condition_tree, payload.entity_type)
+            condition = evaluate_condition_tree(
+                rule.condition_tree,
+                payload.facts,
+                previous=payload.previous,
+                consecutive_count=0,
+            )
+            actions = [
+                {
+                    "action_id": str(action.id),
+                    "type": action.action_type,
+                    "enabled": action.enabled,
+                    "would_execute": condition.matched and action.enabled,
+                    "side_effect": action.action_type
+                    in {"notification", "webhook", "external_api", "create_generation"},
+                }
+                for action in sorted(rule.actions, key=lambda item: item.sort_order)
+            ]
+            results.append(
+                AutomationReplayResult(
+                    rule_id=rule.id,
+                    rule_name=rule.name,
+                    entity_type=payload.entity_type,
+                    entity_id=payload.entity_id,
+                    matched=condition.matched,
+                    condition_result=condition.explanation,
+                    actions=actions,
+                    execution_status="matched" if condition.matched else "not_matched",
+                    source_kind=payload.source_kind,
+                    evaluated_at=evaluated_at,
+                )
+            )
+        return results
 
     async def _evaluate_rule(
         self,

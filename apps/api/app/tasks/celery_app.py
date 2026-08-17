@@ -67,6 +67,10 @@ celery_app.conf.update(
             "task": "app.tasks.system.cleanup_media_lifecycle",
             "schedule": 3600.0,
         },
+        "sweep-inbox-sla": {
+            "task": "app.tasks.system.sweep_inbox_sla",
+            "schedule": 60.0,
+        },
         "sync-all-due-accounts": {
             "task": "app.tasks.monitoring.sync_all_due_accounts",
             "schedule": 60.0,

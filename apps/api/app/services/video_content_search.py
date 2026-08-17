@@ -11,8 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.models.video_search import VideoSearchCandidate, VideoSearchPlan, VideoSearchRun
-from app.schemas.video_search import PLATFORMS, VideoSearchPlanCreate, VideoSearchPlanUpdate
+from app.schemas.topics import TopicCreate, TopicRead
+from app.schemas.video_search import (
+    PLATFORMS,
+    VideoSearchPlanCreate,
+    VideoSearchPlanUpdate,
+    VideoSearchTopicCreate,
+)
 from app.services.platform_search import yt_search
+from app.services.topics import TopicService
 from app.services.video_content_analyzer import (
     VideoAnalysisResult,
     VideoAnalyzerUnavailableError,
@@ -20,6 +27,13 @@ from app.services.video_content_analyzer import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class VideoSearchCandidateError(RuntimeError):
+    def __init__(self, message: str, *, code: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
 
 
 def strict_content_match(result: VideoAnalysisResult, minimum_score: float) -> bool:
@@ -281,6 +295,69 @@ class VideoContentSearchService:
             ).all()
         )
         return items, int(total)
+
+    async def create_topic_from_candidate(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        candidate_id: UUID,
+        payload: VideoSearchTopicCreate,
+    ) -> TopicRead:
+        """Promote one evidence-backed video result into an auditable topic.
+
+        The candidate UUID is stored as the manual topic's ``source_id``.  It
+        is intentionally not presented as a monitored platform content ID;
+        the metadata keeps the original URL, provider, fetch time and
+        analysis evidence so the topic can be traced back to the search run.
+        """
+
+        candidate = await self.db.scalar(
+            select(VideoSearchCandidate).where(
+                VideoSearchCandidate.workspace_id == workspace_id,
+                VideoSearchCandidate.id == candidate_id,
+            )
+        )
+        if candidate is None:
+            raise VideoSearchCandidateError(
+                "视频搜索候选不存在或不属于当前工作区",
+                code="video_search_candidate_not_found",
+                status_code=404,
+            )
+        if candidate.content_match_status != "matched":
+            raise VideoSearchCandidateError(
+                "只有已通过内容证据核验的候选才能进入选题库",
+                code="video_search_candidate_not_matched",
+                status_code=409,
+            )
+
+        evidence = dict(candidate.evidence_json or {})
+        title = payload.title or candidate.title or f"{candidate.platform} 视频选题"
+        summary = payload.summary or candidate.content_text or evidence.get("summary")
+        metadata = {
+            "source_kind": candidate.source_kind,
+            "provider": candidate.source_provider,
+            "external_id": candidate.external_id,
+            "source_url": candidate.source_url or candidate.canonical_url,
+            "fetched_at": candidate.fetched_at.isoformat(),
+            "analyzed_at": candidate.analyzed_at.isoformat() if candidate.analyzed_at else None,
+            "match_score": candidate.match_score,
+            "video_search_candidate_id": str(candidate.id),
+            "video_search_plan_id": str(candidate.plan_id),
+            "evidence": evidence,
+        }
+        return await TopicService(self.db).create(
+            workspace_id,
+            actor_id,
+            TopicCreate(
+                title=title,
+                summary=summary,
+                source_type="manual",
+                source_id=candidate.id,
+                priority=payload.priority,
+                notes=payload.notes,
+                metadata=metadata,
+            ),
+        )
 
     async def capabilities(self) -> dict[str, Any]:
         analyzer = build_video_content_analyzer(self.settings)

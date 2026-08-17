@@ -40,6 +40,7 @@ from app.schemas.reliability import (
     OutboxEventAttemptRead,
     RollbackRequest,
     SearchPage,
+    SloSummaryRead,
 )
 from app.schemas.storage import (
     StorageHealthRead,
@@ -53,6 +54,7 @@ from app.services.notification_template import (
     NotificationTemplateService,
 )
 from app.services.outbox import OutboxError, OutboxService
+from app.services.reliability_slo import ReliabilitySloService
 from app.services.search import SearchService
 from app.services.storage import media_health, media_lifecycle
 
@@ -191,6 +193,20 @@ async def list_delivery_attempts(
 # ===================================================================
 # External call attempt routes
 # ===================================================================
+
+
+@router.get("/reliability/slo", response_model=SloSummaryRead)
+async def reliability_slo(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    window_minutes: int = Query(1440, ge=1, le=10_080),
+) -> SloSummaryRead:
+    """Return derived SLO evidence without claiming external availability."""
+
+    return await ReliabilitySloService(db).snapshot(
+        workspace.workspace_id,
+        window_minutes=window_minutes,
+    )
 
 
 @router.get("/external-call-attempts", response_model=ExternalCallAttemptPage)

@@ -9,6 +9,7 @@ from app.api.routes import (
     generation,
     inbox,
     media,
+    media_rights,
     monitoring,
     news,
     operations,
@@ -42,6 +43,7 @@ api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(media.router)
+api_router.include_router(media_rights.router)
 api_router.include_router(download.router)
 api_router.include_router(editorial.router)
 api_router.include_router(video_search.router)

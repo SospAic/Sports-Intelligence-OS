@@ -33,7 +33,8 @@ class InboxQueueState(TimestampMixin, Base):
             name="uq_inbox_queue_states_item",
         ),
         CheckConstraint(
-            "item_kind IN ('task', 'notification')",
+            "item_kind IN ("
+            "'task', 'notification', 'editorial_comment', 'subscription_event', 'dead_letter')",
             name="inbox_queue_item_kind",
         ),
         CheckConstraint(

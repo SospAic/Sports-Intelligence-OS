@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.db.session import create_engine_and_session
 from app.models.session import AuthSession, LoginAttempt
 from app.models.workspace import Workspace
+from app.services.inbox import InboxService
 from app.services.storage import media_lifecycle
 from app.tasks.celery_app import celery_app
 
@@ -106,3 +107,31 @@ async def _cleanup_media_lifecycle() -> dict[str, int]:
         return result
     finally:
         await engine.dispose()
+
+
+@celery_app.task(name="app.tasks.system.sweep_inbox_sla")  # type: ignore[untyped-decorator]
+def sweep_inbox_sla() -> dict[str, int]:
+    return asyncio.run(_sweep_inbox_sla())
+
+
+async def _sweep_inbox_sla() -> dict[str, int]:
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    result = {"workspaces": 0, "scanned": 0, "escalated": 0, "cleared": 0}
+    try:
+        async with session_factory() as session:
+            workspace_ids = list(
+                (
+                    await session.scalars(
+                        select(Workspace.id).where(Workspace.status == "active")
+                    )
+                ).all()
+            )
+            for workspace_id in workspace_ids:
+                report = await InboxService(session).sweep_sla(workspace_id)
+                result["workspaces"] += 1
+                for key in ("scanned", "escalated", "cleared"):
+                    result[key] += report[key]
+    finally:
+        await engine.dispose()
+    return result

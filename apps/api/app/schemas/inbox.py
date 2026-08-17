@@ -4,7 +4,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-InboxItemKind = Literal["task", "notification"]
+InboxItemKind = Literal[
+    "task",
+    "notification",
+    "editorial_comment",
+    "subscription_event",
+    "dead_letter",
+]
 
 
 class InboxReadStateRead(BaseModel):

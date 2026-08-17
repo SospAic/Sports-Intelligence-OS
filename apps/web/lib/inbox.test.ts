@@ -37,12 +37,25 @@ describe("buildInboxItems", () => {
           updated_at: "2026-08-16T09:05:00Z",
         },
       ],
+      [
+        {
+          item_key: "dead_letter:dead-1",
+          item_kind: "dead_letter",
+          item_id: "dead-1",
+          title: "死信事件",
+          detail: "notification.dispatch · timeout",
+          status: "failed",
+          timestamp: "2026-08-16T10:00:00Z",
+          href: "/operations/dead-letters",
+        },
+      ],
     );
 
     expect(items.map((item) => [item.kind, item.id])).toEqual([
+      ["dead_letter", "dead_letter:dead-1"],
       ["notification", "notification:delivery-1"],
       ["sync", "task:task-1"],
     ]);
-    expect(items[0]?.detail).toContain("作品");
+    expect(items[1]?.detail).toContain("作品");
   });
 });

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +25,27 @@ from app.services.notification_template import (
 
 # Re-export search schemas from the search service.
 from app.services.search import SearchPage, SearchResult
+
+
+class SloMetricRead(BaseModel):
+    """A bounded derived reliability metric, not external platform data."""
+
+    key: str
+    metric_kind: Literal["derived"] = "derived"
+    observations: int
+    successes: int
+    failures: int
+    in_progress: int
+    success_rate: float | None = None
+    average_latency_ms: float | None = None
+    latest_at: datetime | None = None
+    notes: list[str] = Field(default_factory=list)
+
+
+class SloSummaryRead(BaseModel):
+    window_minutes: int
+    generated_at: datetime
+    metrics: list[SloMetricRead]
 
 # ---------------------------------------------------------------------------
 # Dead letter schemas

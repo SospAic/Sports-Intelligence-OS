@@ -15,12 +15,14 @@ from app.schemas.inbox import (
     InboxReadStateUpsert,
 )
 from app.schemas.inbox_queue import (
+    InboxItemRead,
     InboxQueueStateBulkPatch,
     InboxQueueStatePatch,
     InboxQueueStateRead,
     InboxSavedViewCreate,
     InboxSavedViewRead,
     InboxSavedViewUpdate,
+    InboxSlaSummaryRead,
 )
 from app.services.inbox import InboxKeyError, InboxService, InboxServiceError
 
@@ -87,6 +89,29 @@ async def list_queue_states(
         return await InboxService(db).list_queue_states(workspace.workspace_id, item_key or [])
     except InboxKeyError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/items", response_model=list[InboxItemRead])
+async def list_extended_inbox_items(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[InboxItemRead]:
+    return await InboxService(db).list_extended_items(workspace.workspace_id, limit=limit)
+
+
+@router.get("/sla", response_model=InboxSlaSummaryRead)
+async def get_sla_summary(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    window_minutes: Annotated[int, Query(ge=1, le=7 * 24 * 60)] = 60,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> InboxSlaSummaryRead:
+    return await InboxService(db).list_sla(
+        workspace.workspace_id,
+        window_minutes=window_minutes,
+        limit=limit,
+    )
 
 
 @router.patch("/queue-states/bulk", response_model=list[InboxQueueStateRead])

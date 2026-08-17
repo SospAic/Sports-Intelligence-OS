@@ -339,3 +339,25 @@ def test_dashboard_stats_endpoint_returns_fresh_complete_shape(client: TestClien
         "synced_24h": 0,
         "by_platform": {},
     }
+
+
+def test_reliability_slo_is_explicitly_derived_and_does_not_fill_missing_activity(
+    client: TestClient,
+) -> None:
+    authenticate(client)
+    response = client.get("/api/v1/reliability/slo?window_minutes=60")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["window_minutes"] == 60
+    assert {item["key"] for item in body["metrics"]} == {
+        "sync_runs",
+        "external_calls",
+        "notification_attempts",
+        "task_runs",
+        "inbox_queue",
+    }
+    for metric in body["metrics"]:
+        assert metric["metric_kind"] == "derived"
+        assert metric["observations"] == 0
+        assert metric["success_rate"] is None
+        assert "未使用模拟数据补齐" in " ".join(metric["notes"])
