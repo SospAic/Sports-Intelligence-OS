@@ -7,11 +7,12 @@ from app.api.routes import (
     editorial,
     editorial_rules,
     generation,
+    inbox,
     media,
     monitoring,
     news,
     operations,
-    inbox,
+    publications,
     reliability,
     semantic_search,
     settings,
@@ -36,6 +37,7 @@ api_router.include_router(topics.router)
 api_router.include_router(trends.router)
 api_router.include_router(operations.router)
 api_router.include_router(inbox.router)
+api_router.include_router(publications.router)
 api_router.include_router(reliability.router)
 api_router.include_router(settings.router)
 api_router.include_router(subscriptions.router)

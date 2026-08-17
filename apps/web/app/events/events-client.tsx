@@ -2,7 +2,7 @@
 import type { TopicEventPage, TopicEventRecord } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Bookmark, Search, Sparkles } from "lucide-react";
+import { Bookmark, RefreshCw, Search, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
@@ -25,6 +25,7 @@ export function EventsClient() {
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [sport, setSport] = useState("");
+  const [status, setStatus] = useState<"" | "active" | "developing" | "closed">("");
   const [minHeat, setMinHeat] = useState("");
   const params = new URLSearchParams({
     page: String(page),
@@ -34,6 +35,7 @@ export function EventsClient() {
   });
   if (query) params.set("query", query);
   if (sport) params.set("sport", sport);
+  if (status) params.set("status", status);
   if (minHeat) params.set("min_heat", minHeat);
   const events = useQuery({
     queryKey: ["events", workspaceId, params.toString()],
@@ -56,6 +58,19 @@ export function EventsClient() {
       await qc.invalidateQueries({ queryKey: ["events"] });
     } catch (error) {
       notify(error instanceof Error ? error.message : "操作失败", "error");
+    }
+  }
+  async function refreshLifecycle() {
+    if (!workspaceId || !["owner", "admin"].includes(role ?? "")) return;
+    try {
+      const result = await apiRequest<{ changed: number }>(
+        "/news/events/lifecycle/refresh",
+        { method: "POST", workspaceId, csrf: true },
+      );
+      notify(`生命周期已刷新，更新 ${result.changed} 个事件`);
+      await qc.invalidateQueries({ queryKey: ["events"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "刷新失败", "error");
     }
   }
   const columns: ColumnDef<TopicEventRecord, unknown>[] = [
@@ -93,6 +108,14 @@ export function EventsClient() {
       accessorKey: "last_update_time",
       header: "最近更新",
       cell: ({ row }) => formatDate(row.original.last_update_time),
+    },
+    {
+      accessorKey: "status",
+      header: "生命周期",
+      cell: ({ row }) =>
+        ({ active: "活跃", developing: "发展中", closed: "已关闭" })[
+          row.original.status
+        ],
     },
     { accessorKey: "heat_score", header: "热度" },
     {
@@ -187,7 +210,30 @@ export function EventsClient() {
           onChange={(e) => setMinHeat(e.target.value)}
           placeholder="最低热度"
         />
+        <select
+          className={inputClass}
+          value={status}
+          onChange={(e) =>
+            setStatus(e.target.value as "" | "active" | "developing" | "closed")
+          }
+        >
+          <option value="">全部生命周期</option>
+          <option value="active">活跃（24 小时内）</option>
+          <option value="developing">发展中（24–72 小时）</option>
+          <option value="closed">已关闭（72 小时以上）</option>
+        </select>
       </div>
+      {["owner", "admin"].includes(role ?? "") && (
+        <div className="flex justify-end">
+          <button
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:border-cyan-400 hover:text-cyan-200"
+            onClick={refreshLifecycle}
+          >
+            <RefreshCw size={15} />
+            刷新事件生命周期
+          </button>
+        </div>
+      )}
       {events.isLoading ? (
         <div className="rounded-2xl border border-slate-800">
           <SkeletonRows />

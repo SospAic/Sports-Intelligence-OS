@@ -326,6 +326,20 @@ class SemanticSearchService:
             await self._session.scalar(select(func.count()).select_from(pending_query.subquery()))
             or 0
         )
+        latest_embedded_at = await self._session.scalar(
+            select(func.max(ContentEmbedding.embedded_at)).where(
+                ContentEmbedding.workspace_id == workspace_id,
+                ContentEmbedding.model == model,
+            )
+        )
+        freshness = "stale" if pending else ("fresh" if int(totals[0] or 0) else "empty")
+        freshness_detail = (
+            f"有 {pending} 条内容尚未建立当前模型索引"
+            if pending
+            else "索引已覆盖当前可检索内容"
+            if freshness == "fresh"
+            else "当前工作区还没有可检索的向量块"
+        )
 
         return {
             "enabled": self.enabled and self._embedder.enabled,
@@ -335,6 +349,9 @@ class SemanticSearchService:
             "embedded_chunks": int(totals[0] or 0),
             "embedded_items": int(totals[1] or 0),
             "pending_items": pending,
+            "latest_embedded_at": latest_embedded_at,
+            "freshness": freshness,
+            "freshness_detail": freshness_detail,
             "chunk_kinds": {kind: int(count) for kind, count in by_kind},
         }
 

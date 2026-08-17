@@ -1,6 +1,10 @@
 "use client";
 
-import type { GenerationRun, ProblemDetails } from "@sio/shared-types";
+import type {
+  GenerationEvidencePackage,
+  GenerationRun,
+  ProblemDetails,
+} from "@sio/shared-types";
 import {
   Clipboard,
   ClipboardCheck,
@@ -51,6 +55,10 @@ export function GenerationDetail({
   const [status, setStatus] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
+  const [evidence, setEvidence] = useState<GenerationEvidencePackage | null>(
+    null,
+  );
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const output = useMemo(() => run.final_output ?? {}, [run.final_output]);
   const progress = generationProgress(run);
   const isActive = run.status === "queued" || run.status === "running";
@@ -67,6 +75,34 @@ export function GenerationDetail({
     const timer = window.setInterval(() => router.refresh(), 3000);
     return () => window.clearInterval(timer);
   }, [isActive, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/v1/generations/${run.id}/evidence`, {
+      credentials: "include",
+      headers: { "X-Workspace-Id": workspaceId },
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const problem = (await response.json().catch(() => null)) as
+            | ProblemDetails
+            | null;
+          throw new Error(problem?.detail ?? `证据包加载失败（${response.status}）`);
+        }
+        return (await response.json()) as GenerationEvidencePackage;
+      })
+      .then((result) => {
+        if (!cancelled) setEvidence(result);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setEvidenceError(cause instanceof Error ? cause.message : "证据包加载失败");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [run.id, workspaceId]);
 
   async function action(kind: "retry" | "rewrite" | "save") {
     setBusy(true);
@@ -200,6 +236,8 @@ export function GenerationDetail({
           />
         </div>
       </section>
+
+      <EvidencePackageView evidence={evidence} error={evidenceError} />
 
       {run.error ? (
         <div className="rounded-xl border border-rose-900/60 bg-rose-950/20 p-4 text-sm text-rose-200">
@@ -476,6 +514,128 @@ export function GenerationDetail({
           {status}
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function EvidencePackageView({
+  evidence,
+  error,
+}: {
+  evidence: GenerationEvidencePackage | null;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <section className="rounded-2xl border border-amber-900/60 bg-amber-950/20 p-5 text-sm text-amber-200">
+        <p className="font-medium">证据包暂不可用</p>
+        <p className="mt-1 text-xs text-amber-300/80">{error}</p>
+      </section>
+    );
+  }
+  if (!evidence) {
+    return (
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 text-sm text-slate-500">
+        正在加载冻结证据包…
+      </section>
+    );
+  }
+
+  const tone =
+    evidence.evidence_status === "available"
+      ? "success"
+      : evidence.evidence_status === "partial"
+        ? "warning"
+        : "neutral";
+  const statusLabel =
+    evidence.evidence_status === "available"
+      ? "来源可用"
+      : evidence.evidence_status === "partial"
+        ? "部分来源"
+        : "暂无独立来源";
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            EVIDENCE PACKAGE
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-100">冻结证据包</h2>
+        </div>
+        <Badge tone={tone}>{statusLabel}</Badge>
+      </div>
+      <p className="mt-3 text-sm text-slate-300">{evidence.evidence_detail}</p>
+      <div className="mt-4 grid gap-3 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4">
+        <EvidenceMeta label="来源数量" value={String(evidence.source_count)} />
+        <EvidenceMeta label="来源类型" value={evidence.source_kind} />
+        <EvidenceMeta
+          label="冻结时间"
+          value={evidence.frozen_at ? new Date(evidence.frozen_at).toLocaleString("zh-CN") : "未记录"}
+        />
+        <EvidenceMeta label="输入哈希" value={`${evidence.input_hash.slice(0, 12)}…`} />
+      </div>
+      {evidence.sources.length > 0 ? (
+        <div className="mt-4 grid gap-2 md:grid-cols-2">
+          {evidence.sources.map((source, index) => {
+            const title =
+              typeof source.title === "string" ? source.title : `来源 ${index + 1}`;
+            const url = typeof source.url === "string" ? source.url : null;
+            return (
+              <div className="rounded-lg border border-slate-800 p-3" key={`${title}-${index}`}>
+                <p className="text-sm text-slate-200">{title}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {typeof source.provider === "string" ? source.provider : "未标注 Provider"}
+                  {typeof source.source_kind === "string" ? ` · ${source.source_kind}` : ""}
+                </p>
+                {url ? (
+                  <a
+                    className="mt-2 block truncate text-xs text-cyan-300 hover:text-cyan-200"
+                    href={url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {url}
+                  </a>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {evidence.claims.length > 0 || evidence.timeline.length > 0 ? (
+        <details className="mt-4 rounded-lg border border-slate-800 p-3">
+          <summary className="cursor-pointer text-xs text-slate-400">
+            查看事实声明与时间线（{evidence.claims.length} 条声明 · {evidence.timeline.length} 个时间节点）
+          </summary>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <EvidenceJson label="事实声明" value={evidence.claims} />
+            <EvidenceJson label="时间线" value={evidence.timeline} />
+          </div>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function EvidenceMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-800 p-3">
+      <p className="text-[10px] text-slate-600">{label}</p>
+      <p className="mt-1 truncate text-slate-300" title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function EvidenceJson({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-600">{label}</p>
+      <pre className="mt-1 max-h-56 overflow-auto rounded bg-slate-900 p-2 text-[11px] text-slate-400">
+        {JSON.stringify(value, null, 2)}
+      </pre>
     </div>
   );
 }

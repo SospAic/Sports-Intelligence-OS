@@ -45,6 +45,7 @@ class EventFilters:
     language: str | None = None
     country: str | None = None
     query: str | None = None
+    status: str | None = None
     is_bookmarked: bool | None = None
     min_heat: float | None = None
     max_heat: float | None = None
@@ -363,6 +364,8 @@ class NewsRepository:
                     func.lower(TopicEvent.summary).like(pattern),
                 )
             )
+        if filters.status:
+            conditions.append(TopicEvent.status == filters.status)
         if filters.is_bookmarked is not None:
             conditions.append(TopicEvent.is_bookmarked.is_(filters.is_bookmarked))
         if filters.min_heat is not None:
@@ -397,12 +400,18 @@ class NewsRepository:
         # same RSS item reappears after the clustering lookback).  Keep the
         # newest/best row visible without deleting historical rows or their
         # audit links.  The requested sort determines which duplicate wins.
+        entity_key = func.concat_ws(
+            "|",
+            TopicEvent.normalized_title,
+            func.coalesce(func.lower(TopicEvent.sport), ""),
+            func.coalesce(func.lower(TopicEvent.league), ""),
+        )
         ranked_events = (
             select(
                 TopicEvent.id.label("event_id"),
                 func.row_number()
                 .over(
-                    partition_by=(TopicEvent.workspace_id, TopicEvent.normalized_title),
+                    partition_by=(TopicEvent.workspace_id, entity_key),
                     order_by=(ordering, TopicEvent.last_update_time.desc(), TopicEvent.id.asc()),
                 )
                 .label("entity_rank"),
@@ -426,9 +435,7 @@ class NewsRepository:
         total = int(
             (
                 await self.session.scalar(
-                    select(func.count())
-                    .select_from(ranked_events)
-                    .where(unique_event_ids)
+                    select(func.count()).select_from(ranked_events).where(unique_event_ids)
                 )
             )
             or 0

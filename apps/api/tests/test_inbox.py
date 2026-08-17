@@ -71,3 +71,55 @@ def test_inbox_read_states_reject_malformed_item_keys(client: TestClient) -> Non
         json={"item_key": "editorial:invalid"},
     )
     assert response.status_code == 422
+
+
+def test_inbox_queue_state_bulk_and_saved_view_are_workspace_scoped(
+    client: TestClient,
+) -> None:
+    csrf = authenticate(client)
+    task_key = f"task:{uuid4()}"
+    notification_key = f"notification:{uuid4()}"
+
+    updated = client.patch(
+        f"/api/v1/inbox/queue-states/{task_key}",
+        headers={"X-CSRF-Token": csrf},
+        json={"state": "in_progress", "labels": ["高优先级", "热点"]},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["state"] == "in_progress"
+    assert updated.json()["labels"] == ["高优先级", "热点"]
+
+    bulk = client.patch(
+        "/api/v1/inbox/queue-states/bulk",
+        headers={"X-CSRF-Token": csrf},
+        json={"item_keys": [task_key, notification_key], "state": "completed"},
+    )
+    assert bulk.status_code == 200, bulk.text
+    assert {item["item_key"] for item in bulk.json()} == {task_key, notification_key}
+    assert {item["state"] for item in bulk.json()} == {"completed"}
+
+    states = client.get(
+        "/api/v1/inbox/queue-states",
+        params=[("item_key", task_key), ("item_key", notification_key)],
+    )
+    assert states.status_code == 200
+    assert {item["item_key"] for item in states.json()} == {task_key, notification_key}
+
+    created = client.post(
+        "/api/v1/inbox/views",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "name": "我的失败与热点",
+            "filters": {"kind": "all", "status": "failed", "queue_state": "open"},
+            "is_default": True,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["filters"]["queue_state"] == "open"
+
+    duplicate = client.post(
+        "/api/v1/inbox/views",
+        headers={"X-CSRF-Token": csrf},
+        json={"name": "我的失败与热点", "filters": {}},
+    )
+    assert duplicate.status_code == 422

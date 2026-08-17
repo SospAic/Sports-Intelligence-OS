@@ -17,6 +17,7 @@ from app.core.problems import problem_response
 from app.schemas.generation import (
     GenerationCreate,
     GenerationDecisionUpdate,
+    GenerationEvidencePackage,
     GenerationRewriteRequest,
     GenerationRunPage,
     GenerationRunRead,
@@ -325,6 +326,16 @@ async def get_generation(
     request: Request,
 ) -> GenerationRunRead:
     return await service(request, db).get_run(workspace.workspace_id, run_id)
+
+
+@router.get("/generations/{run_id}/evidence", response_model=GenerationEvidencePackage)
+async def get_generation_evidence(
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> GenerationEvidencePackage:
+    return await service(request, db).evidence_package(workspace.workspace_id, run_id)
 
 
 @router.post("/generations/{run_id}/retry", response_model=GenerationRunRead, status_code=202)

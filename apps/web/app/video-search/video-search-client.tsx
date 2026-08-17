@@ -112,6 +112,9 @@ type StatusResponse = {
   embedded_chunks: number;
   embedded_items: number;
   pending_items: number;
+  latest_embedded_at: string | null;
+  freshness: "fresh" | "stale" | "empty";
+  freshness_detail: string;
   chunk_kinds: Record<string, number>;
 };
 type SearchChunk = {
@@ -1269,6 +1272,18 @@ function LocalEngineTab({
               <Stat label="已索引内容" value={formatNumber(status.embedded_items ?? 0)} />
               <Stat label="已索引块" value={formatNumber(status.embedded_chunks ?? 0)} />
               <Stat label="待索引" value={formatNumber(status.pending_items ?? 0)} tone={(status.pending_items ?? 0) > 0 ? "warning" : "default"} />
+            </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs leading-5 text-slate-400">
+              <div className="flex items-center justify-between gap-3">
+                <span>新鲜度</span>
+                <Badge tone={status.freshness === "fresh" ? "success" : status.freshness === "stale" ? "warning" : "neutral"}>
+                  {status.freshness === "fresh" ? "最新" : status.freshness === "stale" ? "待补索引" : "暂无索引"}
+                </Badge>
+              </div>
+              <p className="mt-1">{status.freshness_detail}</p>
+              <p className="mt-1 text-slate-500">
+                最近索引：{status.latest_embedded_at ? new Date(status.latest_embedded_at).toLocaleString("zh-CN") : "—"}
+              </p>
             </div>
             <div className="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs leading-5 text-slate-400">
               <div className="flex items-center justify-between">

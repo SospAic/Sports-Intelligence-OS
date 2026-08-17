@@ -22,6 +22,7 @@ from app.models.generation import (
     PromptVersion,
 )
 from app.models.inbox import InboxReadState
+from app.models.inbox_queue import InboxQueueState, InboxSavedView
 from app.models.monitoring import (
     Account,
     AccountSnapshot,
@@ -53,6 +54,7 @@ from app.models.operations import (
     SystemEvent,
     TaskRun,
 )
+from app.models.publication import PerformanceAttribution, Publication
 from app.models.session import AuthSession, LoginAttempt
 from app.models.settings import (
     LLMProviderSetting,
@@ -99,6 +101,8 @@ __all__ = [
     "GenerationStep",
     "GenerationWorkflow",
     "InboxReadState",
+    "InboxQueueState",
+    "InboxSavedView",
     "LLMProviderSetting",
     "LoginAttempt",
     "MediaArtifact",
@@ -112,6 +116,8 @@ __all__ = [
     "OutboxEvent",
     "OutboxEventAttempt",
     "Platform",
+    "PerformanceAttribution",
+    "Publication",
     "PlatformCredentialSetting",
     "RuntimeSettingOverride",
     "SyncSettings",

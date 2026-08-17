@@ -88,6 +88,8 @@ DEFAULT_NEWS_SCORING = {
 }
 DUPLICATE_LOOKBACK_DAYS = 7
 EVENT_LOOKBACK_HOURS = 72
+EVENT_DEVELOPING_AFTER_HOURS = 24
+EVENT_CLOSED_AFTER_HOURS = 72
 SOURCE_COUNT_SATURATION = 5
 ARTICLE_COUNT_SATURATION = 10
 ARTICLE_BODY_SCRAPE_CONFIRMATIONS = (
@@ -539,6 +541,37 @@ class NewsService:
             page_size=page_size,
             total=total,
         )
+
+    async def refresh_event_lifecycle(
+        self, workspace_id: UUID, *, now: datetime | None = None
+    ) -> dict[str, int]:
+        """Move open events between active/developing/closed by observation age."""
+        current_time = self._utc(now or datetime.now(UTC))
+        events = list(
+            (
+                await self.session.scalars(
+                    select(TopicEvent).where(
+                        TopicEvent.workspace_id == workspace_id,
+                        TopicEvent.status.in_(("active", "developing")),
+                    )
+                )
+            ).all()
+        )
+        counts = {
+            "scanned": len(events),
+            "changed": 0,
+            "active": 0,
+            "developing": 0,
+            "closed": 0,
+        }
+        for event in events:
+            before = event.status
+            self._apply_event_lifecycle(event, current_time)
+            counts[event.status] += 1
+            if event.status != before:
+                counts["changed"] += 1
+        await self.session.commit()
+        return counts
 
     async def get_event(self, workspace_id: UUID, event_id: UUID) -> TopicEventDetail:
         event = await self.repository.event(workspace_id, event_id)
@@ -1559,6 +1592,33 @@ class NewsService:
             },
             "unique_article_count": len(unique_articles),
             "unique_source_count": len(unique_sources),
+        }
+        self._apply_event_lifecycle(event, datetime.now(UTC))
+
+    @staticmethod
+    def _apply_event_lifecycle(event: TopicEvent, now: datetime) -> None:
+        if event.status == "closed":
+            return
+        age_hours = max(
+            0.0,
+            (now - NewsService._utc(event.last_update_time)).total_seconds() / 3600,
+        )
+        if age_hours >= EVENT_CLOSED_AFTER_HOURS:
+            next_status = "closed"
+        elif age_hours >= EVENT_DEVELOPING_AFTER_HOURS:
+            next_status = "developing"
+        else:
+            next_status = "active"
+        event.status = next_status
+        event.metadata_json = {
+            **event.metadata_json,
+            "lifecycle": {
+                "algorithm": "observation-age-v1",
+                "age_hours": round(age_hours, 4),
+                "developing_after_hours": EVENT_DEVELOPING_AFTER_HOURS,
+                "closed_after_hours": EVENT_CLOSED_AFTER_HOURS,
+                "evaluated_at": now.isoformat(),
+            },
         }
 
     async def explain_event(self, workspace_id: UUID, event_id: UUID) -> dict[str, Any]:

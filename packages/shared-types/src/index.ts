@@ -479,6 +479,24 @@ export interface GenerationRunPage {
   total: number;
 }
 
+export interface GenerationEvidencePackage {
+  contract_version: string;
+  run_id: string;
+  input_hash: string;
+  frozen_at: string | null;
+  source_kind: string;
+  verification_status: string;
+  evidence_status: "available" | "partial" | "unavailable";
+  evidence_detail: string;
+  source_count: number;
+  sources: Array<Record<string, unknown>>;
+  claims: Array<Record<string, unknown>>;
+  timeline: Array<Record<string, unknown>>;
+  qualification: Record<string, unknown>;
+  step_statuses: Array<Record<string, unknown>>;
+  output_references: Array<Record<string, unknown>>;
+}
+
 export type EditorialStatus =
   | "draft"
   | "in_review"
@@ -801,6 +819,83 @@ export interface ContentRecordPage {
   total: number;
 }
 
+export type PublicationStatus =
+  | "planned"
+  | "scheduled"
+  | "published"
+  | "unverified"
+  | "failed"
+  | "cancelled";
+export type PublicationWindowKey = "1h" | "3h" | "6h" | "24h" | "72h" | "7d" | "30d";
+export type AttributionMeasurementStatus = "measured" | "not_due" | "unavailable";
+
+export interface PerformanceAttributionRecord {
+  id: string;
+  publication_id: string;
+  window_key: PublicationWindowKey;
+  window_seconds: number;
+  target_at: string;
+  measurement_status: AttributionMeasurementStatus;
+  captured_at: string | null;
+  view_count: number | null;
+  like_count: number | null;
+  comment_count: number | null;
+  share_count: number | null;
+  favorite_count: number | null;
+  follower_gain: number | null;
+  average_watch_time: number | null;
+  completion_rate: number | null;
+  source_kind: SourceKind | null;
+  source_provider: string | null;
+  source_url: string | null;
+  note: string | null;
+  evidence: Record<string, unknown>;
+  captured_offset_seconds: number | null;
+}
+
+export interface PublicationRecord {
+  id: string;
+  workspace_id: string;
+  created_by: string;
+  generation_run_id: string | null;
+  editorial_item_id: string | null;
+  content_item_id: string | null;
+  account_id: string | null;
+  platform_id: string | null;
+  title: string;
+  canonical_url: string | null;
+  external_id: string | null;
+  status: PublicationStatus;
+  scheduled_at: string | null;
+  published_at: string | null;
+  source_kind: SourceKind;
+  source_provider: string;
+  source_url: string | null;
+  verification_note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PublicationDetail extends PublicationRecord {
+  attributions: PerformanceAttributionRecord[];
+}
+
+export interface PublicationPage {
+  items: PublicationRecord[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface AttributionRefreshResponse {
+  publication: PublicationRecord;
+  attributions: PerformanceAttributionRecord[];
+  measured_count: number;
+  unavailable_count: number;
+  not_due_count: number;
+}
+
 /** A platform comment on a content item (hot-comment collection). */
 export interface CommentRecord {
   id: string;
@@ -1107,6 +1202,29 @@ export interface InboxReadStateRecord {
   item_kind: "task" | "notification";
   item_id: string;
   read_at: string;
+}
+
+export interface InboxQueueStateRecord {
+  item_key: string;
+  item_kind: "task" | "notification";
+  item_id: string;
+  state: "open" | "in_progress" | "completed";
+  labels: string[];
+  assignee_id: string | null;
+  due_at: string | null;
+  updated_by: string | null;
+  updated_at: string;
+}
+
+export interface InboxSavedViewRecord {
+  id: string;
+  workspace_id: string;
+  created_by: string;
+  name: string;
+  filters: Record<string, unknown>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SyncRunRecord {

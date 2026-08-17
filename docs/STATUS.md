@@ -1957,3 +1957,49 @@ explicitly enable it.
 - 本轮最后一次门禁复核时宿主终端无法解析 `docker`（`docker compose ps` 原始错误为 “The term 'docker' is not recognized...”），因此在 Docker CLI 恢复前不宣称本轮追加模型对齐已完成镜像重建或 Compose 更新；待环境恢复后优先重跑 API/Worker/Beat/Web 构建、启动、`alembic check`、健康检查、登录入口和信息中心回归。
 
 下一入口：先补齐 Docker 门禁及真实登录态回归，再实现发布/表现归因与事件级热点榜单；随后扩展统一运营队列的标签、保存视图、批量处理和 SLA。
+
+## 2026-08-17 发布记录与固定窗口表现归因
+
+- 完成 P0 垂直切片“发布记录 → 固定窗口表现快照 → 生成/审核/作品来源追踪”。新增 `publications`、`performance_attributions` 模型及迁移 `20260817_0002_publication_attribution.py`；追加 `20260817_0003_publication_constraint_names.py` 与 `20260817_0004_publication_window_constraint_names.py`，消除 PostgreSQL 长约束名和 ORM 命名约定造成的 Alembic 漂移。
+- 新增工作区隔离 API：`GET/POST /api/v1/publications`、`GET/PATCH /api/v1/publications/{id}`、`POST /api/v1/publications/{id}/attribution/refresh`。状态转换、来源引用、发布证据、固定窗口和审计事件均有明确约束；没有平台回执时不会显示“已发布成功”。
+- 归因只选择 `ContentSnapshot` 的真实记录，使用目标时间后 24 小时宽限期内第一条快照；未来窗口标记 `not_due`，缺少快照标记 `unavailable`，不填估算指标。新增 `docs/PUBLICATION_ATTRIBUTION.md` 记录契约、证据和外部 Adapter 边界。
+- 前端新增“创作 → 发布记录”管理页，支持计划/排期/人工登记、关联监控作品、状态筛选、七个窗口的测量状态、来源和快照证据展示，以及受条件约束的刷新操作。新增共享类型，未关联作品或缺少发布时间时刷新按钮禁用。
+- 容器验证：后端镜像 `api`、`worker`、`beat` 和前端 `web` 均重建并通过 `docker compose up -d`；迁移为 `20260817_0004 (head)`，`alembic check` 无漂移；新增归因测试 `2 passed`；相关 Ruff、mypy 通过；Next.js production build/TypeScript 通过；API `/health/live`、`/health/ready` 和 Web `/login` 均返回 200；新增 `/publications` 路由已生成。
+- 浏览器页面级验证受当前浏览器会话未登录限制：新建测试标签可到达 `/publications`，但被正确重定向到登录入口，未输入或传输密码，也未创建外部副作用记录。真实登录态下的表格交互仍需后续在用户已登录会话中复验。
+
+下一入口：继续实现热点事件生命周期与事件级排行榜的统一实体去重，再扩展统一运营队列的标签、保存视图、批量处理和 SLA；真实平台发布 Adapter、私有分析指标、canary/SLO、备份恢复和 HA 仍是外部凭证/基础设施验收项。
+
+## 2026-08-17 热点事件生命周期与事件级榜单去重
+
+- 为事件列表增加 `status` 筛选；事件中心增加生命周期列和 owner/admin 的立即刷新入口。
+- 新增 `NewsService.refresh_event_lifecycle` 与 Beat 每 5 分钟任务：依据最近一次真实观测将事件划分为活跃（<24 小时）、发展中（24–72 小时）或已关闭（≥72 小时），并把算法版本、阈值和评估时间写入 `metadata.lifecycle`。已关闭事件不会被后台任务静默重开。
+- 事件榜单的读模型去重键从“规范标题”提升为“规范标题 + 运动 + 联赛”，避免同名跨项目/跨联赛事件被误合并；原始事件、文章关系和历史观测均保留。
+- 详细规则见 `docs/NEWS_EVENT_LIFECYCLE.md`。
+- 验证：API/Worker/Beat 镜像重建并通过 Compose 更新；迁移为 `20260817_0004 (head)`，`alembic check` 无漂移；Ruff、mypy 通过；热点生命周期与新闻 API 回归 `7 passed`。
+
+下一入口：继续补统一运营队列的标签、保存视图、批量处理和 SLA；真实平台发布 Adapter、私有分析指标、canary/SLO、备份恢复和 HA 仍需外部凭证或基础设施条件。
+
+## 2026-08-17 统一运营队列共享处理状态
+
+- 新增 `inbox_queue_states` 与 `inbox_saved_views`，把同步、通知和后台任务的处理状态、标签、负责人/截止时间和共享筛选视图持久化到工作区；更新动作写入审计记录，外部投递状态不被覆盖。
+- 信息历史页新增处理状态筛选、保存/应用共享视图、逐条标签维护和当前筛选批量完成；队列状态仍与每用户已读回执分离。
+- 新增批量更新 API，最多 100 条；负责人校验为当前工作区活跃成员；保存视图未知筛选字段拒绝写入。
+- 详细契约见 `docs/UNIFIED_OPERATIONS_INBOX.md`。
+- 验证：迁移为 `20260817_0005 (head)`，`alembic check` 无漂移；队列 API 集成测试 `3 passed`；Ruff、mypy、Next.js TypeScript/production build 通过；Web/Proxy 已更新运行。
+
+下一入口：扩展评论、订阅告警和死信的队列适配器，并补 SLA 到期扫描/升级策略；证据包、检索新鲜度、真实 canary、发布 Adapter 和备份恢复仍按外部条件单独验收。
+
+## 2026-08-17 语义检索新鲜度与可解释状态
+
+- 语义检索状态新增当前模型的最近索引时间、待索引数量、新鲜度状态和面向运营人员的解释；前端索引状态卡同步显示“最新/待补索引/暂无索引”。
+- 保持真实数据边界：新鲜度只来自 `ContentEmbedding.embedded_at` 与真实待索引查询，不补估算值；结果调试分继续展示向量、关键词、RRF/重排和命中路径。
+- 验证：合并回归 `38 passed`（语义检索、统一运营队列、发布归因、热点生命周期/新闻 API）；API/Worker/Beat 与 Web 镜像均重建更新，Alembic `20260817_0005 (head)` 且无漂移，Web TypeScript/production build 通过。
+
+下一入口：把评论、订阅告警、死信接入统一队列，并补检索结果到证据包/审核条目的联动；真实平台发布 Adapter、私有 Analytics、canary/SLO、备份恢复和 HA 仍需外部凭证或基础设施条件。
+
+## 2026-08-17 生成证据包冻结引用
+
+- 新增只读 `GET /api/v1/generations/{run_id}/evidence`，按工作区读取生成运行的冻结输入、来源、事实声明、时间线、选题判定、步骤状态和成品字段引用。
+- `evidence_status` 严格依据实际来源和生成运行核实状态返回 `available / partial / unavailable`；没有来源时不补 URL、不调用模型、不宣称事实已核实。
+- 详细契约见 `docs/GENERATION_EVIDENCE_PACKAGE.md`。
+- 新增生成 API 回归断言，验证用户导入文本的证据状态为 `unavailable` 且保留输入哈希与步骤审计信息。

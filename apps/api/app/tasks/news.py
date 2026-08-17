@@ -96,3 +96,40 @@ async def _schedule_due() -> int:
 )
 def sync_all_news_sources() -> int:
     return asyncio.run(_schedule_due())
+
+
+async def _refresh_all_event_lifecycles() -> dict[str, dict[str, int]]:
+    from sqlalchemy import select
+
+    from app.models.workspace import Workspace
+
+    settings = get_settings()
+    engine, session_factory = create_engine_and_session(settings)
+    providers = build_news_provider_registry(settings)
+    results: dict[str, dict[str, int]] = {}
+    try:
+        async with session_factory() as session:
+            workspace_ids = list(
+                (
+                    await session.scalars(select(Workspace.id).where(Workspace.status == "active"))
+                ).all()
+            )
+            for workspace_id in workspace_ids:
+                results[str(workspace_id)] = await NewsService(
+                    session, providers
+                ).refresh_event_lifecycle(workspace_id)
+    finally:
+        for provider in providers.values():
+            close = getattr(provider, "aclose", None)
+            if close is not None:
+                await close()
+        await engine.dispose()
+    return results
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.tasks.news.refresh_event_lifecycles"
+)
+def refresh_event_lifecycles() -> dict[str, dict[str, int]]:
+    """Keep active news events aligned with the current observation age."""
+    return asyncio.run(_refresh_all_event_lifecycles())

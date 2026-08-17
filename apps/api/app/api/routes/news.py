@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -344,6 +344,7 @@ async def list_events(
     language: str | None = None,
     country: str | None = None,
     query: str | None = None,
+    status: Literal["active", "developing", "closed"] | None = None,
     is_bookmarked: bool | None = None,
     min_heat: Annotated[float | None, Query(ge=0, le=100)] = None,
     max_heat: Annotated[float | None, Query(ge=0, le=100)] = None,
@@ -358,6 +359,7 @@ async def list_events(
             language=language,
             country=country,
             query=query,
+            status=status,
             is_bookmarked=is_bookmarked,
             min_heat=min_heat,
             max_heat=max_heat,
@@ -367,6 +369,17 @@ async def list_events(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post("/events/lifecycle/refresh", response_model=dict[str, int])
+async def refresh_event_lifecycle(
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> dict[str, int]:
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await service(request, db).refresh_event_lifecycle(workspace.workspace_id)
 
 
 @router.get("/events/{event_id}", response_model=TopicEventDetail)

@@ -2,15 +2,18 @@
 
 import type {
   InboxReadStateRecord,
+  InboxQueueStateRecord,
+  InboxSavedViewRecord,
   NotificationDeliveryPage,
   OperationTaskPage,
 } from "@sio/shared-types";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Bell, CheckCheck, ListChecks } from "lucide-react";
+import { Activity, Bell, CheckCheck, ListChecks, Save, Tag } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import { useWorkspace } from "@/components/app-shell";
+import { useToast } from "@/components/toast";
 import {
   Badge,
   PageHeader,
@@ -31,8 +34,12 @@ type KindFilter = "all" | "sync" | "notification" | "task";
 
 export function NotificationsClient() {
   const { workspaceId } = useWorkspace();
+  const { notify } = useToast();
   const [kind, setKind] = useState<KindFilter>("all");
   const [status, setStatus] = useState("");
+  const [queueState, setQueueState] = useState("");
+  const [activeView, setActiveView] = useState("");
+  const [labelInputs, setLabelInputs] = useState<Record<string, string>>({});
   const [optimisticReadIds, setOptimisticReadIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -77,6 +84,31 @@ export function NotificationsClient() {
     enabled: Boolean(workspaceId) && items.length > 0,
     staleTime: 10_000,
   });
+  const queueStateQuery = useQuery<InboxQueueStateRecord[]>({
+    queryKey: [
+      "notification-history-queue-states",
+      workspaceId,
+      items.map((item) => item.id).join(","),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      items.forEach((item) => params.append("item_key", item.id));
+      return apiRequest<InboxQueueStateRecord[]>(
+        `/inbox/queue-states?${params.toString()}`,
+        { workspaceId: workspaceId! },
+      );
+    },
+    enabled: Boolean(workspaceId) && items.length > 0,
+    staleTime: 10_000,
+  });
+  const views = useQuery<InboxSavedViewRecord[]>({
+    queryKey: ["notification-history-views", workspaceId],
+    queryFn: () =>
+      apiRequest<InboxSavedViewRecord[]>("/inbox/views", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+  });
   const readIds = useMemo(
     () =>
       new Set([
@@ -85,8 +117,15 @@ export function NotificationsClient() {
       ]),
     [optimisticReadIds, readStateQuery.data],
   );
+  const queueStates = useMemo(
+    () => new Map((queueStateQuery.data ?? []).map((state) => [state.item_key, state])),
+    [queueStateQuery.data],
+  );
   const filtered = items.filter(
-    (item) => (kind === "all" || item.kind === kind) && (!status || item.status === status),
+    (item) =>
+      (kind === "all" || item.kind === kind) &&
+      (!status || item.status === status) &&
+      (!queueState || (queueStates.get(item.id)?.state ?? "open") === queueState),
   );
   const unreadCount = items.filter((item) => !readIds.has(item.id)).length;
 
@@ -138,7 +177,67 @@ export function NotificationsClient() {
     }
   }
 
-  const error = tasks.error ?? deliveries.error;
+  async function updateQueueState(
+    itemKeys: string[],
+    patch: { state?: "open" | "in_progress" | "completed"; labels?: string[] },
+  ) {
+    if (!workspaceId || !itemKeys.length) return;
+    try {
+      await apiRequest("/inbox/queue-states/bulk", {
+        method: "PATCH",
+        body: JSON.stringify({ item_keys: itemKeys, ...patch }),
+        workspaceId,
+        csrf: true,
+      });
+      await queueStateQuery.refetch();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "队列状态更新失败", "error");
+    }
+  }
+
+  async function addLabel(itemId: string) {
+    const label = labelInputs[itemId]?.trim().toLowerCase();
+    if (!label) return;
+    const current = queueStates.get(itemId)?.labels ?? [];
+    await updateQueueState([itemId], { labels: [...current, label] });
+    setLabelInputs((previous) => ({ ...previous, [itemId]: "" }));
+  }
+
+  function applyView(view: InboxSavedViewRecord) {
+    const filters = view.filters;
+    const nextKind = filters.kind;
+    const nextStatus = filters.status;
+    const nextQueueState = filters.queue_state;
+    if (nextKind === "all" || nextKind === "sync" || nextKind === "notification" || nextKind === "task") {
+      setKind(nextKind);
+    }
+    setStatus(typeof nextStatus === "string" ? nextStatus : "");
+    setQueueState(typeof nextQueueState === "string" ? nextQueueState : "");
+    setActiveView(view.id);
+  }
+
+  async function saveCurrentView() {
+    if (!workspaceId) return;
+    const name = window.prompt("保存视图名称");
+    if (!name?.trim()) return;
+    try {
+      await apiRequest("/inbox/views", {
+        method: "POST",
+        body: JSON.stringify({
+          name: name.trim(),
+          filters: { kind, status, queue_state: queueState },
+        }),
+        workspaceId,
+        csrf: true,
+      });
+      await views.refetch();
+      notify("运营队列视图已保存");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "保存视图失败", "error");
+    }
+  }
+
+  const error = tasks.error ?? deliveries.error ?? queueStateQuery.error ?? views.error;
   return (
     <main className="mx-auto min-w-0 max-w-[1100px] space-y-6 px-4 py-7 lg:px-8">
       <PageHeader
@@ -183,8 +282,55 @@ export function NotificationsClient() {
             <option value="failed">失败</option>
             <option value="error">错误</option>
           </select>
+          <select
+            aria-label="按处理状态筛选"
+            className={`${inputClass} h-9 w-36 text-xs`}
+            value={queueState}
+            onChange={(event) => {
+              setQueueState(event.target.value);
+              setActiveView("");
+            }}
+          >
+            <option value="">全部处理状态</option>
+            <option value="open">待处理</option>
+            <option value="in_progress">处理中</option>
+            <option value="completed">已完成</option>
+          </select>
+          <select
+            aria-label="应用保存视图"
+            className={`${inputClass} h-9 w-44 text-xs`}
+            value={activeView}
+            onChange={(event) => {
+              const view = views.data?.find((item) => item.id === event.target.value);
+              if (view) applyView(view);
+            }}
+          >
+            <option value="">保存视图</option>
+            {(views.data ?? []).map((view) => (
+              <option key={view.id} value={view.id}>{view.name}</option>
+            ))}
+          </select>
+          <button
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300 hover:border-cyan-400 hover:text-cyan-200"
+            onClick={() => void saveCurrentView()}
+            type="button"
+          >
+            <Save size={14} /> 保存当前视图
+          </button>
         </div>
       </Panel>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+        <span>当前显示 {filtered.length} 条；处理状态和标签对工作区成员共享。</span>
+        <button
+          className="rounded-lg border border-slate-700 px-3 py-2 text-slate-300 hover:border-cyan-400 hover:text-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!filtered.length}
+          onClick={() => void updateQueueState(filtered.map((item) => item.id), { state: "completed" })}
+          type="button"
+        >
+          批量标记当前筛选为已完成
+        </button>
+      </div>
 
       {tasks.isLoading || deliveries.isLoading ? (
         <Panel className="p-4">
@@ -204,12 +350,13 @@ export function NotificationsClient() {
         <Panel className="overflow-hidden p-0">
           {filtered.length ? (
             <div className="divide-y divide-slate-800">
-              {filtered.map((item) => (
-                <Link
+              {filtered.map((item) => {
+                const state = queueStates.get(item.id);
+                const currentQueueState = state?.state ?? "open";
+                return (
+                <div
                   className="flex items-start gap-3 px-5 py-4 transition hover:bg-slate-900/70"
-                  href={item.href}
                   key={item.id}
-                  onClick={() => void markRead(item.id)}
                 >
                   <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-slate-900 text-cyan-300">
                     {item.kind === "sync" ? (
@@ -221,6 +368,11 @@ export function NotificationsClient() {
                     )}
                   </span>
                   <span className="min-w-0 flex-1">
+                    <Link
+                      className="block rounded-md focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                      href={item.href}
+                      onClick={() => void markRead(item.id)}
+                    >
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium text-slate-200">
                         {item.title}
@@ -237,9 +389,56 @@ export function NotificationsClient() {
                       <span>{formatDate(item.timestamp)}</span>
                       <span>{inboxStatusLabel(item.status)}</span>
                     </span>
+                    </Link>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <label className="sr-only" htmlFor={`queue-state-${item.id}`}>
+                        {item.title}处理状态
+                      </label>
+                      <select
+                        id={`queue-state-${item.id}`}
+                        aria-label={`${item.title}处理状态`}
+                        className={`${inputClass} h-8 w-28 text-xs`}
+                        value={currentQueueState}
+                        onChange={(event) =>
+                          void updateQueueState([item.id], {
+                            state: event.target.value as "open" | "in_progress" | "completed",
+                          })
+                        }
+                      >
+                        <option value="open">待处理</option>
+                        <option value="in_progress">处理中</option>
+                        <option value="completed">已完成</option>
+                      </select>
+                      {state?.labels.map((label) => (
+                        <Badge key={label} tone="info"><Tag size={12} /> {label}</Badge>
+                      ))}
+                      <input
+                        aria-label={`${item.title}新增标签`}
+                        className={`${inputClass} h-8 w-28 text-xs`}
+                        placeholder="新增标签"
+                        value={labelInputs[item.id] ?? ""}
+                        onChange={(event) =>
+                          setLabelInputs((previous) => ({
+                            ...previous,
+                            [item.id]: event.target.value,
+                          }))
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void addLabel(item.id);
+                        }}
+                      />
+                      <button
+                        className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-400 hover:border-cyan-400 hover:text-cyan-200"
+                        onClick={() => void addLabel(item.id)}
+                        type="button"
+                      >
+                        添加标签
+                      </button>
+                    </div>
                   </span>
-                </Link>
-              ))}
+                </div>
+                );
+              })}
             </div>
           ) : (
             <div className="p-12 text-center text-sm text-slate-500">

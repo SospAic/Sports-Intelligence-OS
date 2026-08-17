@@ -282,6 +282,17 @@ def test_generation_api_runs_ten_step_stub_workflow_without_fake_verification(
     assert result["token_usage"]["total_tokens"] > 0
     assert Decimal(str(result["estimated_cost"])) == 0
 
+    evidence = client.get(f"/api/v1/generations/{run_id}/evidence")
+    assert evidence.status_code == 200, evidence.text
+    evidence_payload = evidence.json()
+    assert evidence_payload["contract_version"] == "generation-evidence-v1"
+    assert evidence_payload["run_id"] == str(run_id)
+    assert len(evidence_payload["input_hash"]) == 64
+    assert evidence_payload["evidence_status"] == "unavailable"
+    assert evidence_payload["source_count"] == 0
+    assert evidence_payload["verification_status"] == "verification_incomplete"
+    assert evidence_payload["step_statuses"]
+
     # ── B 组字段完整性验证 ────────────────────────────────────────────────────
     final = result["final_output"]
     tts_len = len(final["tts_en"])

@@ -101,6 +101,9 @@ class SemanticSearchStatus(BaseModel):
     embedded_items: int
     #: 有可嵌文本但尚未索引的内容数。
     pending_items: int
+    latest_embedded_at: datetime | None = None
+    freshness: Literal["fresh", "stale", "empty"]
+    freshness_detail: str
     chunk_kinds: dict[str, int]
 
 

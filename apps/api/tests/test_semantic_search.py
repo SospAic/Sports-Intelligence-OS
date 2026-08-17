@@ -340,6 +340,9 @@ def test_status_reports_index_coverage(client: TestClient, monkeypatch: pytest.M
     assert payload["embedded_items"] == 1
     assert payload["chunk_kinds"] == {"meta": 1, "subtitle": 1}
     assert payload["pending_items"] == 1
+    assert payload["freshness"] == "stale"
+    assert payload["latest_embedded_at"] is not None
+    assert "尚未建立" in payload["freshness_detail"]
     assert pending_id is not None
 
 

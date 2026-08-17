@@ -83,6 +83,10 @@ celery_app.conf.update(
             "task": "app.tasks.news.sync_all_news_sources",
             "schedule": 60.0,
         },
+        "refresh-news-event-lifecycles": {
+            "task": "app.tasks.news.refresh_event_lifecycles",
+            "schedule": 300.0,
+        },
         "dispatch-queued-notifications": {
             "task": "app.tasks.automation.dispatch_queued_notifications",
             "schedule": 5.0,

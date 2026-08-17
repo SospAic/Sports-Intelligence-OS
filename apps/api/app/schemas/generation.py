@@ -240,6 +240,31 @@ class GenerationRunPage(BaseModel):
     total: int
 
 
+class GenerationEvidencePackage(BaseModel):
+    """The frozen, auditable evidence view for one generation run.
+
+    This is deliberately assembled from the run's persisted frozen input and
+    completed workflow steps.  It is not a second source of truth and never
+    claims that an LLM independently verified a fact.
+    """
+
+    contract_version: str = "generation-evidence-v1"
+    run_id: UUID
+    input_hash: str
+    frozen_at: datetime | None
+    source_kind: str
+    verification_status: str
+    evidence_status: Literal["available", "partial", "unavailable"]
+    evidence_detail: str
+    source_count: int = Field(ge=0)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    timeline: list[dict[str, Any]] = Field(default_factory=list)
+    qualification: dict[str, Any] = Field(default_factory=dict)
+    step_statuses: list[dict[str, Any]] = Field(default_factory=list)
+    output_references: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PromptPreviewRequest(GenerationCreate):
     pass
 

@@ -39,6 +39,7 @@ from app.repositories.generation import GenerationRepository
 from app.schemas.generation import (
     GenerationCreate,
     GenerationDecisionUpdate,
+    GenerationEvidencePackage,
     GenerationRunPage,
     GenerationRunRead,
     PromptCollectionCreate,
@@ -466,6 +467,115 @@ class GenerationService:
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> GenerationRunRead:
         return GenerationRunRead.model_validate(await self._run(workspace_id, run_id))
 
+    async def evidence_package(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> GenerationEvidencePackage:
+        """Return the persisted evidence graph for a generation run.
+
+        The package is intentionally read-only and derived only from frozen
+        run input plus step outputs.  Missing sources remain missing instead
+        of being replaced by an LLM answer or an inferred URL.
+        """
+
+        run = await self._run(workspace_id, run_id)
+        frozen = run.input_payload
+        raw_sources = frozen.get("sources", [])
+        sources = (
+            [item for item in raw_sources if isinstance(item, dict)]
+            if isinstance(raw_sources, list)
+            else []
+        )
+        source_ids = {
+            str(item.get("source_id"))
+            for item in sources
+            if item.get("source_id") is not None
+        }
+        research = next((step for step in run.steps if step.step_key == "research_input"), None)
+        facts = next((step for step in run.steps if step.step_key == "normalize_facts"), None)
+        timeline = next((step for step in run.steps if step.step_key == "build_timeline"), None)
+        qualification = next(
+            (step for step in run.steps if step.step_key == "story_qualification"), None
+        )
+
+        facts_output = facts.output_payload if facts else {}
+        timeline_output = timeline.output_payload if timeline else {}
+        qualification_output = qualification.output_payload if qualification else {}
+        claims = facts_output.get("facts", []) if isinstance(facts_output, dict) else []
+        timeline_items = (
+            timeline_output.get("timeline", []) if isinstance(timeline_output, dict) else []
+        )
+        qualification_data = (
+            qualification_output if isinstance(qualification_output, dict) else {}
+        )
+
+        if not sources:
+            evidence_status = "unavailable"
+            evidence_detail = "冻结输入中没有独立来源，核实状态保持为未完成。"
+        elif run.verification_status == "corroborated" and len(source_ids) >= 2:
+            evidence_status = "available"
+            evidence_detail = f"冻结输入中有 {len(sources)} 条来源，且至少两条来源具备不同 source_id。"
+        else:
+            evidence_status = "partial"
+            evidence_detail = f"冻结输入中有 {len(sources)} 条来源，但尚未达到交叉核实条件。"
+
+        output = run.final_output or {}
+        output_references = [
+            {
+                "field": "event_fact_summary",
+                "value": output.get("event_fact_summary"),
+                "evidence_ids": sorted(source_ids),
+            },
+            {
+                "field": "fact_sources",
+                "value": output.get("fact_sources", sources),
+                "evidence_ids": sorted(source_ids),
+            },
+            {
+                "field": "verification_status",
+                "value": output.get("verification_status", run.verification_status),
+                "evidence_ids": sorted(source_ids),
+            },
+        ]
+
+        step_statuses = [
+            {
+                "step_key": step.step_key,
+                "status": step.status,
+                "completed_at": step.completed_at,
+                "source_ids": sorted(
+                    {
+                        str(item.get("source_id"))
+                        for item in (
+                            step.output_payload.get("sources", [])
+                            if isinstance(step.output_payload, dict)
+                            else []
+                        )
+                        if isinstance(item, dict) and item.get("source_id") is not None
+                    }
+                ),
+            }
+            for step in sorted(run.steps, key=lambda item: item.sort_order)
+        ]
+
+        return GenerationEvidencePackage(
+            run_id=run.id,
+            input_hash=run.input_hash,
+            frozen_at=self._parse_frozen_at(frozen.get("frozen_at")),
+            source_kind=str(
+                frozen.get("source_kind") or run.run_metadata.get("source_kind") or "unknown"
+            ),
+            verification_status=run.verification_status,
+            evidence_status=evidence_status,
+            evidence_detail=evidence_detail,
+            source_count=len(sources),
+            sources=sources,
+            claims=claims if isinstance(claims, list) else [],
+            timeline=timeline_items if isinstance(timeline_items, list) else [],
+            qualification=qualification_data,
+            step_statuses=step_statuses,
+            output_references=output_references,
+        )
+
     async def update_decision(
         self,
         workspace_id: UUID,
@@ -483,6 +593,17 @@ class GenerationService:
         )
         await self.session.commit()
         return GenerationRunRead.model_validate(await self._run(workspace_id, run.id))
+
+    @staticmethod
+    def _parse_frozen_at(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     async def clone_for_manual_rewrite(
         self,
