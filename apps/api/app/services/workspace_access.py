@@ -11,11 +11,15 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.monitoring import Account
 from app.models.operations import AuditEntry
 from app.models.user import User
 from app.models.workspace import WorkspaceMembership
+from app.models.workspace_account_grant import WorkspaceAccountGrant
 from app.models.workspace_invitation import WorkspaceInvitation
 from app.schemas.auth import (
+    WorkspaceAccountGrantCreate,
+    WorkspaceAccountGrantRead,
     WorkspaceInvitationAccept,
     WorkspaceInvitationCreate,
     WorkspaceInvitationCreateResponse,
@@ -238,6 +242,126 @@ class WorkspaceAccessService:
         await self.session.commit()
         return await self._member_read(workspace_id, member_id)
 
+    async def list_account_grants(
+        self, workspace_id: UUID, account_id: UUID | None = None
+    ) -> list[WorkspaceAccountGrantRead]:
+        statement = select(WorkspaceAccountGrant).where(
+            WorkspaceAccountGrant.workspace_id == workspace_id
+        )
+        if account_id is not None:
+            statement = statement.where(WorkspaceAccountGrant.account_id == account_id)
+        rows = list(
+            (
+                await self.session.scalars(
+                    statement.order_by(WorkspaceAccountGrant.created_at)
+                )
+            ).all()
+        )
+        return [self._grant_read(item) for item in rows]
+
+    async def create_account_grant(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        payload: WorkspaceAccountGrantCreate,
+    ) -> WorkspaceAccountGrantRead:
+        account = await self.session.scalar(
+            select(Account).where(
+                Account.id == payload.account_id,
+                Account.workspace_id == workspace_id,
+            )
+        )
+        if account is None:
+            raise WorkspaceAccessError(
+                "账号不存在或不属于当前工作区",
+                code="account_not_found",
+                status_code=404,
+            )
+        membership = await self.session.scalar(
+            select(WorkspaceMembership).where(
+                WorkspaceMembership.workspace_id == workspace_id,
+                WorkspaceMembership.user_id == payload.user_id,
+                WorkspaceMembership.status == "active",
+            )
+        )
+        if membership is None:
+            raise WorkspaceAccessError(
+                "目标用户不是当前工作区的活跃成员",
+                code="workspace_member_not_found",
+                status_code=404,
+            )
+        if membership.role in {"owner", "admin"}:
+            raise WorkspaceAccessError(
+                "所有者和管理员不需要账号级授权",
+                code="account_grant_not_required",
+                status_code=409,
+            )
+        existing = await self.session.scalar(
+            select(WorkspaceAccountGrant).where(
+                WorkspaceAccountGrant.workspace_id == workspace_id,
+                WorkspaceAccountGrant.account_id == payload.account_id,
+                WorkspaceAccountGrant.user_id == payload.user_id,
+            )
+        )
+        if existing is not None:
+            existing.permission = payload.permission
+            existing.updated_at = datetime.now(UTC)
+            self._audit(
+                workspace_id,
+                actor_id,
+                "workspace_account_grant.updated",
+                existing.id,
+                {
+                    "account_id": str(payload.account_id),
+                    "user_id": str(payload.user_id),
+                    "permission": payload.permission,
+                },
+            )
+            await self.session.commit()
+            return self._grant_read(existing)
+        now = datetime.now(UTC)
+        grant = WorkspaceAccountGrant(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            account_id=payload.account_id,
+            user_id=payload.user_id,
+            permission=payload.permission,
+            created_by=actor_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(grant)
+        self._audit(
+            workspace_id,
+            actor_id,
+            "workspace_account_grant.created",
+            grant.id,
+            {
+                "account_id": str(payload.account_id),
+                "user_id": str(payload.user_id),
+                "permission": payload.permission,
+            },
+        )
+        await self.session.commit()
+        return self._grant_read(grant)
+
+    async def revoke_account_grant(
+        self, workspace_id: UUID, grant_id: UUID, actor_id: UUID
+    ) -> None:
+        grant = await self.session.scalar(
+            select(WorkspaceAccountGrant).where(
+                WorkspaceAccountGrant.workspace_id == workspace_id,
+                WorkspaceAccountGrant.id == grant_id,
+            )
+        )
+        if grant is None:
+            raise WorkspaceAccessError(
+                "账号级授权不存在", code="account_grant_not_found", status_code=404
+            )
+        await self.session.delete(grant)
+        self._audit(workspace_id, actor_id, "workspace_account_grant.revoked", grant.id)
+        await self.session.commit()
+
     async def _member_read(self, workspace_id: UUID, user_id: UUID) -> WorkspaceMemberRead:
         row = await self.session.execute(
             select(WorkspaceMembership, User)
@@ -326,6 +450,85 @@ class WorkspaceAccessService:
             updated_at=invitation.updated_at,
         )
 
+    @staticmethod
+    def _grant_read(grant: WorkspaceAccountGrant) -> WorkspaceAccountGrantRead:
+        return WorkspaceAccountGrantRead(
+            id=grant.id,
+            workspace_id=grant.workspace_id,
+            account_id=grant.account_id,
+            user_id=grant.user_id,
+            permission=cast(Literal["viewer", "editor"], grant.permission),
+            created_by=grant.created_by,
+            created_at=grant.created_at,
+            updated_at=grant.updated_at,
+        )
+
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+async def account_scope(
+    session: AsyncSession,
+    workspace_id: UUID,
+    user_id: UUID,
+    role: str,
+) -> set[UUID] | None:
+    """Return explicit account scope, or ``None`` for unrestricted access.
+
+    Owners/admins bypass account grants. For backwards compatibility, a
+    non-admin with no grants keeps the existing workspace-wide role access;
+    adding the first grant for a user opts that user into explicit scoping.
+    """
+
+    if role in {"owner", "admin"}:
+        return None
+    ids = list(
+        (
+            await session.scalars(
+                select(WorkspaceAccountGrant.account_id).where(
+                    WorkspaceAccountGrant.workspace_id == workspace_id,
+                    WorkspaceAccountGrant.user_id == user_id,
+                )
+            )
+        ).all()
+    )
+    return set(ids) if ids else None
+
+
+async def require_account_access(
+    session: AsyncSession,
+    workspace_id: UUID,
+    user_id: UUID,
+    role: str,
+    account_id: UUID,
+    *,
+    require_editor: bool = False,
+) -> None:
+    if role in {"owner", "admin"}:
+        return
+    grants = list(
+        (
+            await session.scalars(
+                select(WorkspaceAccountGrant).where(
+                    WorkspaceAccountGrant.workspace_id == workspace_id,
+                    WorkspaceAccountGrant.user_id == user_id,
+                )
+            )
+        ).all()
+    )
+    if not grants:
+        return
+    grant = next((item for item in grants if item.account_id == account_id), None)
+    if grant is None:
+        raise WorkspaceAccessError(
+            "当前成员没有该账号的访问权限",
+            code="account_access_denied",
+            status_code=403,
+        )
+    if require_editor and grant.permission != "editor":
+        raise WorkspaceAccessError(
+            "当前成员只有该账号的只读权限",
+            code="account_write_denied",
+            status_code=403,
+        )

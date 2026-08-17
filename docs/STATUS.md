@@ -2060,10 +2060,17 @@ explicitly enable it.
 - 规则中心新增 `POST /api/v1/rules/{rule_set_id}/versions/{version_id}/simulate`：按显式运动项目、故事类型、输出类型筛选适用规则，保留输入上下文、版本号和源文件 SHA-256；明确返回 `execution_state=not_executed`，不调用模型、不写生成运行、不把规则文本判断冒充事实或 QA 结果。
 - 新增 `GET .../simulations`、`GET .../simulations/{simulation_id}` 历史回放，以及 `POST .../simulations/{simulation_id}/rules/{rule_id}/feedback` 人工反馈；迁移 `20260817_0010_rule_simulations`，前端规则版本页已提供模拟、历史和反馈入口。
 - 新增工作区成员邀请：管理员/所有者创建一次性明文令牌（数据库只存 SHA-256）、列表/撤销，受邀用户登录后按邮箱匹配接受；支持成员角色更新与停用，所有动作写入审计。迁移 `20260817_0011_workspace_invitations`、`20260817_0012_invitation_pending_index`。
-- 验证：规则与邀请目标集成测试 `13 passed`；完整后端回归 `654 passed, 6 deselected, 1 warning`；Ruff、mypy `227 source files`、Alembic `20260817_0012 (head)` 与 `alembic check` 均通过；Web ESLint、TypeScript、Vitest `25 files / 81 tests`、生产构建均通过；Compose API/Worker/Beat/Web 已更新且健康，API live/ready、Web 登录/规则入口返回 200，未登录业务 API 返回 401。频道/账号级权限、真实邮件/通知发送和外部平台发布仍需后续授权/Adapter，不以邀请接口冒充已完成。
+- 验证：规则与邀请目标集成测试 `13 passed`；完整后端回归 `654 passed, 6 deselected, 1 warning`；Ruff、mypy `227 source files`、Alembic `20260817_0012 (head)` 与 `alembic check` 均通过；Web ESLint、TypeScript、Vitest `25 files / 81 tests`、生产构建均通过；Compose API/Worker/Beat/Web 已更新且健康，API live/ready、Web 登录/规则入口返回 200，未登录业务 API 返回 401。频道级/发布资源权限、真实邮件/通知发送和外部平台发布仍需后续授权/Adapter，不以邀请接口冒充已完成。
 
 ## 2026-08-17 最终部署门禁与剩余阻断
 
-- 最终四镜像构建：`docker compose build api worker beat web` 成功；后续模型约束排版修复后的 API/Worker/Beat 缓存重建及部署也成功。未执行 `docker compose down -v`、删除卷或清空数据库。
-- 最终迁移为 `20260817_0012 (head)`；`alembic upgrade head` 与 `alembic check` 通过。唯一发现的反馈 CHECK 约束模型漂移已补齐并重新构建验证；仅保留 pgvector 类型识别警告，不产生新升级操作。
-- 当前仍未闭环的事项：真实平台/新闻/LLM/通知凭证 canary、频道/账号级权限、授权 Analytics 的随机 A/B/因果分析、正式发布 Adapter、关键帧/多模态索引，以及约 36 GB 派生指标历史的备份后分批治理。它们分别需要外部凭证、平台授权、真实媒体/分析数据或备份存储与维护窗口，不能用 Mock 或估算值标记完成。
+- 最终四镜像构建：`docker compose build api worker beat web` 成功；账号授权写边界补充后 API/Worker/Beat 也已重新构建并通过 Compose 更新。未执行 `docker compose down -v`、删除卷或清空数据库。
+- 当前迁移为 `20260817_0013 (head)`；`alembic upgrade head` 与 `alembic check` 通过。仅保留 pgvector 类型识别警告，不产生新升级操作。
+- 当前仍未闭环的事项：真实平台/新闻/LLM/通知凭证 canary、频道级/发布资源权限、授权 Analytics 的随机 A/B/因果分析、正式发布 Adapter、关键帧/多模态索引，以及约 36 GB 派生指标历史的备份后分批治理。它们分别需要外部凭证、平台授权、真实媒体/分析数据或备份存储与维护窗口，不能用 Mock 或估算值标记完成。
+
+## 2026-08-17 账号级授权闭环
+
+- 新增 `workspace_account_grants` 和迁移 `20260817_0013_workspace_account_grants`，支持管理员/所有者向工作区成员授予单个账号的 `viewer` / `editor` 范围；创建、更新、撤销均写入审计。
+- 非管理员成员没有显式授权时保持旧的工作区角色兼容；成员一旦拥有授权记录，账号列表、账号详情、快照/指标/同步记录、作品列表/详情/评论等接口均按授权账号过滤或返回标准 `account_access_denied`，管理员/所有者绕过该层。
+- 设置中心新增 owner/admin 可见的“账号授权”面板，支持选择账号、成员和 viewer/editor 权限，以及撤销授权；viewer 写操作返回 `account_write_denied`，发布记录同样按账号范围保护。
+- 验证：后端受影响集成回归 `32 passed`；Web Vitest `25 files / 81 tests`、ESLint 和 TypeScript 通过；Ruff、mypy `228 source files`、Alembic `20260817_0013 (head)` 与 `alembic check` 通过；API/Worker/Beat/Web 镜像已重建并更新，API live/ready 与代理 `/login`、`/settings` 返回 200。频道级/发布资源权限与真实发布 Adapter 仍未完成。

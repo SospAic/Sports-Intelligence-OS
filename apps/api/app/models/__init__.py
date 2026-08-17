@@ -74,6 +74,7 @@ from app.models.user import User
 from app.models.video_search import VideoSearchCandidate, VideoSearchPlan, VideoSearchRun
 from app.models.view_preference import UserViewPreference
 from app.models.workspace import Workspace, WorkspaceMembership
+from app.models.workspace_account_grant import WorkspaceAccountGrant
 from app.models.workspace_invitation import WorkspaceInvitation
 
 __all__ = [
@@ -155,6 +156,7 @@ __all__ = [
     "VideoSearchPlan",
     "VideoSearchRun",
     "Workspace",
+    "WorkspaceAccountGrant",
     "WorkspaceMembership",
     "WorkspaceInvitation",
     "encode_vector",

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.editorial import EditorialItem
 from app.models.generation import GenerationRun
-from app.models.monitoring import ContentItem, ContentSnapshot
+from app.models.monitoring import Account, ContentItem, ContentSnapshot
 from app.models.publication import PerformanceAttribution, Publication
 from app.schemas.publication import (
     AttributionRefreshResponse,
@@ -76,12 +76,18 @@ class PublicationService:
         page_size: int,
         status: str | None = None,
         content_item_id: UUID | None = None,
+        account_ids: set[UUID] | None = None,
     ) -> PublicationPage:
         conditions = [Publication.workspace_id == workspace_id]
         if status:
             conditions.append(Publication.status == status)
         if content_item_id:
             conditions.append(Publication.content_item_id == content_item_id)
+        if account_ids is not None:
+            conditions.append(
+                (Publication.account_id.is_(None))
+                | Publication.account_id.in_(account_ids)
+            )
         rows = list(
             (
                 await self.session.scalars(
@@ -120,6 +126,7 @@ class PublicationService:
         generation_run = await self._get_generation(workspace_id, payload.generation_run_id)
         editorial_item = await self._get_editorial(workspace_id, payload.editorial_item_id)
         content_item = await self._get_content(workspace_id, payload.content_item_id)
+        account = await self._get_account(workspace_id, payload.account_id)
         if editorial_item is not None:
             if generation_run is not None and editorial_item.generation_run_id != generation_run.id:
                 raise PublicationConflict("审核条目与生成运行不匹配", "publication_source_mismatch")
@@ -136,7 +143,7 @@ class PublicationService:
             account_id: UUID | None = content_item.account_id
         else:
             platform_id = payload.platform_id
-            account_id = payload.account_id
+            account_id = account.id if account is not None else None
 
         self._validate_status_fields(
             payload.status, payload.published_at, payload.external_id, payload.canonical_url
@@ -214,6 +221,7 @@ class PublicationService:
                 "发布关联作品创建后不可更换，请新建发布记录", "publication_content_immutable"
             )
         if "account_id" in changes or "platform_id" in changes:
+            account = await self._get_account(workspace_id, changes.get("account_id"))
             content = await self._get_content(workspace_id, publication.content_item_id)
             if content is not None:
                 account_id = changes.get("account_id", publication.account_id)
@@ -222,6 +230,8 @@ class PublicationService:
                     raise PublicationConflict(
                         "已关联作品的账号和平台不能改为不匹配的对象", "publication_source_mismatch"
                     )
+            elif "account_id" in changes:
+                publication.account_id = account.id if account is not None else None
         for field, value in changes.items():
             if field == "metadata":
                 publication.metadata_json = value
@@ -372,6 +382,19 @@ class PublicationService:
         )
         if item is None:
             raise PublicationNotFound("监控作品不存在或不属于当前工作区")
+        return item
+
+    async def _get_account(self, workspace_id: UUID, account_id: UUID | None) -> Account | None:
+        if account_id is None:
+            return None
+        item = await self.session.scalar(
+            select(Account).where(
+                Account.workspace_id == workspace_id,
+                Account.id == account_id,
+            )
+        )
+        if item is None:
+            raise PublicationNotFound("账号不存在或不属于当前工作区")
         return item
 
     async def _list_attributions(self, publication: Publication) -> list[PerformanceAttribution]:

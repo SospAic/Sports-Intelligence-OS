@@ -26,6 +26,7 @@ class AccountFilters:
     platform: str | None = None
     query: str | None = None
     is_active: bool | None = None
+    account_ids: set[UUID] | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ContentFilters:
     max_views: int | None = None
     query: str | None = None
     tags: list[str] | None = None
+    account_ids: set[UUID] | None = None
 
 
 AccountRow = tuple[Account, AccountSnapshot | None, Any]
@@ -70,6 +72,8 @@ class MonitoringRepository:
 
     def _account_conditions(self, workspace_id: UUID, filters: AccountFilters) -> list[Any]:
         conditions: list[Any] = [Account.workspace_id == workspace_id]
+        if filters.account_ids is not None:
+            conditions.append(Account.id.in_(filters.account_ids))
         if filters.platform:
             conditions.append(Platform.key == filters.platform.casefold())
         if filters.is_active is not None:
@@ -246,6 +250,8 @@ class MonitoringRepository:
         filters: ContentFilters,
     ) -> list[Any]:
         conditions: list[Any] = [ContentItem.workspace_id == workspace_id]
+        if filters.account_ids is not None:
+            conditions.append(ContentItem.account_id.in_(filters.account_ids))
         if filters.platform:
             conditions.append(Platform.key == filters.platform.casefold())
         if filters.account:
@@ -335,13 +341,17 @@ class MonitoringRepository:
         total = int((await self._session.scalar(count_statement)) or 0)
         return [(row[0], row[1], row[2]) for row in result.all()], total
 
-    async def list_content_tags(self, workspace_id: UUID) -> list[str]:
+    async def list_content_tags(
+        self, workspace_id: UUID, account_ids: set[UUID] | None = None
+    ) -> list[str]:
         """Distinct, sorted tags across a workspace's contents (for the filter)."""
         statement = (
             select(func.distinct(func.unnest(ContentItem.tags)))
             .where(ContentItem.workspace_id == workspace_id)
             .where(ContentItem.tags.isnot(None))
         )
+        if account_ids is not None:
+            statement = statement.where(ContentItem.account_id.in_(account_ids))
         result = await self._session.execute(statement)
         return sorted(tag for (tag,) in result.all() if tag)
 

@@ -111,6 +111,8 @@
 | DELETE | `/workspaces/{wid}/connections/{id}` | 软删除/依赖检查，写审计 |
 | GET | `/providers` | 可用 Provider 描述和能力，不含秘密 |
 
+当前兼容入口还提供账号级范围授权：`GET/POST /api/v1/workspace-account-grants` 与 `DELETE /api/v1/workspace-account-grants/{grant_id}`，仅 owner/admin 可管理并要求 CSRF。详见 [`WORKSPACE_ACCOUNT_ACCESS.md`](WORKSPACE_ACCOUNT_ACCESS.md)。
+
 Connection 返回 `secret_configured`、验证状态、能力和掩码，不返回密文或 secret ref。
 
 ## 7. 平台账号、作品与同步

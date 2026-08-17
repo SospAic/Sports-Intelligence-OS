@@ -753,9 +753,11 @@ class MonitoringService:
             total=total,
         )
 
-    async def list_content_tags(self, workspace_id: UUID) -> list[str]:
+    async def list_content_tags(
+        self, workspace_id: UUID, account_ids: set[UUID] | None = None
+    ) -> list[str]:
         """Distinct tags across the workspace's works, for the filter control."""
-        return await self._repository.list_content_tags(workspace_id)
+        return await self._repository.list_content_tags(workspace_id, account_ids)
 
     async def list_content_comments(
         self, workspace_id: UUID, content_item_id: UUID, limit: int = 20

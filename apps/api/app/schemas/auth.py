@@ -79,6 +79,23 @@ class WorkspaceInvitationAccept(BaseModel):
     token: str = Field(min_length=32, max_length=256)
 
 
+class WorkspaceAccountGrantCreate(BaseModel):
+    account_id: UUID
+    user_id: UUID
+    permission: Literal["viewer", "editor"] = "viewer"
+
+
+class WorkspaceAccountGrantRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    account_id: UUID
+    user_id: UUID
+    permission: Literal["viewer", "editor"]
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
 class CurrentUserResponse(BaseModel):
     user: UserSummary
     memberships: list[WorkspaceMembershipSummary]

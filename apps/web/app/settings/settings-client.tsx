@@ -49,6 +49,7 @@ import { SyncSettingsPanel } from "./sync-settings-panel";
 import { SemanticSearchSettingsPanel } from "./semantic-search-settings-panel";
 import { StorageLifecyclePanel } from "./storage-lifecycle-panel";
 import { SubscriptionsPanel } from "./subscriptions-panel";
+import { AccountAccessPanel } from "./account-access-panel";
 
 type SourcePage = {
   items: NewsSourceRecord[];
@@ -76,7 +77,8 @@ type SettingsTab =
   | "search"
   | "subtitles"
   | "storage"
-  | "subscriptions";
+  | "subscriptions"
+  | "access";
 
 const TABS: Array<{
   key: SettingsTab;
@@ -91,6 +93,7 @@ const TABS: Array<{
   { key: "search", label: "语义检索", icon: Database },
   { key: "storage", label: "存储治理", icon: HardDrive },
   { key: "subscriptions", label: "订阅告警", icon: Bell },
+  { key: "access", label: "账号授权", icon: KeyRound },
   { key: "notifications", label: "通知 Provider", icon: Send },
   { key: "sources", label: "新闻源", icon: Newspaper },
 ];
@@ -113,6 +116,7 @@ export function SettingsClient() {
       "subtitles",
       "storage",
       "subscriptions",
+      "access",
     ].includes(initialTab)
       ? initialTab
       : "overview",
@@ -296,7 +300,7 @@ export function SettingsClient() {
         aria-label="设置分类"
         className="flex gap-2 overflow-x-auto border-b border-slate-800 pb-3"
       >
-        {TABS.map((item) => {
+        {TABS.filter((item) => item.key !== "access" || ["owner", "admin"].includes(role ?? "")).map((item) => {
           const Icon = item.icon;
           return (
             <button
@@ -734,6 +738,9 @@ export function SettingsClient() {
         <StorageLifecyclePanel workspaceId={workspaceId} role={role} />
       )}
       {tab === "subscriptions" && <SubscriptionsPanel />}
+      {tab === "access" && workspaceId && ["owner", "admin"].includes(role ?? "") && (
+        <AccountAccessPanel workspaceId={workspaceId} />
+      )}
     </main>
   );
 }

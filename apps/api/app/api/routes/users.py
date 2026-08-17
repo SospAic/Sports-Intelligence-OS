@@ -16,6 +16,8 @@ from app.models.workspace import WorkspaceMembership
 from app.schemas.auth import (
     CurrentUserResponse,
     UserSummary,
+    WorkspaceAccountGrantCreate,
+    WorkspaceAccountGrantRead,
     WorkspaceInvitationAccept,
     WorkspaceInvitationCreate,
     WorkspaceInvitationCreateResponse,
@@ -152,6 +154,54 @@ async def update_workspace_member(
     try:
         return await WorkspaceAccessService(db).update_member(
             workspace.workspace_id, member_id, auth.user.id, payload
+        )
+    except WorkspaceAccessError as exc:
+        raise _access_error(exc) from exc
+
+
+@router.get("/workspace-account-grants", response_model=list[WorkspaceAccountGrantRead])
+async def workspace_account_grants(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    account_id: UUID | None = None,
+) -> list[WorkspaceAccountGrantRead]:
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await WorkspaceAccessService(db).list_account_grants(
+        workspace.workspace_id, account_id
+    )
+
+
+@router.post(
+    "/workspace-account-grants",
+    response_model=WorkspaceAccountGrantRead,
+    status_code=201,
+)
+async def create_workspace_account_grant(
+    payload: WorkspaceAccountGrantCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> WorkspaceAccountGrantRead:
+    require_workspace_role(workspace, {"owner", "admin"})
+    try:
+        return await WorkspaceAccessService(db).create_account_grant(
+            workspace.workspace_id, auth.user.id, payload
+        )
+    except WorkspaceAccessError as exc:
+        raise _access_error(exc) from exc
+
+
+@router.delete("/workspace-account-grants/{grant_id}", status_code=204)
+async def revoke_workspace_account_grant(
+    grant_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> None:
+    require_workspace_role(workspace, {"owner", "admin"})
+    try:
+        await WorkspaceAccessService(db).revoke_account_grant(
+            workspace.workspace_id, grant_id, auth.user.id
         )
     except WorkspaceAccessError as exc:
         raise _access_error(exc) from exc
