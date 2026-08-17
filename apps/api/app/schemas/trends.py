@@ -81,10 +81,15 @@ class TrendAggregateItem(BaseModel):
     platform: str
     category: str
     title: str
-    kind: str  # "topic" | "video"
+    kind: str  # "opportunity" (topic/video representations are grouped)
     metric: float
     metric_label: str
     observed_at: datetime
+    cluster_key: str | None = None
+    platforms: list[str] = Field(default_factory=list)
+    representation_count: int = 1
+    stage: str = "peaking"
+    aggregation_note: str | None = None
 
 
 class TrendAggregate(BaseModel):
@@ -97,6 +102,8 @@ class TrendAggregate(BaseModel):
     unique_topics: int = 0
     raw_video_observations: int = 0
     unique_videos: int = 0
+    unique_opportunities: int = 0
+    opportunity_cluster_algorithm: str = "opportunity-cluster-v1"
     platforms: list[str]
     categories: list[str]
     # 趋势时间线: 每天每平台的累计热度

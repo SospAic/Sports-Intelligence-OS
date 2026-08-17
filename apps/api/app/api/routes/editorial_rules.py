@@ -24,6 +24,11 @@ from app.schemas.editorial_rules import (
     RuleSetPage,
     RuleSetRead,
     RuleSetVersionRead,
+    RuleSimulationFeedbackCreate,
+    RuleSimulationFeedbackRead,
+    RuleSimulationPage,
+    RuleSimulationRead,
+    RuleSimulationRequest,
     RuleTreeRead,
     RuleUpdate,
     ValidationResultRead,
@@ -286,6 +291,88 @@ async def validate_version(
 ) -> ValidationResultRead:
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     return await service(db).validate_version(workspace.workspace_id, rule_set_id, version_id)
+
+
+@router.post(
+    "/{rule_set_id}/versions/{version_id}/simulate",
+    response_model=RuleSimulationRead,
+    status_code=201,
+)
+async def simulate_version(
+    rule_set_id: UUID,
+    version_id: UUID,
+    payload: RuleSimulationRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> RuleSimulationRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(db).simulate(
+        workspace.workspace_id, rule_set_id, version_id, auth.user.id, payload
+    )
+
+
+@router.get(
+    "/{rule_set_id}/versions/{version_id}/simulations",
+    response_model=RuleSimulationPage,
+)
+async def list_simulations(
+    rule_set_id: UUID,
+    version_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> RuleSimulationPage:
+    return await service(db).list_simulations(
+        workspace.workspace_id,
+        rule_set_id,
+        version_id,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/{rule_set_id}/versions/{version_id}/simulations/{simulation_id}",
+    response_model=RuleSimulationRead,
+)
+async def get_simulation(
+    rule_set_id: UUID,
+    version_id: UUID,
+    simulation_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> RuleSimulationRead:
+    return await service(db).get_simulation(
+        workspace.workspace_id, rule_set_id, version_id, simulation_id
+    )
+
+
+@router.post(
+    "/{rule_set_id}/versions/{version_id}/simulations/{simulation_id}/rules/{rule_id}/feedback",
+    response_model=RuleSimulationFeedbackRead,
+)
+async def submit_simulation_feedback(
+    rule_set_id: UUID,
+    version_id: UUID,
+    simulation_id: UUID,
+    rule_id: UUID,
+    payload: RuleSimulationFeedbackCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> RuleSimulationFeedbackRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(db).feedback(
+        workspace.workspace_id,
+        rule_set_id,
+        version_id,
+        simulation_id,
+        rule_id,
+        auth.user.id,
+        payload,
+    )
 
 
 @router.post("/{rule_set_id}/versions/{version_id}/publish", response_model=RuleSetVersionRead)

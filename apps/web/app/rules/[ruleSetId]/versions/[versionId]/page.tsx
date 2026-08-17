@@ -4,6 +4,7 @@ import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { getRuleTree, getRuleVersion } from "@/lib/rules";
 import { RuleVersionViewer } from "./rule-version-viewer";
+import { RuleSimulator } from "./rule-simulator";
 import { VersionLifecycle } from "./version-lifecycle";
 import { BackButton } from "@/components/back-button";
 
@@ -56,6 +57,11 @@ export default async function RuleVersionPage({
           ruleSetId={ruleSetId}
           tree={tree}
           version={version}
+          versionId={versionId}
+          workspaceId={workspace.workspace_id}
+        />
+        <RuleSimulator
+          ruleSetId={ruleSetId}
           versionId={versionId}
           workspaceId={workspace.workspace_id}
         />

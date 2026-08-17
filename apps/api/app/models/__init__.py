@@ -57,6 +57,7 @@ from app.models.operations import (
     TaskRun,
 )
 from app.models.publication import PerformanceAttribution, Publication
+from app.models.rule_simulation import RuleSimulationFeedback, RuleSimulationRun
 from app.models.session import AuthSession, LoginAttempt
 from app.models.settings import (
     LLMProviderSetting,
@@ -73,6 +74,7 @@ from app.models.user import User
 from app.models.video_search import VideoSearchCandidate, VideoSearchPlan, VideoSearchRun
 from app.models.view_preference import UserViewPreference
 from app.models.workspace import Workspace, WorkspaceMembership
+from app.models.workspace_invitation import WorkspaceInvitation
 
 __all__ = [
     "Account",
@@ -123,6 +125,8 @@ __all__ = [
     "Platform",
     "PerformanceAttribution",
     "Publication",
+    "RuleSimulationFeedback",
+    "RuleSimulationRun",
     "PlatformCredentialSetting",
     "RuntimeSettingOverride",
     "SyncSettings",
@@ -152,5 +156,6 @@ __all__ = [
     "VideoSearchRun",
     "Workspace",
     "WorkspaceMembership",
+    "WorkspaceInvitation",
     "encode_vector",
 ]

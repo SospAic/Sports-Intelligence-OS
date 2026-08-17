@@ -2047,3 +2047,23 @@ explicitly enable it.
 - 新增派生指标时间桶（默认 1 小时），同一实体/指标/窗口在同一桶内重复计算会先替换该桶记录；新增每日清理任务和 30 天保留配置，清理默认禁用且 dry-run，避免未经授权删除历史。
 - 修复 `scripts/backup_restore_drill.py` 的大文件处理，PostgreSQL dump、媒体归档和 restore 均改为流式 I/O。实测完整 dump 因当前数据库体量持续增长，已在约 1.1 GB 临时文件阶段主动停止；没有修改应用卷、没有删除业务数据库，完整生产恢复仍为 BLOCKED（需足够临时磁盘/备份存储和维护授权）。本轮创建的临时探针文件已清理。
 - 详细策略见 `docs/DERIVED_METRICS_LIFECYCLE.md`。下一步应在用户确认保留窗口、备份可用且有维护窗口后，执行 dry-run 审核，再分批治理历史指标；未获确认前不执行删除。
+
+## 2026-08-17 热点榜单同题机会聚合
+
+- `GET /api/v1/trends/aggregate` 现在将真实 `TrendTopic` 与 `TrendVideo` 的最新观察投影为“同题机会”榜单；相同或高度相似标题，以及同时满足实体重叠/标题相似阈值的呈现只占一个榜位。
+- 同题机会分数取各真实呈现中的最大热度/爆发分，不跨平台相加；平台指数和分类矩阵在每个机会/平台/分类单元只累计一次。响应增加 `unique_opportunities`、`cluster_key`、`platforms`、`representation_count` 和阶段字段。
+- 阶段按可用真实增长率与观察新鲜度标记为 `emerging`、`accelerating`、`peaking` 或 `declining`；没有增长率的作品不会被伪造增长值。该投影明确是运营机会聚合，不是自动确认的事实事件。
+- 新增跨平台同题、同平台多呈现、分数不重复累加的集成测试；指标口径已登记在 `docs/METRIC_CATALOG.md`。外部凭证 canary、规范跨语言实体确认和完整恢复仍保持未完成。
+
+## 2026-08-17 规则模拟与工作区成员邀请
+
+- 规则中心新增 `POST /api/v1/rules/{rule_set_id}/versions/{version_id}/simulate`：按显式运动项目、故事类型、输出类型筛选适用规则，保留输入上下文、版本号和源文件 SHA-256；明确返回 `execution_state=not_executed`，不调用模型、不写生成运行、不把规则文本判断冒充事实或 QA 结果。
+- 新增 `GET .../simulations`、`GET .../simulations/{simulation_id}` 历史回放，以及 `POST .../simulations/{simulation_id}/rules/{rule_id}/feedback` 人工反馈；迁移 `20260817_0010_rule_simulations`，前端规则版本页已提供模拟、历史和反馈入口。
+- 新增工作区成员邀请：管理员/所有者创建一次性明文令牌（数据库只存 SHA-256）、列表/撤销，受邀用户登录后按邮箱匹配接受；支持成员角色更新与停用，所有动作写入审计。迁移 `20260817_0011_workspace_invitations`、`20260817_0012_invitation_pending_index`。
+- 验证：规则与邀请目标集成测试 `13 passed`；完整后端回归 `654 passed, 6 deselected, 1 warning`；Ruff、mypy `227 source files`、Alembic `20260817_0012 (head)` 与 `alembic check` 均通过；Web ESLint、TypeScript、Vitest `25 files / 81 tests`、生产构建均通过；Compose API/Worker/Beat/Web 已更新且健康，API live/ready、Web 登录/规则入口返回 200，未登录业务 API 返回 401。频道/账号级权限、真实邮件/通知发送和外部平台发布仍需后续授权/Adapter，不以邀请接口冒充已完成。
+
+## 2026-08-17 最终部署门禁与剩余阻断
+
+- 最终四镜像构建：`docker compose build api worker beat web` 成功；后续模型约束排版修复后的 API/Worker/Beat 缓存重建及部署也成功。未执行 `docker compose down -v`、删除卷或清空数据库。
+- 最终迁移为 `20260817_0012 (head)`；`alembic upgrade head` 与 `alembic check` 通过。唯一发现的反馈 CHECK 约束模型漂移已补齐并重新构建验证；仅保留 pgvector 类型识别警告，不产生新升级操作。
+- 当前仍未闭环的事项：真实平台/新闻/LLM/通知凭证 canary、频道/账号级权限、授权 Analytics 的随机 A/B/因果分析、正式发布 Adapter、关键帧/多模态索引，以及约 36 GB 派生指标历史的备份后分批治理。它们分别需要外部凭证、平台授权、真实媒体/分析数据或备份存储与维护窗口，不能用 Mock 或估算值标记完成。

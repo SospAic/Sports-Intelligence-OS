@@ -34,6 +34,7 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 PLATFORM_LABELS.web = "全网新闻";
+PLATFORM_LABELS.cross_platform = "跨平台";
 
 const PLATFORM_COLORS: Record<string, string> = {
   youtube: "#ef4444",
@@ -53,6 +54,11 @@ type AggItem = {
   metric: number;
   metric_label: string;
   observed_at: string;
+  cluster_key?: string | null;
+  platforms: string[];
+  representation_count: number;
+  stage: string;
+  aggregation_note?: string | null;
 };
 
 type Agg = {
@@ -63,6 +69,8 @@ type Agg = {
   unique_topics: number;
   raw_video_observations: number;
   unique_videos: number;
+  unique_opportunities: number;
+  opportunity_cluster_algorithm: string;
   platforms: string[];
   categories: string[];
   timeline: { date: string; platform: string; heat: number }[];
@@ -77,6 +85,15 @@ const MODES: { key: string; label: string; hint: string }[] = [
   { key: "index", label: "指数对比", hint: "参考微信/百度指数：各平台热度归一化对比" },
   { key: "matrix", label: "热度矩阵", hint: "参考 Sports-OS：平台 × 分类 热度矩阵" },
 ];
+
+function stageLabel(stage: string): string {
+  return {
+    emerging: "新出现",
+    accelerating: "加速中",
+    peaking: "高位",
+    declining: "降温中",
+  }[stage] ?? "未知阶段";
+}
 
 export function AnalyticsClient() {
   const { workspaceId } = useWorkspace();
@@ -262,7 +279,7 @@ export function AnalyticsClient() {
           <p className="mb-4 text-[11px] text-slate-600">
             数据范围：{data.source_scope === "live" ? "实时来源" : data.source_scope} · 已按平台与实体去重：
             {data.unique_topics} 个话题（{data.raw_topic_observations} 条观测）· {data.unique_videos} 个视频/资讯实体（
-            {data.raw_video_observations} 条观测）
+            {data.raw_video_observations} 条观测）· {data.unique_opportunities} 个同题机会
           </p>
 
           {mode === "timeline" && (
@@ -317,8 +334,14 @@ export function AnalyticsClient() {
                     {item.title}
                   </span>
                   <span className="text-xs text-slate-400">
-                    {item.kind === "video" ? "视频" : "话题"} · {item.metric_label}{" "}
+                    同题机会 · {item.metric_label}{" "}
                     <b className="text-cyan-300">{item.metric.toFixed(1)}</b>
+                  </span>
+                  <span className="rounded bg-slate-700/70 px-2 py-0.5 text-[11px] text-slate-300">
+                    {stageLabel(item.stage)}
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    {item.representation_count} 个呈现
                   </span>
                 </li>
               ))}

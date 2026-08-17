@@ -307,6 +307,81 @@ async def test_trend_aggregate_deduplicates_snapshots_and_excludes_unverified_ro
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_trend_aggregate_groups_same_opportunity_across_representations(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    """A cross-platform topic/video should occupy one ranking opportunity."""
+    authenticate(client)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            session.add_all(
+                [
+                    TrendTopic(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        title="NBA Finals 2026",
+                        category="basketball",
+                        heat_score=88,
+                        growth_rate=0.4,
+                        rank=1,
+                        sample_size=20,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        external_id="nba-youtube-video",
+                        title="NBA Finals 2026",
+                        category="basketball",
+                        breakout_score=55,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="tiktok",
+                        external_id="nba-tiktok-video",
+                        title="NBA Finals 2026",
+                        category="basketball",
+                        breakout_score=70,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            result = await TrendService(session).aggregate(workspace_id, days=30)
+
+            assert result["unique_opportunities"] == 1
+            assert len(result["ranking"]) == 1
+            item = result["ranking"][0]
+            assert item.kind == "opportunity"
+            assert item.platform == "cross_platform"
+            assert item.platforms == ["tiktok", "youtube"]
+            assert item.representation_count == 3
+            assert item.metric == pytest.approx(88)
+            assert item.stage == "accelerating"
+            youtube_cell = next(
+                cell
+                for cell in result["matrix"]
+                if cell["platform"] == "youtube" and cell["category"] == "basketball"
+            )
+            assert youtube_cell["heat"] == pytest.approx(88)
+    finally:
+        await engine.dispose()
+
+
 def test_trend_terms_use_controlled_sports_vocabulary_and_explicit_hashtags() -> None:
     assert _trend_terms("NBA 总决赛集锦 #绝杀时刻") >= {"NBA", "绝杀时刻"}
     assert _trend_terms("普通生活记录") == set()

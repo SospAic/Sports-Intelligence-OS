@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -8,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.trends import TrendKeywordSnapshot, TrendTopic, TrendVideo
+from app.providers.news.utils import normalize_title, title_similarity
 from app.schemas.trends import (
     PlatformSummary,
     ScoreComponent,
@@ -20,9 +23,62 @@ from app.schemas.trends import (
     TrendVideoPage,
     TrendVideoRead,
 )
+from app.services.entity_extraction import (
+    ExtractedEntity,
+    compute_entity_similarity,
+    extract_entities,
+)
 
 # 支持的平台列表
 PLATFORMS = ("youtube", "tiktok", "douyin", "bilibili", "web")
+OPPORTUNITY_CLUSTER_ALGORITHM = "opportunity-cluster-v1"
+
+
+@dataclass(slots=True)
+class _TrendRepresentation:
+    row: TrendTopic | TrendVideo
+    kind: str
+    title: str
+    platform: str
+    category: str
+    metric: float
+    observed_at: datetime
+    entities: list[ExtractedEntity]
+    growth_rate: float | None = None
+
+
+@dataclass(slots=True)
+class _OpportunityCluster:
+    representations: list[_TrendRepresentation] = field(default_factory=list)
+    title: str = ""
+    entities: list[ExtractedEntity] = field(default_factory=list)
+
+    @property
+    def metric(self) -> float:
+        return max((item.metric for item in self.representations), default=0.0)
+
+    @property
+    def observed_at(self) -> datetime:
+        return max(
+            (item.observed_at for item in self.representations),
+            default=datetime.now(UTC),
+        )
+
+    @property
+    def platforms(self) -> list[str]:
+        return sorted({item.platform for item in self.representations})
+
+    @property
+    def cluster_key(self) -> str:
+        titles = sorted(
+            {
+                normalize_title(item.title)
+                for item in self.representations
+                if normalize_title(item.title)
+            }
+        )
+        digest = hashlib.sha256("|".join(titles).encode("utf-8")).hexdigest()[:16]
+        return f"opportunity:{digest}"
 
 
 class TrendService:
@@ -112,6 +168,173 @@ class TrendService:
             seen.add(key)
             result.append(row)
         return result
+
+    @staticmethod
+    def _representation(row: TrendTopic | TrendVideo) -> _TrendRepresentation:
+        if isinstance(row, TrendTopic):
+            return _TrendRepresentation(
+                row=row,
+                kind="topic",
+                title=row.title,
+                platform=row.platform,
+                category=row.category or "general",
+                metric=float(row.heat_score),
+                observed_at=row.observed_at,
+                entities=extract_entities(row.title),
+                growth_rate=row.growth_rate,
+            )
+        metadata = row.metadata_json or {}
+        raw_growth = metadata.get("growth_rate")
+        growth_rate = float(raw_growth) if isinstance(raw_growth, (int, float)) else None
+        return _TrendRepresentation(
+            row=row,
+            kind="video",
+            title=row.title,
+            platform=row.platform,
+            category=row.category or "general",
+            metric=float(row.breakout_score or 0.0),
+            observed_at=row.observed_at,
+            entities=extract_entities(row.title),
+            growth_rate=growth_rate,
+        )
+
+    @staticmethod
+    def _matches_opportunity(
+        cluster: _OpportunityCluster,
+        candidate: _TrendRepresentation,
+    ) -> bool:
+        """Match a representation conservatively for ranking-only aggregation.
+
+        This is an opportunity projection, not a factual event merge.  Exact
+        or near-exact titles are safe across platforms; weaker cross-language
+        matches require both repeated entities and title similarity.
+        """
+
+        if not cluster.title:
+            return False
+        normalized_cluster = normalize_title(cluster.title)
+        normalized_candidate = normalize_title(candidate.title)
+        if (
+            normalized_cluster == normalized_candidate
+            and len(normalized_cluster.replace(" ", "")) >= 4
+        ):
+            return True
+        similarity = title_similarity(cluster.title, candidate.title)
+        if similarity >= 0.86:
+            return True
+        if not cluster.entities or not candidate.entities:
+            return False
+        entity_similarity = compute_entity_similarity(cluster.entities, candidate.entities)
+        entity_overlap = len(
+            {
+                (item.text.casefold(), item.entity_type)
+                for item in cluster.entities
+            }
+            & {
+                (item.text.casefold(), item.entity_type)
+                for item in candidate.entities
+            }
+        )
+        return entity_overlap >= 2 and similarity >= 0.35 and entity_similarity >= 0.45
+
+    @classmethod
+    def _build_opportunity_clusters(
+        cls,
+        rows: list[TrendTopic | TrendVideo],
+    ) -> list[_OpportunityCluster]:
+        representations = sorted(
+            (cls._representation(row) for row in rows),
+            key=lambda item: (item.metric, item.observed_at, str(item.row.id)),
+            reverse=True,
+        )
+        clusters: list[_OpportunityCluster] = []
+        for candidate in representations:
+            cluster = next(
+                (item for item in clusters if cls._matches_opportunity(item, candidate)),
+                None,
+            )
+            if cluster is None:
+                clusters.append(
+                    _OpportunityCluster(
+                        representations=[candidate],
+                        title=candidate.title,
+                        entities=list(candidate.entities),
+                    )
+                )
+            else:
+                cluster.representations.append(candidate)
+        return clusters
+
+    @staticmethod
+    def _opportunity_stage(cluster: _OpportunityCluster) -> str:
+        """Classify a ranking group without inventing unavailable analytics."""
+
+        growth = [
+            item.growth_rate
+            for item in cluster.representations
+            if item.growth_rate is not None
+        ]
+        if growth and max(growth) >= 0.25:
+            return "accelerating"
+        if growth and min(growth) <= -0.20:
+            return "declining"
+        age_hours = max(
+            0.0,
+            (datetime.now(UTC) - cluster.observed_at).total_seconds() / 3600,
+        )
+        if age_hours <= 6 and not growth:
+            return "emerging"
+        return "peaking"
+
+    @classmethod
+    def _ranking_from_clusters(
+        cls,
+        clusters: list[_OpportunityCluster],
+        *,
+        limit: int = 25,
+    ) -> list[TrendAggregateItem]:
+        ranking: list[TrendAggregateItem] = []
+        for cluster in sorted(clusters, key=lambda item: item.metric, reverse=True)[:limit]:
+            primary = max(
+                cluster.representations,
+                key=lambda item: (item.metric, item.observed_at, str(item.row.id)),
+            )
+            platforms = cluster.platforms
+            ranking.append(
+                TrendAggregateItem(
+                    platform=platforms[0] if len(platforms) == 1 else "cross_platform",
+                    category=primary.category,
+                    title=primary.title,
+                    kind="opportunity",
+                    metric=round(cluster.metric, 4),
+                    metric_label="综合热度",
+                    observed_at=cluster.observed_at,
+                    cluster_key=cluster.cluster_key,
+                    platforms=platforms,
+                    representation_count=len(cluster.representations),
+                    stage=cls._opportunity_stage(cluster),
+                    aggregation_note=(
+                        "同题机会聚合；分数取各真实呈现的最大值，避免跨平台/话题/视频重复累加"
+                    ),
+                )
+            )
+        return ranking
+
+    @staticmethod
+    def _platform_cluster_heat(
+        clusters: list[_OpportunityCluster],
+    ) -> dict[tuple[str, str], float]:
+        """Sum one max score per opportunity/platform/category cell."""
+
+        cells: dict[tuple[str, str], float] = {}
+        for cluster in clusters:
+            per_cell: dict[tuple[str, str], float] = {}
+            for item in cluster.representations:
+                key = (item.platform, item.category)
+                per_cell[key] = max(per_cell.get(key, 0.0), item.metric)
+            for key, metric in per_cell.items():
+                cells[key] = cells.get(key, 0.0) + metric
+        return cells
 
     async def _latest_topics(
         self,
@@ -373,6 +596,16 @@ class TrendService:
             videos,
             lambda row: (row.observed_at.date().isoformat(), *self._video_identity(row)),
         )
+        latest_rows: list[TrendTopic | TrendVideo] = [
+            *latest_topics,
+            *(row for row in latest_videos if row.breakout_score is not None),
+        ]
+        opportunity_clusters = self._build_opportunity_clusters(latest_rows)
+        daily_rows: list[TrendTopic | TrendVideo] = [
+            *daily_topics,
+            *(row for row in daily_videos if row.breakout_score is not None),
+        ]
+        daily_opportunity_clusters = self._build_opportunity_clusters(daily_rows)
 
         plat_set: set[str] = set()
         cat_set: set[str] = set()
@@ -384,67 +617,32 @@ class TrendService:
             if v.category:
                 cat_set.add(v.category)
 
-        # 趋势时间线: 每天 × 平台 的累计热度
+        # 趋势时间线: 每天 × 平台 的累计热度；同一机会在同一平台只取最大呈现分。
         day_plat_heat: dict[tuple[str, str], float] = {}
-        for t in daily_topics:
-            key = (t.observed_at.date().isoformat(), t.platform)
-            day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(t.heat_score)
-        for v in daily_videos:
-            if v.breakout_score is not None:
-                key = (v.observed_at.date().isoformat(), v.platform)
-                day_plat_heat[key] = day_plat_heat.get(key, 0.0) + float(v.breakout_score)
+        for cluster in daily_opportunity_clusters:
+            per_platform: dict[str, float] = {}
+            for item in cluster.representations:
+                per_platform[item.platform] = max(
+                    per_platform.get(item.platform, 0.0), item.metric
+                )
+            date = cluster.observed_at.date().isoformat()
+            for platform, metric in per_platform.items():
+                key = (date, platform)
+                day_plat_heat[key] = day_plat_heat.get(key, 0.0) + metric
         timeline = [
             {"date": d, "platform": p, "heat": h} for (d, p), h in sorted(day_plat_heat.items())
         ]
 
-        # 排行榜单: 热点按热度 + 视频按爆发分
-        top_topics = sorted(
-            latest_topics,
-            key=lambda x: (x.heat_score, x.observed_at),
-            reverse=True,
-        )[:25]
-        top_videos = sorted(
-            [v for v in latest_videos if v.breakout_score is not None],
-            key=lambda x: (x.breakout_score or 0, x.observed_at),
-            reverse=True,
-        )[:25]
-        ranking: list[TrendAggregateItem] = []
-        for t in top_topics:
-            ranking.append(
-                TrendAggregateItem(
-                    platform=t.platform,
-                    category=t.category,
-                    title=t.title,
-                    kind="topic",
-                    metric=float(t.heat_score),
-                    metric_label="热度",
-                    observed_at=t.observed_at,
-                )
-            )
-        for v in top_videos:
-            ranking.append(
-                TrendAggregateItem(
-                    platform=v.platform,
-                    category=v.category or "general",
-                    title=v.title,
-                    kind="video",
-                    metric=float(v.breakout_score or 0),
-                    metric_label="爆发分",
-                    observed_at=v.observed_at,
-                )
-            )
-
-        # Ranking mixes two 0-100 derived scores, so sort the merged result by
-        # score instead of placing every topic ahead of every video.
-        ranking.sort(key=lambda item: item.metric, reverse=True)
+        # 排行榜单：按同题机会聚合，分数取真实呈现中的最大值，避免同一事件
+        # 以“话题 + 视频 + 多平台”重复占用榜位。
+        ranking = self._ranking_from_clusters(opportunity_clusters)
 
         # 指数对比: 各平台当前实体热度归一化到 0-100
         plat_heat: dict[str, float] = {}
-        for t in latest_topics:
-            plat_heat[t.platform] = plat_heat.get(t.platform, 0.0) + float(t.heat_score)
-        for v in latest_videos:
-            if v.breakout_score is not None:
-                plat_heat[v.platform] = plat_heat.get(v.platform, 0.0) + float(v.breakout_score)
+        for (platform, _category), metric in self._platform_cluster_heat(
+            opportunity_clusters
+        ).items():
+            plat_heat[platform] = plat_heat.get(platform, 0.0) + metric
         max_heat = max(plat_heat.values()) if plat_heat else 0.0
         index = [
             {
@@ -454,15 +652,8 @@ class TrendService:
             for p, h in sorted(plat_heat.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
-        # 热度矩阵: 平台 × 分类 热度合计
-        pc: dict[tuple[str, str], float] = {}
-        for t in latest_topics:
-            k = (t.platform, t.category)
-            pc[k] = pc.get(k, 0.0) + float(t.heat_score)
-        for v in latest_videos:
-            if v.breakout_score is not None and v.category:
-                k = (v.platform, v.category)
-                pc[k] = pc.get(k, 0.0) + float(v.breakout_score)
+        # 热度矩阵: 平台 × 分类热度合计；同一机会/平台/分类只累计一次。
+        pc = self._platform_cluster_heat(opportunity_clusters)
         matrix = [
             {"platform": p, "category": c, "heat": h}
             for (p, c), h in sorted(pc.items(), key=lambda kv: kv[1], reverse=True)
@@ -476,6 +667,8 @@ class TrendService:
             "unique_topics": len(latest_topics),
             "raw_video_observations": len(videos),
             "unique_videos": len(latest_videos),
+            "unique_opportunities": len(opportunity_clusters),
+            "opportunity_cluster_algorithm": OPPORTUNITY_CLUSTER_ALGORITHM,
             "platforms": sorted(plat_set),
             "categories": sorted(cat_set),
             "timeline": timeline,
