@@ -2039,4 +2039,11 @@ explicitly enable it.
 - 观察性实验：新增 `content_experiments`、`content_experiment_variants` 与迁移 `20260817_0009_content_experiments.py`；实验/变体/发布归因均按工作区校验，变体必须关联监控作品或发布记录，重复变体和证据不一致会被拒绝。
 - 报告只读取固定窗口中 `measurement_status=measured` 的真实归因，显示播放、互动率、完播率、来源和证据，并强制声明 `observational` 与非因果限制；页面入口为 `/operations/experiments`，契约见 `docs/OBSERVATIONAL_EXPERIMENTS.md`。
 - 最终验证：API 相关业务回归 `65 passed`；Ruff 通过；mypy `Success: no issues found in 224 source files`；Web Next production build、ESLint、Vitest `24 files / 78 tests` 通过；Alembic 为 `20260817_0009 (head)` 且无漂移（仅 pgvector 类型识别警告）；Docker Compose 更新 API/Worker/Beat/Web 后全部健康，API live/ready、登录入口和新增页面探针均返回 200，受保护 API 未登录返回 401。
-- 本轮未完成且需要外部条件的事项：真实平台/新闻/LLM/通知 canary、正式发布 Adapter、授权私有 Analytics、生产备份恢复/跨主机 HA，以及片段/关键帧证据索引。不得将这些事项标为真实完成。
+- 本轮未完成且需要外部条件的事项：真实平台/新闻/LLM/通知 canary、正式发布 Adapter、授权私有 Analytics、生产备份恢复/跨主机 HA，以及关键帧证据提取/多模态索引。字幕/转写和模型返回的有效时间段已在视频搜索结果中提供直接定位入口；不得将关键帧或外部能力标为真实完成。
+
+## 2026-08-17 派生指标生命周期与恢复演练阻断
+
+- 发现 P0 存储风险：`derived_metrics` 当前约 47,655,391 行、表体量约 36 GB，历史同步会在每次计算时追加派生指标，导致完整备份进入 GB 级。
+- 新增派生指标时间桶（默认 1 小时），同一实体/指标/窗口在同一桶内重复计算会先替换该桶记录；新增每日清理任务和 30 天保留配置，清理默认禁用且 dry-run，避免未经授权删除历史。
+- 修复 `scripts/backup_restore_drill.py` 的大文件处理，PostgreSQL dump、媒体归档和 restore 均改为流式 I/O。实测完整 dump 因当前数据库体量持续增长，已在约 1.1 GB 临时文件阶段主动停止；没有修改应用卷、没有删除业务数据库，完整生产恢复仍为 BLOCKED（需足够临时磁盘/备份存储和维护授权）。本轮创建的临时探针文件已清理。
+- 详细策略见 `docs/DERIVED_METRICS_LIFECYCLE.md`。下一步应在用户确认保留窗口、备份可用且有维护窗口后，执行 dry-run 审核，再分批治理历史指标；未获确认前不执行删除。

@@ -38,6 +38,7 @@ celery_app.conf.update(
         "app.tasks.system.heartbeat": {"queue": "maintenance"},
         "app.tasks.system.cleanup_auth_records": {"queue": "maintenance"},
         "app.tasks.system.cleanup_media_lifecycle": {"queue": "maintenance"},
+        "app.tasks.system.cleanup_derived_metrics": {"queue": "maintenance"},
         "app.tasks.monitoring.*": {"queue": "monitoring"},
         "app.tasks.monitoring.recover_stale_sync_runs": {"queue": "maintenance"},
         "app.tasks.monitoring.recover_stale_downloads": {"queue": "maintenance"},
@@ -66,6 +67,10 @@ celery_app.conf.update(
         "cleanup-media-lifecycle": {
             "task": "app.tasks.system.cleanup_media_lifecycle",
             "schedule": 3600.0,
+        },
+        "cleanup-derived-metrics": {
+            "task": "app.tasks.system.cleanup_derived_metrics",
+            "schedule": 86_400.0,
         },
         "sweep-inbox-sla": {
             "task": "app.tasks.system.sweep_inbox_sla",

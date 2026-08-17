@@ -223,4 +223,19 @@ async def test_play_follower_ratio_is_computed() -> None:
         )
         assert metric is not None
         assert float(metric.value) == 100.0  # 1_250_000 / 12_500
+
+        await service._calculate_metrics(account, now)
+        await session.commit()
+        metric_rows = list(
+            (
+                await session.scalars(
+                    select(DerivedMetric).where(
+                        DerivedMetric.entity_id == content_id,
+                        DerivedMetric.metric_key == "play_follower_ratio",
+                    )
+                )
+            ).all()
+        )
+        assert len(metric_rows) == 1
+        assert metric_rows[0].calculated_at.minute == 0
     await engine.dispose()

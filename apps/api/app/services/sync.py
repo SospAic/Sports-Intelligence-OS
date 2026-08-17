@@ -11,7 +11,7 @@ from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 import anyio
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -3249,7 +3249,22 @@ class PlatformSyncExecutor:
         )
 
     async def _calculate_metrics(self, account: Account, calculated_at: datetime) -> None:
+        bucket_seconds = self.settings.derived_metrics_bucket_seconds
+        epoch = int(calculated_at.timestamp())
+        calculated_at = datetime.fromtimestamp(
+            epoch - (epoch % bucket_seconds), tz=UTC
+        )
         await self.session.flush()
+        contents = await self.repository.contents_for_account(account.id)
+        entity_ids = [account.id, *(content.id for content in contents)]
+        if entity_ids:
+            await self.session.execute(
+                delete(DerivedMetric).where(
+                    DerivedMetric.workspace_id == account.workspace_id,
+                    DerivedMetric.entity_id.in_(entity_ids),
+                    DerivedMetric.calculated_at == calculated_at,
+                )
+            )
         account_snapshots = list(
             (
                 await self.session.scalars(
@@ -3286,7 +3301,6 @@ class PlatformSyncExecutor:
                     },
                 )
 
-        contents = await self.repository.contents_for_account(account.id)
         latest_views: list[int] = []
         baseline_cutoff = _utc(calculated_at) - timedelta(days=30)
         snapshots_by_content: dict[UUID, list[ContentSnapshot]] = {}

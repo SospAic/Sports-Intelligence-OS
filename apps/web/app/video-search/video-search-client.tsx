@@ -32,6 +32,12 @@ import {
 } from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { apiRequest } from "@/lib/browser-api";
+import {
+  evidenceLocatorUrl,
+  evidenceWindowFromMs,
+  formatEvidenceTime,
+  type EvidenceWindow,
+} from "@/lib/video-evidence";
 
 /* ========================================================================== */
 /*  Types                                                                      */
@@ -191,6 +197,7 @@ type UnifiedResult = {
   snippetText: string;
   badges: Array<{ label: string; tone: "info" | "success" | "warning" | "danger" | "neutral" }>;
   meta: string;
+  evidenceWindow?: EvidenceWindow;
   sentiment?: "positive" | "neutral" | "negative";
   heat?: number;
 };
@@ -284,6 +291,20 @@ function formatDate(value: string | null | undefined): string {
 
 function formatNumber(value: number): string {
   return value.toLocaleString("en-US");
+}
+
+function firstLlmEvidenceWindow(
+  segments: Candidate["evidence"]["segments"],
+): EvidenceWindow | undefined {
+  for (const segment of segments ?? []) {
+    const window = evidenceWindowFromMs(
+      typeof segment.start_seconds === "number" ? segment.start_seconds * 1000 : null,
+      typeof segment.end_seconds === "number" ? segment.end_seconds * 1000 : null,
+      "模型标注时间段",
+    );
+    if (window) return window;
+  }
+  return undefined;
 }
 
 function llmTone(status: string): "neutral" | "success" | "warning" | "danger" | "info" {
@@ -651,6 +672,7 @@ export function VideoSearchClient() {
         snippetText: item.evidence.summary ?? item.error_detail ?? "",
         badges: [{ label: LLM_STATUS_LABELS[item.content_match_status] ?? item.content_match_status, tone: llmTone(item.content_match_status) }],
         meta: `${item.source_provider} · ${item.analysis_provider ?? "未分析"}${item.analysis_model ? ` / ${item.analysis_model}` : ""}`,
+        evidenceWindow: firstLlmEvidenceWindow(item.evidence.segments),
       });
     }
 
@@ -678,6 +700,12 @@ export function VideoSearchClient() {
             { label: CHUNK_KIND_LABELS[hit.best_chunk.chunk_kind as ChunkKind] ?? hit.best_chunk.chunk_kind, tone: "neutral" },
           ],
           meta: `${formatDate(hit.published_at)} · ${formatDuration(hit.duration_seconds)}`,
+          evidenceWindow: evidenceWindowFromMs(
+            hit.best_chunk.start_ms,
+            hit.best_chunk.end_ms,
+            "字幕/转写时间段",
+            hit.best_chunk.source_ref,
+          ),
         });
       }
     }
@@ -1386,6 +1414,24 @@ function UnifiedResultCard({
 
         {result.snippet && (
           <p className="mt-2 text-xs leading-5 text-slate-300">{result.snippet}</p>
+        )}
+
+        {result.evidenceWindow && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <a
+              href={evidenceLocatorUrl(result.url, result.evidenceWindow.startMs)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-cyan-200 hover:bg-cyan-500/20"
+            >
+              <Play size={12} />
+              定位时间证据 {formatEvidenceTime(result.evidenceWindow.startMs)}–{formatEvidenceTime(result.evidenceWindow.endMs)}
+            </a>
+            <span className="text-slate-500">
+              {result.evidenceWindow.label}
+              {result.evidenceWindow.sourceRef ? ` · ${result.evidenceWindow.sourceRef}` : ""}
+            </span>
+          </div>
         )}
 
         {onCreateTopic && (

@@ -274,6 +274,35 @@ class Settings(BaseSettings):
         le=10_000,
         description="Maximum physical files considered by one lifecycle execution.",
     )
+    derived_metrics_bucket_seconds: int = Field(
+        default=3600,
+        ge=300,
+        le=86_400,
+        description=(
+            "Bucket repeated derived-metric calculations so one entity/metric/window "
+            "does not create a new row on every sync within the same interval."
+        ),
+    )
+    derived_metrics_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Retention window for reproducible derived metrics when cleanup is enabled.",
+    )
+    derived_metrics_cleanup_enabled: bool = Field(
+        default=False,
+        description="Allow the scheduled derived-metric cleanup to delete expired rows.",
+    )
+    derived_metrics_cleanup_dry_run: bool = Field(
+        default=True,
+        description="Report expired derived metrics without deleting them.",
+    )
+    derived_metrics_cleanup_batch_size: int = Field(
+        default=50_000,
+        ge=1_000,
+        le=500_000,
+        description="Maximum expired derived-metric rows deleted per transaction batch.",
+    )
     sync_page_limit: int = Field(
         default=40,
         ge=1,

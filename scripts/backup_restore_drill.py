@@ -20,6 +20,20 @@ def run(command: list[str], *, input_bytes: bytes | None = None) -> subprocess.C
     return subprocess.run(command, input=input_bytes, capture_output=True, check=True)
 
 
+def run_to_file(command: list[str], output_path: Path) -> None:
+    """Stream a potentially large command response directly to disk."""
+
+    with output_path.open("wb") as output:
+        subprocess.run(command, stdout=output, stderr=subprocess.PIPE, check=True)
+
+
+def run_from_file(command: list[str], input_path: Path) -> None:
+    """Stream a previously written backup into a restore command."""
+
+    with input_path.open("rb") as input_stream:
+        subprocess.run(command, stdin=input_stream, capture_output=True, check=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=None)
@@ -35,7 +49,7 @@ def main() -> int:
     redis_path = output / "redis.rdb"
 
     try:
-        dump = run(
+        run_to_file(
             compose
             + [
                 "exec",
@@ -49,19 +63,21 @@ def main() -> int:
                 db_user,
                 "-d",
                 db_name,
-            ]
+            ],
+            dump_path,
         )
-        dump_path.write_bytes(dump.stdout)
 
-        media = run(compose + ["exec", "-T", "api", "tar", "-C", "/workspace/media", "-czf", "-", "."])
-        media_path.write_bytes(media.stdout)
+        run_to_file(
+            compose + ["exec", "-T", "api", "tar", "-C", "/workspace/media", "-czf", "-", "."],
+            media_path,
+        )
 
         run(compose + ["exec", "-T", "redis", "redis-cli", "--rdb", "/tmp/sio-restore-drill.rdb"])
         run(compose + ["cp", "redis:/tmp/sio-restore-drill.rdb", str(redis_path)])
 
         run(compose + ["exec", "-T", "postgres", "dropdb", "--if-exists", "-U", db_user, restore_db])
         run(compose + ["exec", "-T", "postgres", "createdb", "-U", db_user, restore_db])
-        run(
+        run_from_file(
             compose
             + [
                 "exec",
@@ -76,7 +92,7 @@ def main() -> int:
                 "-d",
                 restore_db,
             ],
-            input_bytes=dump_path.read_bytes(),
+            dump_path,
         )
         check = run(
             compose
