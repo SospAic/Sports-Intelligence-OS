@@ -63,6 +63,27 @@ const detail = {
   ],
   language: "en",
 };
+const generated = {
+  status: "completed",
+  notice: null,
+  run_id: "run-2",
+  process_log: [
+    {
+      stage: "angle_generation",
+      status: "completed",
+      message: "Persisted 1 derivative angle result for this run.",
+    },
+  ],
+  items: [
+    {
+      ...detail.items[0],
+      id: "angle-2",
+      title_en: "Champions League final · Tactical breakdown",
+      angle_en: "Tactical breakdown",
+    },
+  ],
+  source_results: detail.source_results,
+};
 
 function renderPanel() {
   const client = new QueryClient({
@@ -94,6 +115,7 @@ describe("DerivativesPanel", () => {
       if (path === "/trends/derivatives/runs?page=1&page_size=30") {
         return { items: [run] };
       }
+      if (path === "/trends/derivatives/generate") return generated;
       if (path === "/trends/derivatives/runs/run-1") return detail;
       if (path === "/trends/derivatives/runs/run-1/translate") {
         return {
@@ -140,5 +162,15 @@ describe("DerivativesPanel", () => {
     );
     expect(await screen.findByText("平台搜索完成。")).toBeInTheDocument();
     expect(screen.getByText("派生热度 74.2*")).toBeInTheDocument();
+  });
+
+  it("renders the generation response even before the detail query settles", async () => {
+    renderPanel();
+
+    await screen.findByRole("option", { name: /欧冠决赛/ });
+    fireEvent.click(await screen.findByRole("button", { name: "生成衍生角度" }));
+
+    expect(await screen.findByText("Champions League final · Tactical breakdown")).toBeInTheDocument();
+    expect(screen.getByText("Persisted 1 derivative angle result for this run.")).toBeInTheDocument();
   });
 });

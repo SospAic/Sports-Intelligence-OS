@@ -420,8 +420,14 @@ async def list_derivatives(
 
 def _derivative_detail_response(data: dict[str, Any]) -> DerivativeRunDetail:
     run = DerivativeRunRead.model_validate(data["run"])
+    # ``DerivativeRunRead`` exposes the ORM ``process_log_json`` column under
+    # the public ``process_log`` field.  Do not pass that field once through
+    # ``model_dump`` and again as the canonical value from the service, or
+    # Python raises ``got multiple values for keyword argument`` before
+    # FastAPI can serialize the detail response.
+    run_data = run.model_dump(exclude={"process_log"})
     return DerivativeRunDetail(
-        **run.model_dump(),
+        **run_data,
         items=[DerivativeTopicRead.model_validate(item) for item in data["items"]],
         source_results=data["source_results"],
         process_log=data["process_log"],

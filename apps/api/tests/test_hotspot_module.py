@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
+from app.api.routes.trends import _derivative_detail_response
 from app.models.trends import TrendTopic
 from app.services import derivative_engine as derivative_module
 from app.services import search_analysis as search_module
@@ -216,3 +218,34 @@ def test_search_language_detection_supports_primary_input_languages():
     assert _detect_language("欧冠决赛") == "zh"
     assert _detect_language("チャンピオンズリーグ") == "ja"
     assert _detect_language("챔피언스리그") == "ko"
+
+
+def test_derivative_detail_response_does_not_duplicate_process_log_alias():
+    run_id = uuid4()
+    workspace_id = uuid4()
+    topic_id = uuid4()
+    now = datetime.now(UTC)
+    detail = _derivative_detail_response(
+        {
+            "run": {
+                "id": run_id,
+                "workspace_id": workspace_id,
+                "source_topic_id": topic_id,
+                "status": "completed",
+                "source_query": "Champions League final",
+                "source_query_en": "Champions League final",
+                "platform": "youtube",
+                "process_log_json": [{"stage": "angle_generation", "status": "completed"}],
+                "source_results_json": [],
+                "result_count": 0,
+                "created_at": now,
+                "updated_at": now,
+            },
+            "items": [],
+            "source_results": [],
+            "process_log": [{"stage": "angle_generation", "status": "completed"}],
+        }
+    )
+
+    assert detail.id == run_id
+    assert detail.process_log == [{"stage": "angle_generation", "status": "completed"}]

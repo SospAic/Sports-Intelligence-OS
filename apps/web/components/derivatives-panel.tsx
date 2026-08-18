@@ -60,6 +60,15 @@ type RunDetail = Run & {
   language: string;
 };
 
+type GenerateResponse = {
+  status: string;
+  notice: string | null;
+  items: Derivative[];
+  run_id: string | null;
+  process_log: ProcessStep[];
+  source_results: SearchResult[];
+};
+
 const LANGUAGES = [
   ["en", "English"],
   ["zh", "简体中文"],
@@ -108,6 +117,7 @@ export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
   const [generating, setGenerating] = useState(false);
   const [language, setLanguage] = useState("en");
   const [translated, setTranslated] = useState<RunDetail | null>(null);
+  const [generatedDetail, setGeneratedDetail] = useState<RunDetail | null>(null);
 
   const topics = useQuery({
     queryKey: ["derivatives-topics", workspaceId],
@@ -124,20 +134,44 @@ export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
     queryFn: () => apiRequest<RunDetail>(`/trends/derivatives/runs/${activeRunId}`, { workspaceId }),
     enabled: Boolean(activeRunId),
   });
-  const active = translated?.id === activeRunId ? translated : detail.data;
+  // Render the POST response immediately.  The detail query is still used to
+  // hydrate the complete persisted run, but a transient detail request error
+  // must not make a successful generation appear empty.
+  const persistedDetail = detail.data?.id === activeRunId ? detail.data : undefined;
+  const active = translated?.id === activeRunId
+    ? translated
+    : persistedDetail ?? (generatedDetail?.id === activeRunId ? generatedDetail : undefined);
 
   const generate = async () => {
     if (!effectiveTopicId) return;
     setGenerating(true);
     try {
-      const result = await apiRequest<{ run_id: string | null }>("/trends/derivatives/generate", {
+      const result = await apiRequest<GenerateResponse>("/trends/derivatives/generate", {
         method: "POST",
         csrf: true,
         workspaceId,
         body: JSON.stringify({ topic_id: effectiveTopicId }),
       });
       setTranslated(null);
-      if (result.run_id) setSelectedRunId(result.run_id);
+      if (result.run_id) {
+        const selectedTopic = topics.data?.items?.find((topic) => topic.id === effectiveTopicId);
+        setGeneratedDetail({
+          id: result.run_id,
+          source_topic_id: effectiveTopicId,
+          source_query: selectedTopic?.title ?? "",
+          source_query_en: null,
+          platform: selectedTopic?.platform ?? "",
+          status: result.notice ? "degraded" : "completed",
+          process_log: result.process_log ?? [],
+          result_count: result.items?.length ?? 0,
+          notice: result.notice ?? null,
+          created_at: new Date().toISOString(),
+          items: result.items ?? [],
+          source_results: result.source_results ?? [],
+          language: "en",
+        });
+        setSelectedRunId(result.run_id);
+      }
       await runs.refetch();
       notify("衍生角度生成完成，已保存到执行历史", "success");
     } catch (error) {
@@ -175,6 +209,13 @@ export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
     } catch (error) {
       notify(`采用失败：${(error as Error).message}`, "error");
     }
+  };
+
+  const selectRun = (runId: string) => {
+    setSelectedRunId(runId);
+    setGeneratedDetail(null);
+    setTranslated(null);
+    setLanguage("en");
   };
 
   const items = active?.items ?? [];
@@ -240,12 +281,14 @@ export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
             </>
           )}
           {!active && <p className="py-10 text-center text-sm text-slate-500">生成一次任务或选择历史记录，查看英文执行过程和结果。</p>}
+          {!active && detail.isLoading && <p className="py-4 text-center text-sm text-slate-500">正在加载执行结果…</p>}
+          {!active && detail.isError && <div className="rounded-lg border border-rose-500/30 bg-rose-950/20 p-4 text-sm text-rose-200"><p>执行记录加载失败，结果暂时无法展示。</p><button type="button" onClick={() => void detail.refetch()} className="mt-2 rounded-md border border-rose-400/50 px-3 py-1 text-xs">重新加载</button></div>}
         </div>
 
         <aside className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
           <div className="mb-3 flex items-center gap-2"><History size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">执行历史</h3></div>
           <div className="space-y-2">
-            {(runs.data?.items ?? []).map((run) => <button type="button" key={run.id} onClick={() => { setSelectedRunId(run.id); setTranslated(null); setLanguage("en"); }} className={`w-full rounded-lg border p-3 text-left transition ${run.id === activeRunId ? "border-cyan-500/60 bg-cyan-950/20" : "border-slate-800 hover:border-slate-600"}`}><p className="line-clamp-2 text-xs text-slate-200">{run.source_query_en || run.source_query}</p><p className="mt-2 text-[11px] text-slate-500">{new Date(run.created_at).toLocaleString("zh-CN")} · {run.result_count} 条角度 · {statusLabel(run.status)}</p></button>)}
+            {(runs.data?.items ?? []).map((run) => <button type="button" key={run.id} onClick={() => selectRun(run.id)} className={`w-full rounded-lg border p-3 text-left transition ${run.id === activeRunId ? "border-cyan-500/60 bg-cyan-950/20" : "border-slate-800 hover:border-slate-600"}`}><p className="line-clamp-2 text-xs text-slate-200">{run.source_query_en || run.source_query}</p><p className="mt-2 text-[11px] text-slate-500">{new Date(run.created_at).toLocaleString("zh-CN")} · {run.result_count} 条角度 · {statusLabel(run.status)}</p></button>)}
             {!runs.data?.items?.length && <p className="text-sm text-slate-500">暂无执行记录。</p>}
           </div>
         </aside>
