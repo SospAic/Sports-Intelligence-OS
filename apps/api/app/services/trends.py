@@ -41,6 +41,7 @@ from app.services.sports_catalog import (
     MAINSTREAM_SPORTS,
     SPORTS_CATALOG,
     SPORTS_CATALOG_VERSION,
+    sports_collection_strategy,
 )
 from app.services.trend_categories import (
     canonical_trend_category,
@@ -688,7 +689,12 @@ class TrendService:
                     ),
                 )
             )
+        strategy = sports_collection_strategy()
         return TrendSportCatalogRead(
+            strategy_key=str(strategy["key"]),
+            strategy_label=str(strategy["label"]),
+            strategy_summary=str(strategy["summary"]),
+            source_plans=strategy["sources"],
             catalog_version=SPORTS_CATALOG_VERSION,
             mainstream_count=len(MAINSTREAM_SPORTS),
             general_count=len(GENERAL_SPORTS),

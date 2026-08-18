@@ -7,7 +7,7 @@ same keys without platform-specific branches or hard-coded page lists.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 SportTier = Literal["mainstream", "general"]
 
@@ -128,6 +128,17 @@ GENERAL_SPORTS: tuple[SportProfile, ...] = (
 SPORTS_CATALOG: tuple[SportProfile, ...] = MAINSTREAM_SPORTS + GENERAL_SPORTS
 SPORTS_CATALOG_VERSION = "sports-hotspot-taxonomy-v1"
 
+# This is deliberately human-readable.  The API exposes it next to the
+# catalog so the UI does not leak an internal taxonomy identifier as if it
+# were a product-facing collection status.
+SPORTS_COLLECTION_STRATEGY_KEY = "official-chart-plus-adaptive-lane-search-v2"
+SPORTS_COLLECTION_STRATEGY_LABEL = "官方体育榜单 + 项目检索补采"
+SPORTS_COLLECTION_STRATEGY_SUMMARY = (
+    "YouTube 官方体育榜单提供跨项目基线；每个项目再按热点排序检索，"
+    "只有未达到目标的项目才使用有限的英文查询变体补采。所有视频按平台外部 ID 去重，"
+    "不足时展示 Provider 实际上限。"
+)
+
 if len(MAINSTREAM_SPORTS) != 50 or len(GENERAL_SPORTS) != 30:  # pragma: no cover
     raise RuntimeError("sports hotspot taxonomy must contain 50 + 30 profiles")
 
@@ -142,3 +153,43 @@ def sport_profile_keywords() -> tuple[tuple[str, tuple[str, ...]], ...]:
         )
         for profile in SPORTS_CATALOG
     )
+
+
+def sports_collection_strategy() -> dict[str, Any]:
+    """Return the user-facing strategy and platform source boundaries."""
+
+    return {
+        "key": SPORTS_COLLECTION_STRATEGY_KEY,
+        "label": SPORTS_COLLECTION_STRATEGY_LABEL,
+        "summary": SPORTS_COLLECTION_STRATEGY_SUMMARY,
+        "sources": [
+            {
+                "platform": "youtube",
+                "label": "YouTube",
+                "state": "implemented",
+                "method": "YouTube Data API v3：mostPopular 体育分类 + 项目检索",
+                "condition": "需要有效 YouTube Data API Key 与配额",
+            },
+            {
+                "platform": "tiktok",
+                "label": "TikTok",
+                "state": "requires_permission",
+                "method": "TikTok Research API 公共视频检索，或合法公开页面采集",
+                "condition": "Research API 需要申请批准；Display API 不能替代公共趋势接口",
+            },
+            {
+                "platform": "douyin",
+                "label": "抖音",
+                "state": "requires_permission",
+                "method": "抖音开放平台热点/搜索能力，或合法公开页面采集",
+                "condition": "需要对应应用权限；当前账号 API 不等于全站热点权限",
+            },
+            {
+                "platform": "bilibili",
+                "label": "Bilibili",
+                "state": "planned_public_source",
+                "method": "公开热门榜页面浏览器采集，保留页面来源与抓取时间",
+                "condition": "需先验证当前公开页面可匿名访问，不绕过登录墙或验证码",
+            },
+        ],
+    }

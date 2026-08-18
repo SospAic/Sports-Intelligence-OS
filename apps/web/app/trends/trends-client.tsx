@@ -189,12 +189,24 @@ interface SportCoverageItem {
   coverage_status: "met" | "limited_by_source" | "not_collected";
 }
 
+interface HotspotSourcePlan {
+  platform: string;
+  label: string;
+  state: "implemented" | "requires_permission" | "planned_public_source";
+  method: string;
+  condition: string;
+}
+
 interface SportsCatalogResponse {
   catalog_version: string;
   mainstream_count: number;
   general_count: number;
   mainstream_target_items: number;
   general_target_items: number;
+  strategy_key: string;
+  strategy_label: string;
+  strategy_summary: string;
+  source_plans: HotspotSourcePlan[];
   items: SportCoverageItem[];
 }
 
@@ -214,6 +226,12 @@ function CoverageMetric({
       <p className="mt-1 text-[11px] text-slate-600">{hint}</p>
     </div>
   );
+}
+
+function hotspotSourceStateLabel(state: HotspotSourcePlan["state"]): string {
+  if (state === "implemented") return "已接入";
+  if (state === "requires_permission") return "需平台权限";
+  return "待接入公开源";
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -1453,7 +1471,12 @@ export function TrendsClient() {
             </p>
           </div>
           {sportsCatalog.data && (
-            <span className="text-xs text-slate-600">{sportsCatalog.data.catalog_version}</span>
+            <div className="text-right">
+              <span className="text-xs font-medium text-cyan-300">
+                {sportsCatalog.data.strategy_label}
+              </span>
+              <p className="mt-1 text-[11px] text-slate-600">当前热点采集策略</p>
+            </div>
           )}
         </div>
         {sportsCatalog.isError ? (
@@ -1465,6 +1488,28 @@ export function TrendsClient() {
               <CoverageMetric label="一般项目" value={`${sportsCatalog.data.general_count} 个`} hint={`每个目标 ${sportsCatalog.data.general_target_items} 条`} />
               <CoverageMetric label="主流达标" value={`${sportsCatalog.data.items.filter((item) => item.tier === "mainstream" && item.coverage_status === "met").length} / ${sportsCatalog.data.mainstream_count}`} hint="当前时间窗 live 视频样本" />
               <CoverageMetric label="一般达标" value={`${sportsCatalog.data.items.filter((item) => item.tier === "general" && item.coverage_status === "met").length} / ${sportsCatalog.data.general_count}`} hint="当前时间窗 live 视频样本" />
+            </div>
+            <div className="mt-4 rounded-xl border border-cyan-900/50 bg-cyan-950/15 p-4">
+              <p className="text-xs leading-5 text-slate-300">
+                {sportsCatalog.data.strategy_summary}
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                {sportsCatalog.data.source_plans.map((source) => (
+                  <div
+                    key={source.platform}
+                    className="rounded-lg border border-slate-800/80 bg-slate-950/50 p-3"
+                    title={`${source.method}。${source.condition}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-slate-200">{source.label}</span>
+                      <Badge tone={source.state === "implemented" ? "success" : source.state === "requires_permission" ? "warning" : "neutral"}>
+                        {hotspotSourceStateLabel(source.state)}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-slate-500">{source.method}</p>
+                  </div>
+                ))}
+              </div>
             </div>
             <details className="mt-4 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
               <summary className="cursor-pointer text-xs text-cyan-300">展开查看 50 个主流项目与 30 个一般项目的逐项覆盖</summary>

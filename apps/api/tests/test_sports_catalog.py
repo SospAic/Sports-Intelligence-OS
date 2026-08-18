@@ -3,7 +3,9 @@ from app.services.sports_catalog import (
     MAINSTREAM_SPORTS,
     SPORTS_CATALOG,
     sport_profile_keywords,
+    sports_collection_strategy,
 )
+from app.services.trend_collector import _catalog_sport_category
 
 from .conftest import TEST_PASSWORD
 
@@ -22,6 +24,24 @@ def test_hotspot_sports_catalog_exposes_real_query_aliases() -> None:
     assert "Basketball" in aliases["basketball"]
     assert "Formula 1" in aliases["formula1"]
     assert "匹克球" in aliases["pickleball"]
+
+
+def test_hotspot_strategy_is_human_readable_and_platform_scoped() -> None:
+    strategy = sports_collection_strategy()
+    assert strategy["label"] == "官方体育榜单 + 项目检索补采"
+    sources = {item["platform"]: item for item in strategy["sources"]}
+    assert sources["youtube"]["state"] == "implemented"
+    assert sources["tiktok"]["state"] == "requires_permission"
+    assert sources["bilibili"]["state"] == "planned_public_source"
+
+
+def test_youtube_sports_chart_prefers_specific_catalog_lane() -> None:
+    assert _catalog_sport_category({"snippet": {"title": "Formula 1 F1 highlights"}}) == (
+        "formula1"
+    )
+    assert _catalog_sport_category({"snippet": {"title": "American football NFL"}}) == (
+        "american_football"
+    )
 
 
 def test_hotspot_sports_catalog_endpoint_exposes_plan(client) -> None:

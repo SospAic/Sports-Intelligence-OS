@@ -54,6 +54,30 @@ _DEFAULT_HEADERS: dict[str, str] = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+_SPORT_CATALOG_KEYS = frozenset(profile.key for profile in SPORTS_CATALOG)
+
+
+def _catalog_sport_category(item: dict[str, Any]) -> str | None:
+    """Assign a chart item to the most specific catalog lane we can prove."""
+
+    snippet = item.get("snippet", {})
+    text = " ".join(
+        str(snippet.get(field) or "")
+        for field in ("title", "description", "channelTitle")
+    ).casefold()
+    profiles = sorted(
+        SPORTS_CATALOG,
+        key=lambda profile: max(
+            len(profile.name_en), len(profile.name_zh), len(profile.query)
+        ),
+        reverse=True,
+    )
+    for profile in profiles:
+        aliases = (profile.name_en, profile.name_zh, profile.query)
+        if any(alias.casefold() in text for alias in aliases if alias.strip()):
+            return profile.key
+    return None
+
 def _position_heat_score(rank: int, total: int) -> float:
     """基于排名位置计算热度分数（rank 1 = 100，递减）"""
     if total <= 1:
@@ -142,8 +166,10 @@ class TrendCollectorService:
         )
         for key in ("topics", "videos", "keywords"):
             youtube_result[key] += youtube[key]
-        if any(youtube.values()):
+        if any(int(youtube.get(key, 0)) > 0 for key in ("topics", "videos", "keywords")):
             youtube_result["status"] = "collected"
+        elif youtube.get("status") == "configured_no_samples":
+            youtube_result["status"] = "configured_no_samples"
         if progress:
             progress("正在独立采集已启用的公开 RSS/Atom 热点源（最近 72 小时）", "public_sources")
         public_sources = await self.collect_public_source_trends(
@@ -783,17 +809,18 @@ class TrendCollectorService:
     async def collect_youtube_trends(self, workspace_id: UUID) -> dict[str, Any]:
         """Collect current YouTube hotspots across the versioned sport catalog.
 
-        YouTube ``search.list`` is used because it can be scoped to one sport
-        and ordered by view count.  The response is then enriched with the
-        official ``videos.list`` statistics endpoint.  Every lane reports its
-        target and actual count; a shortfall is a source limitation, never a
-        synthetic fill.
+        YouTube's official sports ``mostPopular`` chart establishes a
+        cross-sport baseline.  Bounded ``search.list`` queries then fill sparse
+        catalog lanes and are enriched with the official ``videos.list``
+        statistics endpoint.  Every lane reports its target and actual count;
+        a shortfall is a source limitation, never a synthetic fill.
         """
 
         counts: dict[str, Any] = {
             "topics": 0,
             "videos": 0,
             "keywords": 0,
+            "status": "not_configured",
             "sports_coverage": {},
         }
 
@@ -818,6 +845,7 @@ class TrendCollectorService:
             }
             return counts
         key = api_key
+        counts["status"] = "configured"
 
         # YouTube categoryId 到分类名称的映射
         category_map = {
@@ -842,6 +870,8 @@ class TrendCollectorService:
                 timeout=15, follow_redirects=False, headers=_DEFAULT_HEADERS
             ) as client:
                 seen_video_ids: set[str] = set()
+                chart_items_by_profile: dict[str, list[dict[str, Any]]] = {}
+                chart_saved_by_profile: dict[str, int] = {}
 
                 # 1. 热门趋势视频
                 try:
@@ -851,7 +881,7 @@ class TrendCollectorService:
                             "part": "snippet,statistics",
                             "chart": "mostPopular",
                             "regionCode": "US",
-                            "maxResults": 20,
+                            "maxResults": 50,
                             "key": key,
                         },
                     )
@@ -869,8 +899,58 @@ class TrendCollectorService:
                 except Exception as exc:
                     logger.warning("youtube_trending_failed: %s", exc)
 
-                # 2. One bounded, real query per catalog lane.  A semaphore
-                # keeps the 80-lane expansion below provider and worker limits.
+                # 2. The official sports chart is a much stronger baseline than
+                # treating a generic keyword search as a platform ranking.
+                # YouTube documents videoCategoryId=17 as Sports; the chart is
+                # still source data, not a synthetic expansion of the lanes.
+                try:
+                    resp = await client.get(
+                        "https://www.googleapis.com/youtube/v3/videos",
+                        params={
+                            "part": "snippet,statistics",
+                            "chart": "mostPopular",
+                            "videoCategoryId": "17",
+                            "regionCode": "US",
+                            "maxResults": 50,
+                            "key": key,
+                        },
+                    )
+                    resp.raise_for_status()
+                    sports_items = resp.json().get("items", [])
+                    for item in sports_items:
+                        profile_key = _catalog_sport_category(item)
+                        if profile_key in _SPORT_CATALOG_KEYS:
+                            chart_items_by_profile.setdefault(profile_key, []).append(item)
+                    unclassified_items = [
+                        item
+                        for item in sports_items
+                        if _catalog_sport_category(item) not in _SPORT_CATALOG_KEYS
+                    ]
+                    for profile_key, profile_items in chart_items_by_profile.items():
+                        chart_saved_by_profile[profile_key] = self._save_youtube_videos(
+                            workspace_id,
+                            profile_items,
+                            category_map,
+                            "youtube_sports_chart",
+                            category_override=profile_key,
+                            seen_external_ids=seen_video_ids,
+                        )
+                        counts["videos"] += chart_saved_by_profile[profile_key]
+                    if unclassified_items:
+                        counts["videos"] += self._save_youtube_videos(
+                            workspace_id,
+                            unclassified_items,
+                            category_map,
+                            "youtube_sports_chart",
+                            category_override="sports",
+                            seen_external_ids=seen_video_ids,
+                        )
+                except Exception as exc:
+                    logger.warning("youtube_sports_chart_failed: %s", exc)
+
+                # 3. Bounded, adaptive real queries per catalog lane.  A
+                # semaphore keeps the 80-lane expansion below provider and
+                # worker limits.
                 semaphore = asyncio.Semaphore(self._settings.hotspot_sport_query_concurrency)
 
                 async def fetch_sport_lane(
@@ -879,30 +959,49 @@ class TrendCollectorService:
                     target = self._sport_target(profile)
                     try:
                         async with semaphore:
-                            search_response = await client.get(
-                                "https://www.googleapis.com/youtube/v3/search",
-                                params={
-                                    "part": "snippet",
-                                    "q": profile.query,
-                                    "type": "video",
-                                    "order": "viewCount",
-                                    "publishedAfter": (
-                                        datetime.now(UTC) - timedelta(days=30)
-                                    ).isoformat().replace("+00:00", "Z"),
-                                    "regionCode": "US",
-                                    "relevanceLanguage": "en",
-                                    "maxResults": target,
-                                    "key": key,
-                                },
+                            query_variants = tuple(
+                                dict.fromkeys(
+                                    (
+                                        profile.query,
+                                        f"{profile.name_en} highlights",
+                                        f"{profile.name_en} news",
+                                    )
+                                )
                             )
-                            search_response.raise_for_status()
-                            search_items = search_response.json().get("items", [])
-                            video_ids = [
-                                str(item.get("id", {}).get("videoId"))
-                                for item in search_items
-                                if isinstance(item.get("id"), dict)
-                                and item.get("id", {}).get("videoId")
-                            ][:target]
+                            search_by_id: dict[str, dict[str, Any]] = {}
+                            for query in query_variants[
+                                : self._settings.hotspot_sport_max_queries_per_lane
+                            ]:
+                                search_response = await client.get(
+                                    "https://www.googleapis.com/youtube/v3/search",
+                                    params={
+                                        "part": "snippet",
+                                        "q": query,
+                                        "type": "video",
+                                        "order": "viewCount",
+                                        "publishedAfter": (
+                                            datetime.now(UTC) - timedelta(days=30)
+                                        ).isoformat().replace("+00:00", "Z"),
+                                        "regionCode": "US",
+                                        "relevanceLanguage": "en",
+                                        "maxResults": target,
+                                        "key": key,
+                                    },
+                                )
+                                search_response.raise_for_status()
+                                for item in search_response.json().get("items", []):
+                                    item_id = item.get("id", {})
+                                    video_id = (
+                                        str(item_id.get("videoId"))
+                                        if isinstance(item_id, dict) and item_id.get("videoId")
+                                        else ""
+                                    )
+                                    if video_id:
+                                        search_by_id.setdefault(video_id, item)
+                                if len(search_by_id) >= target:
+                                    break
+
+                            video_ids = list(search_by_id)[:target]
                             if not video_ids:
                                 return profile, [], None
 
@@ -926,10 +1025,10 @@ class TrendCollectorService:
                             return profile, [
                                 {
                                     "id": video_id,
-                                    "snippet": item.get("snippet", {}),
+                                    "snippet": search_by_id[video_id].get("snippet", {}),
                                     "statistics": {},
                                 }
-                                for video_id, item in zip(video_ids, search_items, strict=False)
+                                for video_id in video_ids
                             ], None
                     except Exception as exc:  # noqa: BLE001 - isolate one sport lane
                         return profile, [], f"{type(exc).__name__}: {str(exc)[:240]}"
@@ -939,7 +1038,23 @@ class TrendCollectorService:
                 )
                 for profile, items, error in lane_results:
                     target = self._sport_target(profile)
+                    chart_items = chart_items_by_profile.get(profile.key, [])
+                    chart_saved = chart_saved_by_profile.get(profile.key, 0)
                     if error:
+                        if chart_saved:
+                            counts["sports_coverage"][profile.key] = {
+                                "name_zh": profile.name_zh,
+                                "name_en": profile.name_en,
+                                "tier": profile.tier,
+                                "target_items": target,
+                                "actual_items": chart_saved,
+                                "status": (
+                                    "met" if chart_saved >= target else "limited_by_source"
+                                ),
+                                "source": "youtube_sports_chart",
+                                "lane_error": error,
+                            }
+                            continue
                         counts["sports_coverage"][profile.key] = {
                             "name_zh": profile.name_zh,
                             "name_en": profile.name_en,
@@ -950,6 +1065,16 @@ class TrendCollectorService:
                             "reason": error,
                         }
                         continue
+                    combined_items: list[dict[str, Any]] = []
+                    seen_lane_ids: set[str] = set()
+                    for item in [*chart_items, *items]:
+                        raw_id = item.get("id", "")
+                        if isinstance(raw_id, dict):
+                            raw_id = raw_id.get("videoId", "")
+                        item_id = str(raw_id or "")
+                        if item_id and item_id not in seen_lane_ids:
+                            seen_lane_ids.add(item_id)
+                            combined_items.append(item)
                     saved = self._save_youtube_videos(
                         workspace_id,
                         items,
@@ -962,23 +1087,26 @@ class TrendCollectorService:
                     )
                     counts["videos"] += saved
                     topic_count = self._save_youtube_sport_topics(
-                        workspace_id, profile, items, target
+                        workspace_id, profile, combined_items, target
                     )
                     counts["topics"] += topic_count
-                    status = "met" if saved >= target else "limited_by_source"
+                    actual_items = chart_saved + saved
+                    status = "met" if actual_items >= target else "limited_by_source"
                     counts["sports_coverage"][profile.key] = {
                         "name_zh": profile.name_zh,
                         "name_en": profile.name_en,
                         "tier": profile.tier,
                         "target_items": target,
-                        "actual_items": saved,
+                        "actual_items": actual_items,
                         "status": status,
-                        "source": "youtube_data_api_v3",
+                        "source": "youtube_sports_chart+youtube_data_api_v3",
                     }
 
         except Exception as exc:
             logger.error("youtube_collection_failed: %s", exc, exc_info=True)
 
+        if not any(int(counts.get(key, 0)) > 0 for key in ("topics", "videos", "keywords")):
+            counts["status"] = "configured_no_samples"
         return counts
 
     def _sport_target(self, profile: SportProfile) -> int:

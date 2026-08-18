@@ -210,6 +210,15 @@ class Settings(BaseSettings):
         le=8,
         description="Bounded concurrency for the 50 + 30 live sport discovery queries.",
     )
+    hotspot_sport_max_queries_per_lane: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        description=(
+            "Maximum adaptive YouTube search queries per sport lane; the second query "
+            "is used only when the first real result set is below target."
+        ),
+    )
     hotspot_mainstream_target_items: int = Field(
         default=50,
         ge=1,

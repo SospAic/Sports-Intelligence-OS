@@ -128,6 +128,16 @@ class TrendCategorySummary(BaseModel):
     total_count: int = 0
 
 
+class TrendHotspotSourcePlan(BaseModel):
+    """Status and condition of one platform hotspot source."""
+
+    platform: str
+    label: str
+    state: Literal["implemented", "requires_permission", "planned_public_source"]
+    method: str
+    condition: str
+
+
 class TrendSportCatalogItem(BaseModel):
     """One configured sports discovery lane plus its live coverage evidence."""
 
@@ -143,6 +153,10 @@ class TrendSportCatalogItem(BaseModel):
 
 
 class TrendSportCatalogRead(BaseModel):
+    strategy_key: str
+    strategy_label: str
+    strategy_summary: str
+    source_plans: list[TrendHotspotSourcePlan] = Field(default_factory=list)
     catalog_version: str
     mainstream_count: int
     general_count: int
