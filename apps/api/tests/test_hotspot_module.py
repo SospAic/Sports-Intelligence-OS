@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import math
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
 from app.models.trends import TrendTopic
+from app.services import derivative_engine as derivative_module
+from app.services import search_analysis as search_module
 from app.services.derivative_engine import (
     DerivativeService,
     _classify_angle,
     _normalise_search_result,
 )
 from app.services.platform_search import yt_search
+from app.services.query_language import filter_english_results
 from app.services.search_analysis import _detect_language, _heat_from_views, _result_heat
 
 
 def _fake_topic(platform: str = "youtube", title: str = "巴黎奥运乒乓") -> TrendTopic:
     return TrendTopic(
-        workspace_id=__import__("uuid").uuid4(),
+        id=uuid4(),
+        workspace_id=uuid4(),
         platform=platform,
         title=title,
         category="sport",
@@ -29,12 +35,117 @@ def _fake_topic(platform: str = "youtube", title: str = "巴黎奥运乒乓") ->
     )
 
 
+class _FakeSession:
+    def __init__(self, topic: TrendTopic | None = None) -> None:
+        self.topic = topic
+        self.added: list[object] = []
+
+    async def get(self, _model: object, _object_id: object) -> TrendTopic | None:
+        return self.topic
+
+    def add(self, value: object) -> None:
+        self.added.append(value)
+
+    async def flush(self) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+
+    async def refresh(self, _value: object) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_yt_search_unsupported_platform_returns_note_without_network():
     results, note = await yt_search("tiktok", "anything", limit=5)
     assert results == []
     assert note is not None
     assert "未接入" in note
+
+
+@pytest.mark.asyncio
+async def test_english_platform_search_rejects_non_english_query_without_network():
+    results, note = await yt_search(
+        "youtube", "欧冠决赛", limit=5, query_language="en", region="US"
+    )
+    assert results == []
+    assert note is not None
+    assert "英文平台搜索" in note
+
+
+@pytest.mark.asyncio
+async def test_search_analysis_translates_query_before_platform_search(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    async def fake_search(*args: object, **kwargs: object):
+        calls.append((args, kwargs))
+        return ([{"title": "Champions League final analysis", "view_count": 100}], None)
+
+    session = _FakeSession()
+    service = search_module.SearchAnalysisService(session, None)  # type: ignore[arg-type]
+    service._translate_texts = AsyncMock(return_value=["Champions League final"])  # type: ignore[method-assign]
+    service._call_analysis_llm = AsyncMock(  # type: ignore[method-assign]
+        return_value={"related_hotness": 20, "summary": "English summary"}
+    )
+    monkeypatch.setattr(search_module, "yt_search", fake_search)
+
+    query, _analysis, results, _notice = await service.analyze(
+        uuid4(), uuid4(), "欧冠决赛", platform="youtube", limit=5
+    )
+
+    assert query.query_text_en == "Champions League final"
+    assert results[0]["title"] == "Champions League final analysis"
+    assert calls == [
+        (
+            ("youtube", "Champions League final"),
+            {"limit": 5, "query_language": "en", "region": "US"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_derivative_generation_translates_topic_before_platform_search(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    topic = _fake_topic(title="欧冠决赛")
+    session = _FakeSession(topic)
+    service = DerivativeService(session, None)  # type: ignore[arg-type]
+    service._translate_texts = AsyncMock(return_value=["Champions League final"])  # type: ignore[method-assign]
+    service._predict = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    service._populate_english_fields = AsyncMock()  # type: ignore[method-assign]
+    service._run_items = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    search = AsyncMock(
+        return_value=([{"title": "Champions League final recap", "view_count": 100}], None)
+    )
+    monkeypatch.setattr(derivative_module, "yt_search", search)
+
+    await service.generate_for_topic(topic.workspace_id, topic.id, uuid4())  # type: ignore[arg-type]
+
+    search.assert_awaited_once_with(
+        "youtube",
+        "Champions League final",
+        limit=20,
+        query_language="en",
+        region="US",
+    )
+
+
+def test_english_result_filter_does_not_translate_non_english_sources():
+    results = filter_english_results(
+        [
+            {"title": "Champions League final analysis"},
+            {"title": "欧冠决赛分析"},
+            {"title": ""},
+        ]
+    )
+    assert [item["title"] for item in results] == [
+        "Champions League final analysis",
+        "",
+    ]
 
 
 def test_classify_angle_buckets_by_keywords():

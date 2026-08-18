@@ -29,18 +29,118 @@ from app.providers.registry import ProviderRegistry
 from app.providers.translation.http import HttpTranslationProvider, TranslationUnavailable
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import yt_search
+from app.services.query_language import contains_cjk, detect_language, filter_english_results
 
 # Angle dictionary: each angle maps to keyword/regex hints used to bucket
 # existing videos. Order matters — first match wins.
 ANGLE_KEYWORDS: dict[str, list[str]] = {
-    "深度解析": ["解析", "深度", "复盘", "为什么", "背后", "分析", "讲透", "科普"],
-    "教程教学": ["教程", "教学", "怎么", "如何", "入门", "攻略", "教你", "技巧"],
+    "深度解析": [
+        "解析",
+        "深度",
+        "复盘",
+        "为什么",
+        "背后",
+        "分析",
+        "讲透",
+        "科普",
+        "analysis",
+        "breakdown",
+        "explained",
+        "recap",
+    ],
+    "教程教学": [
+        "教程",
+        "教学",
+        "怎么",
+        "如何",
+        "入门",
+        "攻略",
+        "教你",
+        "技巧",
+        "tutorial",
+        "how to",
+        "guide",
+        "tips",
+    ],
     "二创混剪": ["混剪", "二创", "cut", "剪辑", "remix", "合集", "名场面", "高光"],
-    "盘点榜单": ["盘点", "榜单", "top", "排名", "十大", "一生", "全集", "合集"],
-    "幕后花絮": ["幕后", "花絮", "采访", "纪录片", "训练", "日常", "vlog", "准备"],
-    "reaction吐槽": ["reaction", "反应", "吐槽", "评价", "看完", "震惊", "聊", "闲聊"],
-    "数据可视化": ["数据", "可视化", "统计", "图表", "对比", "趋势", "报告"],
-    "争议讨论": ["争议", "吵架", "翻车", "口水", "风波", "质疑", "道歉", "回应"],
+    "盘点榜单": [
+        "盘点",
+        "榜单",
+        "top",
+        "排名",
+        "十大",
+        "一生",
+        "全集",
+        "合集",
+        "ranking",
+        "best moments",
+        "top 10",
+    ],
+    "幕后花絮": [
+        "幕后",
+        "花絮",
+        "采访",
+        "纪录片",
+        "训练",
+        "日常",
+        "vlog",
+        "准备",
+        "behind the scenes",
+        "interview",
+        "training",
+        "documentary",
+    ],
+    "reaction吐槽": [
+        "reaction",
+        "反应",
+        "吐槽",
+        "评价",
+        "看完",
+        "震惊",
+        "聊",
+        "闲聊",
+        "commentary",
+        "review",
+    ],
+    "数据可视化": [
+        "数据",
+        "可视化",
+        "统计",
+        "图表",
+        "对比",
+        "趋势",
+        "报告",
+        "stats",
+        "statistics",
+        "visualization",
+        "comparison",
+    ],
+    "争议讨论": [
+        "争议",
+        "吵架",
+        "翻车",
+        "口水",
+        "风波",
+        "质疑",
+        "道歉",
+        "回应",
+        "controversy",
+        "debate",
+        "dispute",
+        "criticism",
+    ],
+}
+
+ANGLE_LABELS_EN: dict[str, str] = {
+    "深度解析": "Deep analysis",
+    "教程教学": "Tutorial and how-to",
+    "二创混剪": "Fan edit and remix",
+    "盘点榜单": "Rankings and listicles",
+    "幕后花絮": "Behind the scenes",
+    "reaction吐槽": "Reaction and commentary",
+    "数据可视化": "Data visualization",
+    "争议讨论": "Controversy and debate",
+    "其他角度": "Other angle",
 }
 
 
@@ -87,6 +187,10 @@ def _normalise_search_result(item: dict[str, Any]) -> dict[str, Any]:
     views = _safe_int(result.get("view_count"))
     result["heat_score"] = _heat_from_views(views)
     result["metric_source"] = "platform_fields_and_log_view_proxy"
+    if result.get("title") and not result.get("title_en"):
+        result["title_en"] = result["title"]
+    if result.get("author") and not result.get("author_en"):
+        result["author_en"] = result["author"]
     return result
 
 
@@ -334,45 +438,129 @@ class DerivativeService:
         ]
         notice_parts: list[str] = []
         try:
-            try:
-                run.source_query_en = (
-                    await self._translate_texts([topic.title], target_language="en")
-                )[0]
-            except TranslationUnavailable as exc:
-                run.source_query_en = None
-                notice_parts.append(f"English translation unavailable: {exc}")
+            english_query = topic.title.strip()
+            if detect_language(topic.title) != "en":
+                try:
+                    translated_query = await self._translate_texts(
+                        [topic.title],
+                        target_language="en",
+                        source_language=detect_language(topic.title),
+                    )
+                    english_query = translated_query[0].strip()
+                    if not english_query or contains_cjk(english_query):
+                        raise TranslationUnavailable(
+                            "translation backend returned a non-English search query"
+                        )
+                    process.append(
+                        {
+                            "stage": "english_query_prepared",
+                            "status": "completed",
+                            "message": (
+                                "Translated the hotspot into an English platform query; "
+                                "the original non-English title will not be searched."
+                            ),
+                            "query": english_query,
+                        }
+                    )
+                except TranslationUnavailable as exc:
+                    english_query = ""
+                    note = f"English platform search skipped: {exc}"
+                    notice_parts.append(note)
+                    process.append(
+                        {
+                            "stage": "english_query_prepared",
+                            "status": "degraded",
+                            "message": note,
+                        }
+                    )
+            else:
                 process.append(
                     {
-                        "stage": "english_translation",
-                        "status": "degraded",
-                        "message": str(exc),
+                        "stage": "english_query_prepared",
+                        "status": "completed",
+                        "message": (
+                            "The hotspot title is already English and will be used "
+                            "as the platform query."
+                        ),
+                        "query": english_query,
                     }
                 )
-            results, note = await yt_search(topic.platform, topic.title, limit=20)
-            if note:
-                notice_parts.append(note)
+            run.source_query_en = english_query or None
+
+            results: list[dict[str, Any]] = []
+            search_note: str | None = None
+            if english_query:
+                results, search_note = await yt_search(
+                    topic.platform,
+                    english_query,
+                    limit=20,
+                    query_language="en",
+                    region="US",
+                )
+            else:
+                search_note = "No English query was available; platform search was not executed."
+            if search_note:
+                notice_parts.append(search_note)
+                process.append(
+                    {
+                        "stage": "platform_search",
+                        "status": "degraded",
+                        "message": search_note,
+                        "query": english_query or None,
+                        "result_count": 0,
+                    }
+                )
+            raw_result_count = len(results)
+            results = filter_english_results(results)
+            if raw_result_count != len(results):
+                notice_parts.append(
+                    f"Excluded {raw_result_count - len(results)} non-English platform results."
+                )
             normalised_results = [_normalise_search_result(item) for item in results]
             run.source_results_json = normalised_results
             process.append(
                 {
                     "stage": "platform_search",
-                    "status": "completed" if not note else "degraded",
-                    "message": f"Platform search completed with {len(results)} raw results.",
-                    "query": run.source_query_en or topic.title,
+                    "status": "completed" if normalised_results else "degraded",
+                    "message": (
+                        f"Completed the English platform search with {len(results)} "
+                        "English-source results."
+                        if english_query
+                        else "Skipped platform search because an English query was unavailable."
+                    ),
+                    "query": english_query or None,
+                    "region": "US",
                     "result_count": len(results),
                 }
             )
-            existing = self._cluster_existing(topic, normalised_results, run.id)
+            existing = self._cluster_existing(
+                topic, normalised_results, run.id, query_en=english_query or None
+            )
             for row in existing:
                 self.session.add(row)
 
             predicted: list[DerivativeTopic] = []
             try:
-                predicted = await self._predict(topic, existing, normalised_results, run.id)
+                predicted = await self._predict(
+                    topic,
+                    existing,
+                    normalised_results,
+                    run.id,
+                    query_en=english_query or None,
+                )
                 for row in predicted:
                     self.session.add(row)
             except LLMUnavailableError as exc:
                 notice_parts.append(f"AI prediction unavailable: {exc}")
+                process.append(
+                    {
+                        "stage": "ai_prediction",
+                        "status": "degraded",
+                        "message": str(exc),
+                    }
+                )
+            except ValueError as exc:
+                notice_parts.append(f"AI prediction skipped: {exc}")
                 process.append(
                     {"stage": "ai_prediction", "status": "degraded", "message": str(exc)}
                 )
@@ -385,8 +573,8 @@ class DerivativeService:
                         "stage": "english_projection",
                         "status": "completed",
                         "message": (
-                            "Generated English titles, descriptions, metrics, and "
-                            "evidence projections."
+                            "Kept English platform result fields and generated "
+                            "English angle projections."
                         ),
                     }
                 )
@@ -426,7 +614,11 @@ class DerivativeService:
             raise
 
     def _cluster_existing(
-        self, topic: TrendTopic, results: list[dict[str, Any]], run_id: UUID | None = None
+        self,
+        topic: TrendTopic,
+        results: list[dict[str, Any]],
+        run_id: UUID | None = None,
+        query_en: str | None = None,
     ) -> list[DerivativeTopic]:
         buckets: dict[str, list[dict[str, Any]]] = {}
         for item in results:
@@ -441,6 +633,8 @@ class DerivativeService:
             views = [_safe_int(i.get("view_count")) for i in items]
             median_views = _median(views)
             sample_titles = [i.get("title") for i in items[:5] if i.get("title")]
+            angle_en = ANGLE_LABELS_EN.get(angle, angle)
+            title_en = f"{query_en} · {angle_en}" if query_en else None
             rows.append(
                 DerivativeTopic(
                     workspace_id=topic.workspace_id,
@@ -449,8 +643,13 @@ class DerivativeService:
                     platform=topic.platform,
                     kind="existing_on_platform",
                     angle=angle,
+                    angle_en=angle_en,
                     title=f"{topic.title} · {angle}",
+                    title_en=title_en,
                     description=f"平台上已有 {len(items)} 条「{angle}」角度内容",
+                    description_en=(
+                        f"The platform has {len(items)} existing {angle_en.lower()} results."
+                    ),
                     predicted_heat_score=_heat_from_views(median_views),
                     evidence_json={
                         "sample_count": len(items),
@@ -471,8 +670,11 @@ class DerivativeService:
         existing: list[DerivativeTopic],
         results: list[dict[str, Any]],
         run_id: UUID | None = None,
+        query_en: str | None = None,
     ) -> list[DerivativeTopic]:
-        existing_angles = [str(r.angle) for r in existing if r.angle]
+        if not query_en:
+            raise ValueError("English query unavailable; AI prediction was not executed.")
+        existing_angles = [str(r.angle_en or r.angle) for r in existing if r.angle_en or r.angle]
         sample_titles = [str(i["title"]) for i in results[:12] if i.get("title") is not None]
         system_prompt = (
             "You are a sports short-video derivative-angle strategist. Given one "
@@ -480,7 +682,7 @@ class DerivativeService:
             "derivative angles that are not saturated. Return JSON only, in English."
         )
         user_prompt = (
-            f"Hotspot: {topic.title}\n"
+            f"Hotspot: {query_en or topic.title}\n"
             f"Platform: {topic.platform}\n"
             f"Current heat score: {topic.heat_score}\n"
             f"Existing angles: {', '.join(existing_angles) if existing_angles else 'none'}\n"
@@ -517,10 +719,14 @@ class DerivativeService:
                     platform=topic.platform,
                     kind="ai_predicted",
                     angle=item.get("angle"),
+                    angle_en=str(item.get("angle") or "Other angle"),
                     title=str(item.get("title")),
+                    title_en=str(item.get("title")),
                     description=item.get("description"),
+                    description_en=str(item.get("description") or ""),
                     predicted_heat_score=round(min(100.0, max(0.0, heat)), 1),
                     ai_rationale=item.get("rationale"),
+                    ai_rationale_en=str(item.get("rationale") or ""),
                     status="suggested",
                     confidence=round(min(1.0, 0.3 + heat / 200.0), 2),
                     observed_at=now,
@@ -543,18 +749,15 @@ class DerivativeService:
                 if value:
                     texts.append(value)
                     slots.append((row, field))
-        result_slots: list[dict[str, Any]] = []
         for item in source_results:
-            if item.get("title"):
-                result_slots.append(item)
-                texts.append(str(item["title"]))
-        translated = await self._translate_texts(texts, target_language="en")
+            if item.get("title") and not item.get("title_en"):
+                item["title_en"] = item["title"]
+            if item.get("author") and not item.get("author_en"):
+                item["author_en"] = item["author"]
+        translated = await self._translate_texts(texts, target_language="en") if texts else []
         cursor = 0
         for row, field in slots:
             setattr(row, field, translated[cursor])
-            cursor += 1
-        for item in result_slots:
-            item["title_en"] = translated[cursor]
             cursor += 1
 
     async def adopt(

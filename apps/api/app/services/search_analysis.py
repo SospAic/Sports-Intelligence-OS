@@ -28,6 +28,7 @@ from app.providers.translation.http import HttpTranslationProvider, TranslationU
 from app.services.audit import build_audit_entry
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import PLATFORM_LABELS, SEARCHABLE_PLATFORMS, yt_search
+from app.services.query_language import contains_cjk, detect_language, filter_english_results
 
 
 def _views(value: Any) -> int:
@@ -44,13 +45,7 @@ def _heat_from_views(views: int) -> float:
 
 
 def _detect_language(text: str) -> str:
-    if any("\u4e00" <= char <= "\u9fff" for char in text):
-        return "zh"
-    if any("\u3040" <= char <= "\u30ff" for char in text):
-        return "ja"
-    if any("\uac00" <= char <= "\ud7af" for char in text):
-        return "ko"
-    return "en"
+    return detect_language(text)
 
 
 def _result_heat(result: dict[str, Any]) -> float:
@@ -265,78 +260,105 @@ class SearchAnalysisService:
     ) -> tuple[SearchQuery, SearchAnalysis, list[dict[str, Any]], str | None]:
         platforms = SEARCHABLE_PLATFORMS if platform in ("all", "", None) else [platform]
         source_language = _detect_language(query_text)
+        english_query = query_text.strip()
         process_log: list[dict[str, Any]] = [
             {
                 "stage": "query_normalized",
                 "status": "completed",
-                "message": "Normalized the search scope, query language, and result limit.",
+                "message": (
+                    "Normalized the search scope and prepared an English platform query."
+                ),
                 "source_language": source_language,
             }
         ]
 
         all_results: list[dict[str, Any]] = []
         notes: list[str] = []
-        for pf in platforms:
-            results, note = await yt_search(pf, query_text, limit=limit)
-            if note:
+        if source_language != "en":
+            try:
+                translated_query = await self._translate_texts(
+                    [query_text], target_language="en", source_language=source_language
+                )
+                english_query = translated_query[0].strip()
+                if not english_query or contains_cjk(english_query):
+                    raise TranslationUnavailable(
+                        "translation backend returned a non-English search query"
+                    )
+                process_log.append(
+                    {
+                        "stage": "english_query_prepared",
+                        "status": "completed",
+                        "message": (
+                            "Translated the input into an English search query; "
+                            "platform search will not use the original non-English text."
+                        ),
+                        "query": english_query,
+                    }
+                )
+            except TranslationUnavailable as exc:
+                english_query = ""
+                note = f"English platform search skipped: {exc}"
                 notes.append(note)
-            all_results.extend(results)
+                process_log.append(
+                    {
+                        "stage": "english_query_prepared",
+                        "status": "degraded",
+                        "message": note,
+                    }
+                )
+        else:
+            process_log.append(
+                {
+                    "stage": "english_query_prepared",
+                    "status": "completed",
+                    "message": (
+                        "The input is already English and will be used as the platform query."
+                    ),
+                    "query": english_query,
+                }
+            )
+
+        if english_query:
+            for pf in platforms:
+                results, search_note = await yt_search(
+                    pf,
+                    english_query,
+                    limit=limit,
+                    query_language="en",
+                    region="US",
+                )
+                if search_note:
+                    notes.append(search_note)
+                all_results.extend(results)
+        raw_result_count = len(all_results)
+        all_results = filter_english_results(all_results)
+        if raw_result_count != len(all_results):
+            notes.append(
+                f"Excluded {raw_result_count - len(all_results)} non-English platform results."
+            )
         process_log.append(
             {
                 "stage": "platform_search",
                 "status": "completed" if all_results else "degraded",
-                "message": f"Completed platform search with {len(all_results)} raw results.",
+                "message": (
+                    f"Completed the English platform search with {len(all_results)} "
+                    "English-source results."
+                    if english_query
+                    else "Skipped platform search because an English query was unavailable."
+                ),
                 "platforms": [PLATFORM_LABELS.get(p, p) for p in platforms],
                 "result_count": len(all_results),
+                "query": english_query or None,
+                "region": "US",
             }
         )
 
         english_results = [dict(result) for result in all_results]
-        translation_notice: str | None = None
-        english_query = query_text
-        translation_slots: list[tuple[dict[str, Any], str]] = []
-        translation_texts: list[str] = []
-        if source_language == "en":
-            english_query = query_text
-            for result in english_results:
-                if result.get("title"):
-                    result["title_en"] = result["title"]
-                if result.get("author"):
-                    result["author_en"] = result["author"]
-        else:
-            translation_texts.append(query_text)
-            translation_slots.append(({"query": True}, "query"))
-            for result in english_results:
-                for key, english_key in (("title", "title_en"), ("author", "author_en")):
-                    if result.get(key):
-                        translation_texts.append(str(result[key]))
-                        translation_slots.append((result, english_key))
-            try:
-                translated = await self._translate_texts(
-                    translation_texts, target_language="en", source_language=source_language
-                )
-                english_query = translated[0]
-                cursor = 1
-                for result, key in translation_slots[1:]:
-                    result[key] = translated[cursor]
-                    cursor += 1
-                process_log.append(
-                    {
-                        "stage": "english_projection",
-                        "status": "completed",
-                        "message": "Translated query and result titles/authors into English.",
-                    }
-                )
-            except TranslationUnavailable as exc:
-                translation_notice = f"English translation unavailable: {exc}"
-                notes.append(translation_notice)
-                process_log.append(
-                    {
-                        "stage": "english_projection",
-                        "status": "degraded",
-                        "message": translation_notice,
-                    }
-                )
+        for result in english_results:
+            if result.get("title"):
+                result["title_en"] = result["title"]
+            if result.get("author"):
+                result["author_en"] = result["author"]
 
         for result in english_results:
             result["heat_score"] = _result_heat(result)
@@ -400,7 +422,7 @@ class SearchAnalysisService:
         }
         try:
             llm_out = await self._call_analysis_llm(
-                workspace_id, query_text, platform, all_results, volume_estimate, timeline
+                workspace_id, english_query, platform, all_results, volume_estimate, timeline
             )
             analysis_fields.update(
                 {

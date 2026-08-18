@@ -14,6 +14,7 @@ import json
 import sys
 from typing import Any
 
+from app.services.query_language import contains_cjk, filter_english_results
 from app.services.ytdlp_runtime import runtime_args
 
 YTDLP_TIMEOUT_SECONDS = 45.0
@@ -35,7 +36,12 @@ SEARCHABLE_PLATFORMS = list(SEARCH_BUILDERS.keys())
 
 
 async def yt_search(
-    platform: str, query: str, limit: int = 10
+    platform: str,
+    query: str,
+    limit: int = 10,
+    *,
+    query_language: str | None = None,
+    region: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Run a platform search and return ``(results, error_note)``.
 
@@ -44,6 +50,9 @@ async def yt_search(
     could not run (unconfigured platform / timeout / no output) — callers
     surface it but should not fail the whole request.
     """
+    if query_language == "en" and contains_cjk(query):
+        return [], "拒绝使用包含中文/日文/韩文字符的查询执行英文平台搜索"
+
     builder = SEARCH_BUILDERS.get(platform)
     if builder is None:
         label = PLATFORM_LABELS.get(platform, platform)
@@ -51,7 +60,7 @@ async def yt_search(
 
     url = builder(query, limit)
     try:
-        proc = await asyncio.create_subprocess_exec(
+        command = [
             sys.executable,
             "-m",
             "yt_dlp",
@@ -64,7 +73,19 @@ async def yt_search(
             "--playlist-end",
             str(limit),
             *runtime_args(),
-            url,
+        ]
+        if platform == "youtube" and query_language == "en":
+            command.extend(
+                [
+                    "--extractor-args",
+                    "youtube:lang=en",
+                ]
+            )
+            if region:
+                command.extend(["--geo-bypass-country", region.upper()])
+        command.append(url)
+        proc = await asyncio.create_subprocess_exec(
+            *command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -103,6 +124,11 @@ async def yt_search(
                 "duration": entry.get("duration"),
                 "published": entry.get("upload_date") or entry.get("timestamp"),
                 "platform": platform,
+                "search_query": query,
+                "search_language": query_language,
+                "search_region": region,
             }
         )
+    if query_language == "en":
+        results = filter_english_results(results)
     return results, None

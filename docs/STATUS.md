@@ -2175,3 +2175,9 @@ explicitly enable it.
 - 按产品语言约定调整“生成衍生角度”和“搜索这个赛道”：网站界面文案保持中文，后台执行日志、英文搜索词、来源结果标题/作者、分析摘要和衍生内容默认展示英文。
 - 多语言选择器仍可将执行过程和结果内容翻译为中文、日语、韩语、西班牙语、法语、德语或葡萄牙语；翻译不会切换导航、按钮或字段语言。
 - 验证：`docker compose build web`、`docker compose up -d web` 成功；Web healthy；前端 Vitest `28 files / 88 tests passed`；TypeScript 通过；Lint 0 errors，保留 1 条既有 warning。
+## 2026-08-18：热点平台搜索改为英文来源优先
+
+- 修复根因：原链路先用中文话题调用平台搜索，再把标题翻译成英文，导致“英文结果”只是中文结果的翻译投影。
+- 现在两条链路均先生成英文检索词，再调用平台搜索；YouTube 使用英文 extractor 参数和 US 区域提示，返回标题含中/日/韩字符的结果会被排除，结果的英文标题/作者字段直接来自英文来源，不再翻译中文搜索结果冒充英文来源。
+- 当英文检索词无法准备时，任务跳过平台搜索并记录 degraded 原因；TikTok 当前仍受公开全局搜索/官方权限能力限制，前端显示真实限制，不生成假数据。
+- 验证：`docker compose build api worker beat`、`docker compose up -d api worker beat` 成功；API/Worker/Beat healthy/running；`ruff`、`compileall`、`mypy` 通过；热点模块 `11 passed, 1 warning`；`/health/live=200`、`/health/ready=200`；Alembic 无新迁移。
