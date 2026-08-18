@@ -65,6 +65,8 @@ docker compose up -d
 | `SIO_NOTIFICATION_ENCRYPTION_KEY` | 通知渠道配置加密 | 生产必填 |
 | `SIO_BOOTSTRAP_ADMIN_EMAIL/PASSWORD` | 首个管理员初始化 | 初始化时必填，无默认密码 |
 | `SIO_YOUTUBE_API_KEY` | YouTube Data API v3 | 真实 YouTube 同步必填 |
+| `SIO_TIKTOK_CLIENT_KEY` / `SIO_TIKTOK_CLIENT_SECRET` / `SIO_TIKTOK_ACCESS_TOKEN` | TikTok Display API v2 | 仅能访问授权 Token 所属账号；工作区平台管理配置优先 |
+| `SIO_DOUYIN_CLIENT_KEY` / `SIO_DOUYIN_CLIENT_SECRET` / `SIO_DOUYIN_ACCESS_TOKEN` | 抖音开放平台 | 需对应应用权限与审核；工作区平台管理配置优先 |
 | `SIO_LLM_OPENAI_COMPATIBLE_BASE_URL/API_KEY` | OpenAI 兼容 LLM | 真实模型调用必填 |
 | `SIO_TASK_STALE_AFTER_SECONDS` | Worker 失联执行租约 | 默认 2100，不应短于任务硬时限 |
 | `SIO_DATABASE_POOL_SIZE/MAX_OVERFLOW` | 每进程数据库连接池 | 按 API/Worker 副本数核算总连接数 |
@@ -131,7 +133,7 @@ make seed-generation
 docker compose run --rm api python -m app.cli seed-generation
 ```
 
-Mock LLM 无需密钥，但输出始终带 `MOCK TEST OUTPUT`、`source_kind=mock` 和测试标签。真实 OpenAI 兼容接口仅从 API/Worker 后端环境读取配置：
+Mock LLM 无需密钥，但输出始终带 `MOCK TEST OUTPUT`、`source_kind=mock` 和测试标签。真实 LLM 配置可在“设置 → LLM API”按工作区加密保存并覆盖部署默认，也可从 API/Worker 后端环境读取：
 
 ```dotenv
 SIO_LLM_OPENAI_COMPATIBLE_BASE_URL=https://provider.example/v1
@@ -139,7 +141,7 @@ SIO_LLM_OPENAI_COMPATIBLE_API_KEY=
 SIO_LLM_DEFAULT_MODEL=gpt-5.6-terra
 ```
 
-浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
+浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Provider 标识/显示名称、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数；保存后可用非计费 `/models` 测试验证连接和默认模型可用性。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
 
 通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。订阅告警可在“设置 → 订阅告警”按新作品、关键词或指标突变触发统一通知队列，详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md) 和 [订阅告警](docs/SUBSCRIPTION_ALERTS.md)。
 
@@ -319,4 +321,4 @@ Mock 默认被生产自动化阻止；仅测试模式或规则明确允许 Mock 
 
 ## 文档索引
 
-[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [平台采集](docs/PLATFORM_SYNC.md) · [真实数据验收](docs/REAL_DATA_ACCEPTANCE.md) · [指标口径](docs/METRIC_CATALOG.md) · [待处理任务](docs/NEXT_TASKS.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [订阅告警](docs/SUBSCRIPTION_ALERTS.md) · [编辑审核队列](docs/PRODUCT_AUDIT_2026-08-15.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md)
+[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [前端测试矩阵](docs/FRONTEND_TEST_MATRIX.md) · [平台采集](docs/PLATFORM_SYNC.md) · [真实数据验收](docs/REAL_DATA_ACCEPTANCE.md) · [指标口径](docs/METRIC_CATALOG.md) · [待处理任务](docs/NEXT_TASKS.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [订阅告警](docs/SUBSCRIPTION_ALERTS.md) · [编辑审核队列](docs/PRODUCT_AUDIT_2026-08-15.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md)

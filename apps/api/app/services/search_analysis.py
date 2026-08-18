@@ -24,6 +24,7 @@ from app.core.config import Settings
 from app.models.trends import SearchAnalysis, SearchQuery
 from app.providers.llm.base import LLMProvider
 from app.providers.registry import ProviderRegistry
+from app.providers.translation.http import HttpTranslationProvider, TranslationUnavailable
 from app.services.audit import build_audit_entry
 from app.services.llm_client import LLMUnavailableError, call_json_llm
 from app.services.platform_search import PLATFORM_LABELS, SEARCHABLE_PLATFORMS, yt_search
@@ -40,6 +41,25 @@ def _heat_from_views(views: int) -> float:
     if views <= 0:
         return 0.0
     return round(min(100.0, 12.0 * math.log10(views + 1)), 1)
+
+
+def _detect_language(text: str) -> str:
+    if any("\u4e00" <= char <= "\u9fff" for char in text):
+        return "zh"
+    if any("\u3040" <= char <= "\u30ff" for char in text):
+        return "ja"
+    if any("\uac00" <= char <= "\ud7af" for char in text):
+        return "ko"
+    return "en"
+
+
+def _result_heat(result: dict[str, Any]) -> float:
+    """Expose a derived per-result heat proxy without claiming platform data."""
+
+    views = _views(result.get("view_count"))
+    likes = _views(result.get("like_count"))
+    comments = _views(result.get("comment_count"))
+    return round(min(100.0, _heat_from_views(views) + math.log10(likes + comments + 1)), 1)
 
 
 def _bucket_date(published: Any) -> str | None:
@@ -67,6 +87,102 @@ class SearchAnalysisService:
         self.session = session
         self.llm_providers = llm_providers
         self.settings = settings
+
+    async def _translate_texts(
+        self, texts: list[str], *, target_language: str, source_language: str = "auto"
+    ) -> list[str]:
+        if not texts:
+            return []
+        if (
+            self.settings is None
+            or self.settings.subtitle_translation_backend != "http"
+            or not self.settings.subtitle_translation_base_url
+        ):
+            raise TranslationUnavailable("local translation backend is not configured")
+        provider = HttpTranslationProvider(
+            base_url=self.settings.subtitle_translation_base_url,
+            api_key=(
+                self.settings.subtitle_translation_api_key.get_secret_value()
+                if self.settings.subtitle_translation_api_key
+                else None
+            ),
+            timeout_seconds=self.settings.subtitle_translation_timeout_seconds,
+        )
+        return await provider.translate_segments(
+            texts, source_language=source_language, target_language=target_language
+        )
+
+    async def translate_analysis(
+        self, workspace_id: UUID, query_id: UUID, target_language: str
+    ) -> dict[str, Any]:
+        query, analysis = await self.get_analysis(workspace_id, query_id)
+        if target_language.casefold() in {"en", "en-us", "en-gb"}:
+            return {
+                "query": query,
+                "analysis": analysis,
+                "results": analysis.results_json or [],
+                "language": "en",
+            }
+        cached = (analysis.translations_json or {}).get(target_language)
+        if isinstance(cached, dict):
+            return {"query": query, "analysis": analysis, **cached, "language": target_language}
+
+        results = [dict(result) for result in analysis.results_json or []]
+        process = [dict(step) for step in analysis.process_log_json or []]
+        texts: list[str] = [query.query_text_en or query.query_text]
+        for result in results:
+            for key in ("title_en", "author_en"):
+                if result.get(key):
+                    texts.append(str(result[key]))
+        if analysis.summary:
+            texts.append(analysis.summary)
+        for step in process:
+            if step.get("message"):
+                texts.append(str(step["message"]))
+        translated = await self._translate_texts(
+            texts, target_language=target_language, source_language="en"
+        )
+        cursor = 0
+        localized_query = translated[cursor]
+        cursor += 1
+        localized_results: list[dict[str, Any]] = []
+        for result in results:
+            localized = dict(result)
+            if result.get("title_en"):
+                localized["title"] = translated[cursor]
+                cursor += 1
+            if result.get("author_en"):
+                localized["author"] = translated[cursor]
+                cursor += 1
+            localized_results.append(localized)
+        localized_summary = analysis.summary
+        if analysis.summary:
+            localized_summary = translated[cursor]
+            cursor += 1
+        for step in process:
+            if step.get("message"):
+                step["message"] = translated[cursor]
+                cursor += 1
+        localized_analysis = {
+            "query_text": localized_query,
+            "summary": localized_summary,
+            "results": localized_results,
+            "process_log": process,
+        }
+        translations = dict(analysis.translations_json or {})
+        translations[target_language] = localized_analysis
+        analysis.translations_json = translations
+        await self.session.commit()
+        await self.session.refresh(analysis)
+        return {
+            "query": query,
+            "analysis": analysis,
+            "results": localized_results,
+            "process_log": process,
+            "language": target_language,
+            "translated_query_text": localized_query,
+            "translated_summary": localized_summary,
+        }
 
     async def list_queries(
         self,
@@ -148,6 +264,15 @@ class SearchAnalysisService:
         limit: int = 10,
     ) -> tuple[SearchQuery, SearchAnalysis, list[dict[str, Any]], str | None]:
         platforms = SEARCHABLE_PLATFORMS if platform in ("all", "", None) else [platform]
+        source_language = _detect_language(query_text)
+        process_log: list[dict[str, Any]] = [
+            {
+                "stage": "query_normalized",
+                "status": "completed",
+                "message": "Normalized the search scope, query language, and result limit.",
+                "source_language": source_language,
+            }
+        ]
 
         all_results: list[dict[str, Any]] = []
         notes: list[str] = []
@@ -156,9 +281,72 @@ class SearchAnalysisService:
             if note:
                 notes.append(note)
             all_results.extend(results)
+        process_log.append(
+            {
+                "stage": "platform_search",
+                "status": "completed" if all_results else "degraded",
+                "message": f"Completed platform search with {len(all_results)} raw results.",
+                "platforms": [PLATFORM_LABELS.get(p, p) for p in platforms],
+                "result_count": len(all_results),
+            }
+        )
+
+        english_results = [dict(result) for result in all_results]
+        translation_notice: str | None = None
+        english_query = query_text
+        translation_slots: list[tuple[dict[str, Any], str]] = []
+        translation_texts: list[str] = []
+        if source_language == "en":
+            english_query = query_text
+            for result in english_results:
+                if result.get("title"):
+                    result["title_en"] = result["title"]
+                if result.get("author"):
+                    result["author_en"] = result["author"]
+        else:
+            translation_texts.append(query_text)
+            translation_slots.append(({"query": True}, "query"))
+            for result in english_results:
+                for key, english_key in (("title", "title_en"), ("author", "author_en")):
+                    if result.get(key):
+                        translation_texts.append(str(result[key]))
+                        translation_slots.append((result, english_key))
+            try:
+                translated = await self._translate_texts(
+                    translation_texts, target_language="en", source_language=source_language
+                )
+                english_query = translated[0]
+                cursor = 1
+                for result, key in translation_slots[1:]:
+                    result[key] = translated[cursor]
+                    cursor += 1
+                process_log.append(
+                    {
+                        "stage": "english_projection",
+                        "status": "completed",
+                        "message": "Translated query and result titles/authors into English.",
+                    }
+                )
+            except TranslationUnavailable as exc:
+                translation_notice = f"English translation unavailable: {exc}"
+                notes.append(translation_notice)
+                process_log.append(
+                    {
+                        "stage": "english_projection",
+                        "status": "degraded",
+                        "message": translation_notice,
+                    }
+                )
+
+        for result in english_results:
+            result["heat_score"] = _result_heat(result)
+            result["metric_source"] = "platform_fields_and_log_view_engagement_proxy"
+        all_results = english_results
 
         # ---- aggregate basic signals -------------------------------------
         total_views = sum(_views(r.get("view_count")) for r in all_results)
+        total_likes = sum(_views(r.get("like_count")) for r in all_results)
+        total_comments = sum(_views(r.get("comment_count")) for r in all_results)
         raw_platforms = [r.get("platform") for r in all_results]
         per_platform = Counter(value for value in raw_platforms if isinstance(value, str) and value)
         platform_distribution = {PLATFORM_LABELS.get(p, p): c for p, c in per_platform.items()}
@@ -172,8 +360,29 @@ class SearchAnalysisService:
         volume_estimate = {
             "total_hits": len(all_results),
             "total_views": total_views,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "average_views": round(total_views / len(all_results)) if all_results else 0,
+            "top_view_count": max((_views(r.get("view_count")) for r in all_results), default=0),
+            "metric_note": (
+                "Views, likes, and comments are platform fields when returned; "
+                "heat is a derived proxy."
+            ),
             "platforms_searched": [PLATFORM_LABELS.get(p, p) for p in platforms],
         }
+        process_log.append(
+            {
+                "stage": "metrics_aggregated",
+                "status": "completed",
+                "message": (
+                    "Aggregated views, likes, comments, platform distribution, "
+                    "and derived heat."
+                ),
+                "total_views": total_views,
+                "total_likes": total_likes,
+                "total_comments": total_comments,
+            }
+        )
 
         # ---- LLM structured analysis (degrades gracefully) ---------------
         notice: str | None = None
@@ -205,21 +414,32 @@ class SearchAnalysisService:
             )
         except LLMUnavailableError as exc:
             notice = (
-                "AI 深度分析未生成："
-                f"{exc}. 已返回基于检索结果的统计量（热度/声量/平台分布/时间线）。"
+                "AI deep analysis unavailable: "
+                f"{exc}. Returned measured search metrics and platform distribution."
             )
             analysis_fields["summary"] = (
-                f"检索到 {len(all_results)} 条相关内容，合计播放约 {total_views:,}。"
-                + (f" 提示：{'; '.join(notes)}" if notes else "")
+                f"Search returned {len(all_results)} related results with "
+                f"{total_views:,} total views."
+                + (f" Note: {'; '.join(notes)}" if notes else "")
             )
 
         if notes:
             notice = (notice + " " if notice else "") + "；".join(notes)
+        process_log.append(
+            {
+                "stage": "analysis_completed",
+                "status": "completed" if not notice else "degraded",
+                "message": "Persisted the English analysis snapshot and raw metric evidence.",
+                "model_used": analysis_fields["model_used"],
+            }
+        )
 
         # ---- persist -----------------------------------------------------
         query = SearchQuery(
             workspace_id=workspace_id,
             query_text=query_text,
+            query_text_en=english_query,
+            source_language=source_language,
             platform_scope=platform,
             saved_name=None,
             is_saved=False,
@@ -244,6 +464,8 @@ class SearchAnalysisService:
             model_used=analysis_fields["model_used"],
             raw_llm=analysis_fields["raw_llm"],
             results_json=all_results,
+            process_log_json=process_log,
+            translations_json={},
         )
         self.session.add(analysis)
         await self.session.commit()
@@ -261,26 +483,30 @@ class SearchAnalysisService:
         timeline: list[dict[str, Any]],
     ) -> dict[str, Any]:
         scope_label = (
-            "全网" if platform in ("all", "", None) else PLATFORM_LABELS.get(platform, platform)
+            "all platforms"
+            if platform in ("all", "", None)
+            else PLATFORM_LABELS.get(platform, platform)
         )
         sample_titles = [str(r["title"]) for r in results[:15] if r.get("title") is not None]
         system_prompt = (
-            "你是热点情报分析师。给定一段用户检索描述、检索范围与真实检索结果样本，"
-            "请输出该检索条件相关的热度、声量、情绪、时间线、平台分布、相关衍生话题与"
-            "一句摘要。只输出 JSON，不要额外解释。"
+            "You are a sports intelligence analyst. Given a search description, scope, "
+            "measured result metrics, and real result samples, return related heat, volume, "
+            "sentiment, timeline, platform distribution, derivative angles, and one summary. "
+            "Return JSON only, and write every text field in English."
         )
         user_prompt = (
-            f"检索描述：{query_text}\n"
-            f"检索范围：{scope_label}\n"
-            f"检索统计：命中 {volume.get('total_hits')} 条，"
-            f"合计播放约 {volume.get('total_views'):,}\n"
-            f"时间线（按月计数）：{timeline}\n"
-            f"样本标题：\n- " + "\n- ".join(sample_titles) + "\n\n"
-            '请输出 JSON：{"related_hotness": int(0-100), "sentiment": str('
+            f"Search description: {query_text}\n"
+            f"Search scope: {scope_label}\n"
+            f"Measured metrics: {volume.get('total_hits')} results, "
+            f"{volume.get('total_views'):,} total views, {volume.get('total_likes'):,} likes, "
+            f"{volume.get('total_comments'):,} comments\n"
+            f"Monthly timeline: {timeline}\n"
+            f"Sample titles:\n- " + "\n- ".join(sample_titles) + "\n\n"
+            'Return JSON: {"related_hotness": int(0-100), "sentiment": str('
             "'positive'|'neutral'|'negative'|'mixed'), \"timeline_phases\": "
             '[{"phase": str, "note": str}], "related_derivative_topics": '
             '[{"title": str, "angle": str, "predicted_heat_score": int}], '
-            '"summary": str(中文一句摘要), "model_used": str}。'
+            '"summary": str, "model_used": str}. All text must be English.'
         )
         return await call_json_llm(
             self.session,

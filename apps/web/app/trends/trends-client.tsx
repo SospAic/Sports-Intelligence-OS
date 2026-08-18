@@ -12,6 +12,7 @@ import {
   Flame,
   Heart,
   MessageCircle,
+  Newspaper,
   Play,
   RefreshCw,
   Share2,
@@ -40,6 +41,12 @@ import { ScoreExplanationPanel } from "@/components/score-explanation";
 import { useToast } from "@/components/toast";
 import { DerivativesPanel } from "@/components/derivatives-panel";
 import { SearchPanel } from "@/components/search-panel";
+import {
+  HotspotEvidenceDrawer,
+  type EvidenceTopic,
+} from "@/components/hotspot-evidence-drawer";
+import { HotNewsDetailDrawer } from "@/components/hot-news-detail-drawer";
+import { HotVideoDetailDrawer } from "@/components/hot-video-detail-drawer";
 import { AnalyticsClient } from "./analytics/analytics-client";
 import {
   Badge,
@@ -112,7 +119,12 @@ interface KeywordStat {
   platform: string;
   heat_index: number | null;
   observed_at: string;
-  metadata?: Record<string, unknown> & { confidence_score?: number };
+  metadata?: Record<string, unknown> & {
+    confidence_score?: number;
+    label_type?: string;
+    label_priority?: number;
+    label_source?: string;
+  };
   video_count: number | null;
   total_views: number | null;
 }
@@ -156,6 +168,13 @@ interface VideosPageResponse {
   total: number;
   page: number;
   page_size: number;
+}
+
+interface CategorySummary {
+  category: string;
+  topic_count: number;
+  video_count: number;
+  total_count: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -292,6 +311,42 @@ const CATEGORY_LABELS: Record<string, string> = {
   badminton: "羽毛球",
   table_tennis: "乒乓球",
 };
+
+const CATEGORY_ALIASES: Record<string, string> = {
+  general: "sports",
+  general_sports: "sports",
+  sport: "sports",
+  soccer: "football",
+  hockey: "ice_hockey",
+  combat: "mma",
+  mixed_martial_arts: "mma",
+};
+
+function canonicalCategory(value: string | null | undefined): string {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[ -]/g, "_");
+  return (CATEGORY_ALIASES[normalized] ?? normalized) || "sports";
+}
+
+function categoryLabel(value: string | null | undefined): string {
+  const category = canonicalCategory(value);
+  return CATEGORY_LABELS[category] ?? value ?? "综合体育";
+}
+
+const TREND_LABEL_TYPE_LABELS: Record<string, string> = {
+  topic: "话题",
+  event: "事件",
+  person: "人物",
+  team: "队伍",
+  league: "联赛",
+  location: "地点",
+};
+
+function trendLabelTypeLabel(value: unknown): string {
+  return TREND_LABEL_TYPE_LABELS[String(value ?? "")] ?? "话题";
+}
 
 // ─── Helper Functions ────────────────────────────────────────────────────────
 
@@ -537,10 +592,12 @@ function VideoCard({
   video,
   platform,
   workspaceId,
+  onOpen,
 }: {
   video: BreakoutVideo;
   platform: Platform;
   workspaceId: string | null;
+  onOpen?: () => void;
 }) {
   return (
     <div className="group flex gap-3 rounded-xl border border-slate-800/60 bg-slate-900/40 p-3 transition hover:border-slate-700 hover:bg-slate-900/70">
@@ -588,6 +645,15 @@ function VideoCard({
         <h3 className="line-clamp-2 text-sm font-medium leading-5 text-slate-100 transition group-hover:text-white">
           {video.title}
         </h3>
+        {onOpen && (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="mt-1 text-xs font-medium text-cyan-400 hover:text-cyan-300"
+          >
+            展开视频详情 →
+          </button>
+        )}
         <p className="mt-1 truncate text-xs text-slate-500">
           {video.author_name ?? "未知作者"}
         </p>
@@ -855,16 +921,6 @@ function TrendCollectionIndicator({
   );
 }
 
-const MODULE_TABS: {
-  key: "trends" | "derivatives" | "search" | "analytics";
-  label: string;
-}[] = [
-  { key: "trends", label: "趋势榜单" },
-  { key: "derivatives", label: "衍生话题" },
-  { key: "search", label: "智能搜索" },
-  { key: "analytics", label: "情报分析" },
-];
-
 export function TrendsClient() {
   const { workspaceId } = useWorkspace();
   const { notify } = useToast();
@@ -879,7 +935,13 @@ export function TrendsClient() {
   const [collectSubmitting, setCollectSubmitting] = useState(false);
   const [collectTaskId, setCollectTaskId] = useState<string | null>(null);
   const [category, setCategory] = useUrlState("category", "全部");
-  const [tab, setTab] = useState<"trends" | "derivatives" | "search" | "analytics">("trends");
+  const [selectedTopic, setSelectedTopic] = useState<EvidenceTopic | null>(null);
+  const [selectedNewsEvent, setSelectedNewsEvent] = useState<HotNewsEvent | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<BreakoutVideo | null>(null);
+  const [toolPanel, setToolPanel] = useState<"derivatives" | "search" | "analytics" | null>(null);
+  const topicSectionRef = useRef<HTMLDivElement>(null);
+  const newsSectionRef = useRef<HTMLDivElement>(null);
+  const videoSectionRef = useRef<HTMLDivElement>(null);
 
   const [windowRaw, setWindowRaw] = useUrlState("window", "24");
   const parsedWindow = Number(windowRaw);
@@ -898,6 +960,7 @@ export function TrendsClient() {
   const [topicPage, setTopicPage] = useState(1);
 
   const platformParam = platform === "all" ? "" : platform;
+  const categoryParam = category === "全部" ? "" : category;
 
   // Reset pagination when platform or sort changes
   const handlePlatformChange = useCallback(
@@ -938,6 +1001,17 @@ export function TrendsClient() {
     [setVideoSortParam],
   );
 
+  const handleCategoryChange = useCallback(
+    (newCategory: string) => {
+      setCategory(newCategory);
+      setTopicPage(1);
+      setVideoPage(1);
+      setAccumulatedVideos([]);
+      setIsLoadMore(false);
+    },
+    [setCategory],
+  );
+
   const handleVideoPageChange = useCallback((newPage: number) => {
     setVideoPage(newPage);
     setAccumulatedVideos([]);
@@ -961,10 +1035,17 @@ export function TrendsClient() {
   });
 
   const topics = useQuery({
-    queryKey: ["trends-topics", workspaceId, platformParam, topicPage, windowHours],
+    queryKey: [
+      "trends-topics",
+      workspaceId,
+      platformParam,
+      categoryParam,
+      topicPage,
+      windowHours,
+    ],
     queryFn: () =>
       apiRequest<TopicsPageResponse>(
-        `/trends/topics?platform=${platformParam}&window_hours=${windowHours}&page=${topicPage}&page_size=${PAGE_SIZE}`,
+        `/trends/topics?platform=${platformParam}&category=${encodeURIComponent(categoryParam)}&window_hours=${windowHours}&page=${topicPage}&page_size=${PAGE_SIZE}`,
         { workspaceId: workspaceId! },
       ),
     enabled: Boolean(workspaceId),
@@ -975,13 +1056,24 @@ export function TrendsClient() {
       "trends-videos",
       workspaceId,
       platformParam,
+      categoryParam,
       videoSort,
       videoPage,
       windowHours,
     ],
     queryFn: () =>
       apiRequest<VideosPageResponse>(
-        `/trends/videos?platform=${platformParam}&window_hours=${windowHours}&sort_by=${videoSort}&page=${videoPage}&page_size=${PAGE_SIZE}`,
+        `/trends/videos?platform=${platformParam}&category=${encodeURIComponent(categoryParam)}&window_hours=${windowHours}&sort_by=${videoSort}&page=${videoPage}&page_size=${PAGE_SIZE}`,
+        { workspaceId: workspaceId! },
+      ),
+    enabled: Boolean(workspaceId),
+  });
+
+  const categories = useQuery({
+    queryKey: ["trends-categories", workspaceId, platformParam, windowHours],
+    queryFn: () =>
+      apiRequest<CategorySummary[]>(
+        `/trends/categories?platform=${platformParam}&window_hours=${windowHours}`,
         { workspaceId: workspaceId! },
       ),
     enabled: Boolean(workspaceId),
@@ -1027,6 +1119,10 @@ export function TrendsClient() {
     collectSubmitting ||
     collectionStatus.data?.state === "queued" ||
     collectionStatus.data?.state === "running";
+
+  function focusSection(section: React.RefObject<HTMLDivElement | null>) {
+    section.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   // Merge accumulated videos with new page results for display
   const currentVideoItems = videos.data?.items ?? [];
@@ -1153,15 +1249,25 @@ export function TrendsClient() {
   // ─── Data Processing ─────────────────────────────────────────────────────
 
   const platformStats = dashboard.data?.platform_summary ?? [];
-  const visibleTopics = (topics.data?.items ?? []).filter(
-    (topic) => category === "全部" || topic.category === category,
-  );
-  const visibleVideos = displayVideos.filter(
-    (video) => category === "全部" || video.category === category,
-  );
+  // 分类筛选已在 API 读模型中完成，避免只对当前第一页做前端过滤，
+  // 导致某个分类明明有数据却被误显示为空。
+  const visibleTopics = topics.data?.items ?? [];
+  const visibleVideos = displayVideos;
 
   const videoTotal = videos.data?.total ?? 0;
   const topicTotal = topics.data?.total ?? 0;
+  const categorySummaries = categories.data ?? [];
+  const categorySummaryMap = new Map(
+    categorySummaries.map((item) => [canonicalCategory(item.category), item]),
+  );
+  const categoryOptions = categories.isSuccess
+    ? [
+        "全部",
+        ...categorySummaries
+          .map((item) => canonicalCategory(item.category))
+          .filter((item, index, items) => items.indexOf(item) === index),
+      ]
+    : CATEGORIES;
 
   // Prepare chart data: group keywords by keyword name, split by platform
   const chartData = (() => {
@@ -1238,33 +1344,115 @@ export function TrendsClient() {
         }
       />
 
-      {/* Module Tabs: 趋势榜单 / 衍生话题 / 智能搜索 */}
-      <div className="flex gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-1.5">
-        {MODULE_TABS.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
-              tab === t.key
-                ? "bg-cyan-500 text-slate-950"
-                : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "trends" && (
-        <>
-          {/* 趋势榜单 标题与副标题（与其他页签区块风格一致） */}
-          <div className="mb-1 flex items-center gap-2">
-            <TrendingUp size={18} className="text-cyan-400" />
-            <h2 className="font-semibold text-white">趋势榜单</h2>
+      {/* One workflow: opportunity → evidence → action. Thin module tabs are intentionally removed. */}
+      <Panel className="border-cyan-900/60 bg-gradient-to-r from-cyan-950/20 via-slate-950/60 to-violet-950/20 p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <TrendingUp size={18} className="text-cyan-400" />
+              <h2 className="font-semibold text-white">热点机会工作台</h2>
+            </div>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              先看正在上升的机会，再打开具体话题核验新闻与视频证据，最后按需进入分析、衍生选题或智能搜索。
+            </p>
           </div>
-          <p className="mb-4 text-sm text-slate-500">
-            跨平台真实视频样本与热点话题排行，可按平台、分类筛选，并查看赛道趋势图表与各平台派生话题。
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setToolPanel(null)}
+              className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                toolPanel === null
+                  ? "border-cyan-500 bg-cyan-500 text-slate-950"
+                  : "border-slate-700 bg-slate-950/70 text-slate-300 hover:border-slate-500 hover:text-white"
+              }`}
+            >
+              机会总览
+            </button>
+            {([
+              ["analytics", "趋势分析"],
+              ["derivatives", "生成衍生角度"],
+              ["search", "搜索这个赛道"],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setToolPanel(toolPanel === key ? null : key)}
+                className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                  toolPanel === key
+                    ? "border-cyan-500 bg-cyan-500 text-slate-950"
+                    : "border-slate-700 bg-slate-950/70 text-slate-300 hover:border-slate-500 hover:text-white"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </Panel>
+
+      {toolPanel ? (
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">Hotspot tools</p>
+              <h2 className="mt-1 text-lg font-semibold text-white">
+                {toolPanel === "analytics" ? "趋势分析" : toolPanel === "derivatives" ? "生成衍生角度" : "搜索这个赛道"}
+              </h2>
+            </div>
+            <button
+              type="button"
+              onClick={() => setToolPanel(null)}
+              className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-cyan-600 hover:text-white"
+            >
+              返回机会总览
+            </button>
+          </div>
+          {toolPanel === "derivatives" && <DerivativesPanel workspaceId={workspaceId!} />}
+          {toolPanel === "search" && <SearchPanel workspaceId={workspaceId!} />}
+          {toolPanel === "analytics" && <AnalyticsClient />}
+        </section>
+      ) : (
+      <>
+        <Panel className="border-slate-800 bg-slate-950/50 p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">Intelligence index</p>
+              <h2 className="mt-1 font-semibold text-white">从索引进入证据</h2>
+            </div>
+            <span className="hidden text-xs text-slate-500 sm:block">榜单 → 证据 → 原文/样本详情</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              { key: "topics", label: "热门话题", count: topicTotal, hint: "查看新闻与相关视频证据", icon: <TrendingUp size={18} className="text-cyan-300" />, ref: topicSectionRef },
+              { key: "news", label: "热门新闻", count: hotNews.data?.total ?? 0, hint: "展开事件下的报道与来源", icon: <Newspaper size={18} className="text-violet-300" />, ref: newsSectionRef },
+              { key: "videos", label: "热门视频", count: videoTotal, hint: "查看作者、互动和原视频", icon: <Video size={18} className="text-amber-300" />, ref: videoSectionRef },
+            ].map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => focusSection(item.ref)}
+                className="group rounded-xl border border-slate-800 bg-slate-900/45 p-4 text-left transition hover:border-cyan-700/70 hover:bg-slate-900/80"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <span className="grid size-9 place-items-center rounded-lg bg-slate-950">{item.icon}</span>
+                  <ChevronRight size={16} className="mt-1 text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-cyan-300" />
+                </div>
+                <p className="mt-4 text-sm font-medium text-slate-200">{item.label}</p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums text-white">{formatNumber(item.count)}</p>
+                <p className="mt-1 text-xs text-slate-500">{item.hint}</p>
+              </button>
+            ))}
+          </div>
+        </Panel>
+
+        {/* 趋势榜单 标题与副标题（与其他页签风格合并为工作台首屏） */}
+        <div className="mb-1 flex items-center gap-2">
+          <TrendingUp size={18} className="text-cyan-400" />
+          <h2 className="font-semibold text-white">当前热点机会</h2>
+        </div>
+        <p className="mb-4 text-sm text-slate-500">
+          每个话题都可以展开新闻链接、来源时间、相关视频和指标证据；榜单分数只作为发现入口，不替代证据核验。
+        </p>
 
           <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/50 p-3">
             <Clock3 size={15} className="text-cyan-400" />
@@ -1313,20 +1501,38 @@ export function TrendsClient() {
 
       {/* Category Filter Chips */}
       <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {CATEGORIES.map((cat) => (
-          <button
-            key={cat}
-            onClick={() => setCategory(cat)}
-            className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition ${
-              category === cat
-                ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40"
-                : "bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
-            }`}
-          >
-            {CATEGORY_LABELS[cat] ?? cat}
-          </button>
-        ))}
+        {categoryOptions.map((cat) => {
+          const summary = categorySummaryMap.get(canonicalCategory(cat));
+          const count =
+            cat === "全部"
+              ? categorySummaries.reduce((total, item) => total + item.total_count, 0)
+              : summary?.total_count;
+          return (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => handleCategoryChange(cat)}
+              aria-pressed={category === cat || canonicalCategory(category) === cat}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition ${
+                category === cat || canonicalCategory(category) === cat
+                  ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40"
+                  : "bg-slate-800/60 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              }`}
+            >
+              <span>{categoryLabel(cat)}</span>
+              {count != null && <span className="text-[10px] opacity-70">{formatNumber(count)}</span>}
+            </button>
+          );
+        })}
+        {categories.isSuccess && categoryOptions.length === 1 && (
+          <span className="self-center px-2 text-[11px] text-slate-500">
+            当前时间窗暂无其他 live 分类样本
+          </span>
+        )}
       </div>
+      <p className="text-[11px] text-slate-600">
+        分类标签仅展示当前时间窗和平台筛选下有真实 live 样本的分类；选择分类后由服务端完整筛选，避免分页造成“假空”。
+      </p>
 
       <Panel className="p-4">
         <details className="group">
@@ -1385,6 +1591,7 @@ export function TrendsClient() {
       {!isLoading && !hasError && (
         <>
           {/* Section 3: Hot Topics with Pagination */}
+          <div ref={topicSectionRef} className="scroll-mt-6">
           <Panel>
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
               <div className="flex items-center gap-2">
@@ -1457,8 +1664,7 @@ export function TrendsClient() {
                               )}
                             </span>
                             <span className="text-slate-500">
-                              {CATEGORY_LABELS[topic.category] ??
-                                topic.category}
+                              {categoryLabel(topic.category)}
                             </span>
                           </div>
                           {workspaceId && (
@@ -1518,6 +1724,16 @@ export function TrendsClient() {
                             <span className="text-slate-600">--</span>
                           )}
                         </div>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedTopic(topic);
+                          }}
+                          className="shrink-0 rounded-lg border border-cyan-800/80 bg-cyan-950/30 px-2.5 py-1.5 text-xs font-medium text-cyan-300 transition hover:border-cyan-500 hover:bg-cyan-900/40"
+                        >
+                          查看证据
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1545,8 +1761,10 @@ export function TrendsClient() {
               />
             )}
           </Panel>
+          </div>
 
           {/* Section 4: Latest news events */}
+          <div ref={newsSectionRef} className="scroll-mt-6">
           <Panel>
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
               <div className="flex items-center gap-2">
@@ -1566,10 +1784,11 @@ export function TrendsClient() {
             <div className="grid gap-3 p-4 md:grid-cols-2">
               {hotNews.isLoading && <SkeletonRows count={4} />}
               {!hotNews.isLoading && hotNews.data?.items?.map((event) => (
-                <Link
+                <button
+                  type="button"
                   key={event.id}
-                  href={`/news?view=cluster&event=${encodeURIComponent(event.id)}`}
-                  className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 transition hover:border-rose-900/60 hover:bg-slate-900/60"
+                  onClick={() => setSelectedNewsEvent(event)}
+                  className="rounded-xl border border-slate-800 bg-slate-950/40 p-4 text-left transition hover:border-rose-900/60 hover:bg-slate-900/60"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <h3 className="line-clamp-2 text-sm font-medium text-slate-100">
@@ -1590,7 +1809,7 @@ export function TrendsClient() {
                       可信度 {event.reliability_score.toFixed(0)}
                     </span>
                   </div>
-                </Link>
+                </button>
               ))}
               {!hotNews.isLoading && !hotNews.data?.items?.length && (
                 <p className="col-span-full px-2 py-8 text-center text-sm text-slate-500">
@@ -1599,6 +1818,7 @@ export function TrendsClient() {
               )}
             </div>
           </Panel>
+          </div>
 
           {/* Section 5: Keyword Trend Chart */}
           <Panel className="p-5">
@@ -1606,7 +1826,10 @@ export function TrendsClient() {
               <BarChart3 size={18} className="text-cyan-400" />
               <h2 className="font-semibold text-white">赛道趋势图表</h2>
               <span className="text-xs text-slate-500">
-                关键词派生热度指数跨平台对比
+                话题优先，随后展示事件、人物、队伍和联赛
+              </span>
+              <span className="hidden text-[11px] text-slate-600 md:inline">
+                已过滤体育大类、媒体名和平台噪声
               </span>
               {keywords.data?.[0]?.observed_at && (
                 <span className="ml-auto hidden items-center gap-1 text-xs text-slate-500 sm:flex">
@@ -1671,6 +1894,9 @@ export function TrendsClient() {
                           关键词
                         </th>
                         <th className="pb-3 text-left font-medium text-slate-400">
+                          类型
+                        </th>
+                        <th className="pb-3 text-left font-medium text-slate-400">
                           平台
                         </th>
                         <th className="pb-3 text-right font-medium text-slate-400">
@@ -1692,6 +1918,11 @@ export function TrendsClient() {
                         >
                           <td className="py-3 font-medium text-slate-200">
                             {kw.keyword}
+                          </td>
+                          <td className="py-3">
+                            <Badge tone="info">
+                              {trendLabelTypeLabel(kw.metadata?.label_type)}
+                            </Badge>
                           </td>
                           <td className="py-3">
                             <Badge tone={getPlatformBadgeTone(kw.platform)}>
@@ -1733,6 +1964,7 @@ export function TrendsClient() {
           </Panel>
 
           {/* Section 2: Trending Videos with Platform-Specific Content & Pagination — moved to second-to-last */}
+          <div ref={videoSectionRef} className="scroll-mt-6">
           <Panel>
             <div className="flex flex-col gap-3 border-b border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
@@ -1774,6 +2006,7 @@ export function TrendsClient() {
                         video={video}
                         platform={platform}
                         workspaceId={workspaceId}
+                        onOpen={() => setSelectedVideo(video)}
                       />
                     ))}
                   </div>
@@ -1801,6 +2034,7 @@ export function TrendsClient() {
               />
             )}
           </Panel>
+          </div>
 
           {/* Section 1: Platform Overview Cards — moved to bottom; always includes Douyin */}
           <Panel className="p-5">
@@ -1880,14 +2114,23 @@ export function TrendsClient() {
             detail="请先配置官方 API，或完成公开页面采集条件确认并添加监控账号，然后点击「开始采集」。"
           />
         )}
-        </>
+      </>
       )}
 
-      {tab === "derivatives" && <DerivativesPanel workspaceId={workspaceId!} />}
-
-      {tab === "search" && <SearchPanel workspaceId={workspaceId!} />}
-
-      {tab === "analytics" && <AnalyticsClient />}
+      <HotspotEvidenceDrawer
+        topic={selectedTopic}
+        workspaceId={workspaceId}
+        onClose={() => setSelectedTopic(null)}
+      />
+      <HotNewsDetailDrawer
+        event={selectedNewsEvent}
+        workspaceId={workspaceId}
+        onClose={() => setSelectedNewsEvent(null)}
+      />
+      <HotVideoDetailDrawer
+        video={selectedVideo}
+        onClose={() => setSelectedVideo(null)}
+      />
     </main>
   );
 }

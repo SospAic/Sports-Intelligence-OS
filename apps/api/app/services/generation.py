@@ -293,17 +293,22 @@ class GenerationService:
             provider = await self._provider(workspace_id, registered.key)
             health = await provider.health_check()
             source: Literal["database", "environment", "builtin", "unconfigured"] = "builtin"
+            provider_id = "openai"
+            display_name = provider.name
             default_model: str | None = None
             default_parameters: dict[str, Any] = {}
             if provider.key == "openai_compatible" and self.settings is not None:
                 setting = await self._settings_service().llm_setting(workspace_id)
                 source = setting.source
+                provider_id = setting.provider_id
+                display_name = setting.name
                 default_model = setting.default_model
                 default_parameters = setting.default_parameters
             descriptors.append(
                 ProviderDescriptor(
                     key=provider.key,
-                    name=provider.name,
+                    provider_id=provider_id,
+                    name=display_name,
                     configured=provider.configured,
                     is_mock=provider.is_mock,
                     supports_streaming=provider.supports_streaming,

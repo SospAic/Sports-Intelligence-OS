@@ -82,3 +82,29 @@
 - 新增观察性实验模型、迁移 `20260817_0009_content_experiments.py`、工作区隔离 API 和 `/operations/experiments` 页面；变体必须关联作品或发布记录，报告只读取真实 measured 归因。
 - 本轮最终验证：后端相关回归 `65 passed`；Ruff 通过；mypy `224 source files` 无问题；Web production build、ESLint 和 Vitest `24 files / 78 tests` 通过；Alembic `20260817_0009 (head)` 且 `alembic check` 无新操作；Docker Compose 服务健康，API/Web 页面探针通过。
 - 剩余范围包括外部条件项：真实平台/新闻/LLM/通知 canary、授权私有 Analytics、正式发布 Adapter、跨主机 HA，以及关键帧证据提取/多模态索引；字幕/转写和模型返回的有效时间段已可在搜索结果中直接定位。热点榜单的启发式同题机会聚合已完成，但规范事件实体和跨语言事实证据仍需人工确认链路。规则模拟器/历史回放/人工反馈、工作区成员邀请和账号级授权已形成无副作用本地闭环，频道级/发布资源权限仍需继续建模。另有当前约 36 GB 派生指标历史需要在备份和维护窗口具备后按策略治理，不能用 Mock 或估算值替代。
+
+## 本轮新增开发：能力就绪度诊断（2026-08-17）
+
+审查发现，平台设置页同时展示了适配器能力和凭证状态，但缺少一层“是否可以安全启动工作流”的解释，容易把“环境变量存在”“数据库已配置”“真实 API 可用”“拥有私有 Analytics / 发布权限”误认为同一件事。参考行业 SaaS 的 integration readiness / status page 做法，本轮新增：
+
+- 后端 `GET /api/v1/settings/readiness`，按当前工作区返回平台采集就绪度和跨平台功能边界；只读、不调用外部平台、不回显秘密。
+- 新增管理员受保护的 `POST /api/v1/settings/readiness/{platform_key}/probe`：调用已注册 Adapter 的 `health_check`，官方 API 模式优先使用官方平台 Adapter，公开页/会话模式明确标记为适配器运行时探针；结果写入既有 `external_call_attempts` 和审计表，不写入账号/作品数据。
+- 平台状态拆为 `待配置`、`已配置·待探针`、`当前受限`；环境凭证回退、工作区加密凭证、适配器实现状态、配置字段和数据来源分别显示。
+- 最近一次探针通过后才显示“已就绪”；部分可用、失败、未执行分别保留状态、错误码、耗时和下一动作，避免把 SecretStr 存在或一次性配置成功误报为长期可用。
+- 跨平台能力明确列出频道/发布资源权限、私有 Analytics 与 A/B/因果分析、关键帧/多模态索引、文本语义检索的条件和下一动作。
+- 设置中心平台管理页新增“能力就绪度诊断”，让运营人员可以在同步前看到缺失条件；“已配置”不会被标成“真实验证成功”。
+- 新增后端纯契约测试，覆盖环境凭证已配置但待探针、TikTok API 字段缺失、三项能力阻断和语义检索配置状态。
+
+这项能力解决的是可信度和操作引导，不会伪造平台成功。
+
+## 本轮追加开发：官方 API 自动探针与失败恢复（2026-08-17）
+
+在上述就绪度诊断之上，新增低频官方 API synthetic monitoring：
+
+- Celery Beat 每小时调度一次；实际执行仍按 `SIO_PLATFORM_CANARY_INTERVAL_SECONDS`（默认 3600 秒，范围 15 分钟至 24 小时）去重，避免 Beat 重启或重复投递造成探针风暴。
+- 只对已配置且可解析的 `api` 凭证执行；`public_page`、`authorized_login` 和 `authorized_session` 不会被后台任务自动触发，保持授权、条款和会话边界。
+- 结果继续写入 `external_call_attempts` 和审计表，追加 `trigger=scheduled`，设置页显示最近一次探针是自动还是手动、时间、状态、耗时、错误码和安全详情。
+- 失败/降级只在状态转变时创建一个 `platform.canary_failed` 内部运营事件；持续失败不重复刷屏，恢复后把同一事件标为 `resolved`。未配置通知渠道时不伪造外部发送，内部事件是唯一事实记录。
+- 配置项和任务说明进入运行时设置、`.env.example`、Compose 与测试；不需要新增迁移，复用既有外部调用和系统事件模型。
+
+这一步参考了 Datadog/PagerDuty 常见的合成监控、状态转变告警、去重和恢复闭环，也延续 Sprout Social Smart Inbox 将告警纳入可操作队列的方向。容器内目标回归已通过 `13 passed, 1 warning`；Docker Desktop `29.7.2` / Compose `v5.3.1` 已完成镜像重建、Compose 更新、迁移无漂移、API/Web 健康和登录入口验收；手动触发自动任务无错误，但因当前平台配置均不是 `api + configured`，任务安全跳过 4 个目标，没有发起未经授权的外部调用。仍未完成的是配额/字段完整率、新闻/LLM/通知 Provider 的真实 canary，以及已配置通知渠道后的外部升级投递。

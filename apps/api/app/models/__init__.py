@@ -69,7 +69,16 @@ from app.models.subscription import SubscriptionEvent, SubscriptionRule
 from app.models.subtitle import SubtitleJob
 from app.models.sync import SyncRun, SyncRunEvent
 from app.models.topics import SavedTopic
-from app.models.trends import CrossPlatformLink, TrendKeywordSnapshot, TrendTopic, TrendVideo
+from app.models.trends import (
+    CrossPlatformLink,
+    DerivativeRun,
+    DerivativeTopic,
+    SearchAnalysis,
+    SearchQuery,
+    TrendKeywordSnapshot,
+    TrendTopic,
+    TrendVideo,
+)
 from app.models.user import User
 from app.models.video_search import VideoSearchCandidate, VideoSearchPlan, VideoSearchRun
 from app.models.view_preference import UserViewPreference
@@ -94,6 +103,8 @@ __all__ = [
     "ContentSnapshot",
     "CommentSnapshot",
     "CrossPlatformLink",
+    "DerivativeRun",
+    "DerivativeTopic",
     "DashboardStat",
     "DeadLetterEvent",
     "DerivedMetric",
@@ -139,6 +150,8 @@ __all__ = [
     "RuleSection",
     "RuleSet",
     "RuleSetVersion",
+    "SearchAnalysis",
+    "SearchQuery",
     "SavedTopic",
     "Source",
     "SyncRun",

@@ -2,252 +2,250 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { GitBranch, History, Languages, ListChecks, Search } from "lucide-react";
 import { apiRequest } from "@/lib/browser-api";
 import { useToast } from "@/components/toast";
-import { GitBranch } from "lucide-react";
 
-interface TrendTopicItem {
-  id: string;
-  title: string;
-  platform: string;
-  heat_score: number;
-}
-
-interface DerivativeTopic {
+type Topic = { id: string; title: string; platform: string; heat_score: number };
+type ProcessStep = {
+  stage: string;
+  status: string;
+  message: string;
+  result_count?: number;
+};
+type SearchResult = {
+  title?: string | null;
+  title_en?: string | null;
+  url?: string | null;
+  author?: string | null;
+  author_en?: string | null;
+  view_count?: number | null;
+  like_count?: number | null;
+  comment_count?: number | null;
+  heat_score?: number | null;
+  platform?: string | null;
+  metric_source?: string;
+};
+type Derivative = {
   id: string;
   kind: string;
   angle: string | null;
+  angle_en: string | null;
   title: string;
+  title_en: string | null;
   description: string | null;
+  description_en: string | null;
   predicted_heat_score: number | null;
-  evidence: { sample_count?: number; median_views?: number; sample_titles?: string[] };
+  evidence: { sample_count?: number; median_views?: number; sample_results?: SearchResult[] };
   ai_rationale: string | null;
+  ai_rationale_en: string | null;
   status: string;
   confidence: number;
+};
+type Run = {
+  id: string;
+  source_topic_id: string;
+  source_query: string;
+  source_query_en: string | null;
+  platform: string;
+  status: string;
+  process_log: ProcessStep[];
+  result_count: number;
+  notice: string | null;
+  created_at: string;
+};
+type RunDetail = Run & {
+  items: Derivative[];
+  source_results: SearchResult[];
+  language: string;
+};
+
+const LANGUAGES = [
+  ["en", "English"],
+  ["zh", "简体中文"],
+  ["ja", "日本語"],
+  ["ko", "한국어"],
+  ["es", "Español"],
+  ["fr", "Français"],
+  ["de", "Deutsch"],
+  ["pt", "Português"],
+] as const;
+
+function number(value: number | null | undefined): string {
+  return value == null ? "—" : new Intl.NumberFormat("en-US", { notation: "compact" }).format(value);
 }
 
-function HeatBadge({ value }: { value: number | null }) {
-  if (value == null) return null;
-  const color =
-    value >= 70 ? "bg-rose-500/20 text-rose-300" : value >= 40 ? "bg-amber-500/20 text-amber-300" : "bg-slate-700/40 text-slate-300";
+function heat(value: number | null | undefined): string {
+  return value == null ? "—" : value.toFixed(1);
+}
+
+function statusLabel(status: string): string {
+  return status === "completed" ? "Completed" : status === "degraded" ? "Degraded" : status;
+}
+
+function ResultMetrics({ result }: { result: SearchResult }) {
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${color}`}>
-      预测热度 {value}
-    </span>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
+      <span>Views {number(result.view_count)}</span>
+      <span>Likes {number(result.like_count)}</span>
+      <span>Comments {number(result.comment_count)}</span>
+      <span className="text-amber-300">Heat {heat(result.heat_score)}*</span>
+    </div>
   );
 }
 
 export function DerivativesPanel({ workspaceId }: { workspaceId: string }) {
   const { notify } = useToast();
-  const [topicId, setTopicId] = useState<string>("");
+  const [topicId, setTopicId] = useState("");
+  const [selectedRunId, setSelectedRunId] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [language, setLanguage] = useState("en");
+  const [translated, setTranslated] = useState<RunDetail | null>(null);
 
-  const topicsQuery = useQuery({
+  const topics = useQuery({
     queryKey: ["derivatives-topics", workspaceId],
-    queryFn: () =>
-      apiRequest<{ items: TrendTopicItem[] }>(
-        "/trends/topics?platform=&page=1&page_size=50",
-        { workspaceId },
-      ),
+    queryFn: () => apiRequest<{ items: Topic[] }>("/trends/topics?page=1&page_size=50", { workspaceId }),
   });
-  const topics = topicsQuery.data?.items ?? [];
-  const effectiveTopicId = topicId || topics[0]?.id || "";
-
-  const derivativesQuery = useQuery({
-    queryKey: ["derivatives", workspaceId, effectiveTopicId],
-    queryFn: () =>
-      apiRequest<{ items: DerivativeTopic[] }>(
-        `/trends/derivatives?topic_id=${effectiveTopicId}&page=1&page_size=100`,
-        { workspaceId },
-      ),
-    enabled: Boolean(effectiveTopicId),
+  const effectiveTopicId = topicId || topics.data?.items?.[0]?.id || "";
+  const runs = useQuery({
+    queryKey: ["derivative-runs", workspaceId],
+    queryFn: () => apiRequest<{ items: Run[] }>("/trends/derivatives/runs?page=1&page_size=30", { workspaceId }),
   });
-  const items = derivativesQuery.data?.items ?? [];
+  const activeRunId = selectedRunId || runs.data?.items?.[0]?.id || "";
+  const detail = useQuery({
+    queryKey: ["derivative-run", workspaceId, activeRunId],
+    queryFn: () => apiRequest<RunDetail>(`/trends/derivatives/runs/${activeRunId}`, { workspaceId }),
+    enabled: Boolean(activeRunId),
+  });
+  const active = translated?.id === activeRunId ? translated : detail.data;
 
   const generate = async () => {
     if (!effectiveTopicId) return;
     setGenerating(true);
-    setNotice(null);
     try {
-      const data = await apiRequest<{ items: DerivativeTopic[]; notice: string | null }>(
-        "/trends/derivatives/generate",
-        {
-          method: "POST",
-          csrf: true,
-          workspaceId,
-          body: JSON.stringify({ topic_id: effectiveTopicId }),
-        },
-      );
-      setNotice(data.notice ?? "已生成衍生话题（平台上已存在 + AI 预测的潜在角度）。");
-      notify("衍生话题已生成", "success");
-      await derivativesQuery.refetch();
-    } catch (e) {
-      notify(`生成失败：${(e as Error).message}`, "error");
+      const result = await apiRequest<{ run_id: string | null }>("/trends/derivatives/generate", {
+        method: "POST",
+        csrf: true,
+        workspaceId,
+        body: JSON.stringify({ topic_id: effectiveTopicId }),
+      });
+      setTranslated(null);
+      if (result.run_id) setSelectedRunId(result.run_id);
+      await runs.refetch();
+      notify("Derivative run completed and saved to history", "success");
+    } catch (error) {
+      notify(`Generation failed: ${(error as Error).message}`, "error");
     } finally {
       setGenerating(false);
     }
   };
 
-  const adopt = async (id: string) => {
+  const translate = async (target: string) => {
+    setLanguage(target);
+    if (target === "en" || !activeRunId) {
+      setTranslated(null);
+      return;
+    }
     try {
-      await apiRequest(`/trends/derivatives/${id}/adopt`, {
+      const value = await apiRequest<RunDetail>(`/trends/derivatives/runs/${activeRunId}/translate`, {
         method: "POST",
         csrf: true,
         workspaceId,
+        body: JSON.stringify({ target_language: target }),
       });
-      notify("已采纳，可在「内容创作」中据此生成大纲", "success");
-      await derivativesQuery.refetch();
-    } catch (e) {
-      notify(`采纳失败：${(e as Error).message}`, "error");
+      setTranslated(value);
+    } catch (error) {
+      notify(`Translation failed: ${(error as Error).message}`, "error");
+      setLanguage("en");
     }
   };
 
-  const existing = items.filter((i) => i.kind === "existing_on_platform");
-  const predicted = items.filter((i) => i.kind === "ai_predicted");
+  const adopt = async (id: string) => {
+    try {
+      await apiRequest(`/trends/derivatives/${id}/adopt`, { method: "POST", csrf: true, workspaceId });
+      await detail.refetch();
+      notify("Derivative angle adopted", "success");
+    } catch (error) {
+      notify(`Adoption failed: ${(error as Error).message}`, "error");
+    }
+  };
+
+  const items = active?.items ?? [];
+  const predicted = items.filter((item) => item.kind === "ai_predicted");
+  const existing = items.filter((item) => item.kind === "existing_on_platform");
 
   return (
     <div className="space-y-6">
-      {/* 衍生话题 标题与副标题（与情报分析区块风格一致） */}
-      <div className="mb-1 flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <GitBranch size={18} className="text-cyan-400" />
-        <h2 className="font-semibold text-white">衍生话题</h2>
+        <h2 className="font-semibold text-white">Derivative Angles</h2>
+        <span className="text-xs text-slate-500">English process and result records</span>
       </div>
-      <p className="mb-4 text-sm text-slate-500">
-        基于选定热点话题，AI 预测尚未饱和的潜在衍生角度，并聚类平台上已存在的真实衍生内容；可直接采纳为内容创作选题。
+      <p className="text-sm text-slate-500">
+        Every generation is persisted as a run with its platform search steps, source metrics, angle clustering, and language projections.
       </p>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-        <div className="flex-1 min-w-[240px]">
-          <label className="mb-1 block text-xs font-medium text-slate-400">
-            选择热点话题
-          </label>
-          <select
-            value={effectiveTopicId}
-            onChange={(e) => setTopicId(e.target.value)}
-            className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-          >
-            {topics.length === 0 && <option value="">（暂无热点，请先采集趋势数据）</option>}
-            {topics.map((t) => (
-              <option key={t.id} value={t.id}>
-                [{t.platform}] {t.title} · 热度 {Math.round(t.heat_score)}
-              </option>
-            ))}
-          </select>
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[240px] flex-1">
+              <label className="mb-1 block text-xs font-medium text-slate-400">Hotspot topic</label>
+              <select value={effectiveTopicId} onChange={(event) => setTopicId(event.target.value)} className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+                {!topics.data?.items?.length && <option value="">No hotspot topic available</option>}
+                {(topics.data?.items ?? []).map((topic) => <option key={topic.id} value={topic.id}>[{topic.platform}] {topic.title} · Heat {Math.round(topic.heat_score)}</option>)}
+              </select>
+            </div>
+            <button type="button" onClick={() => void generate()} disabled={generating || !effectiveTopicId} className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">
+              {generating ? "Running…" : "Generate angles"}
+            </button>
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              <Languages size={15} />
+              <select value={language} onChange={(event) => void translate(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-slate-100">
+                {LANGUAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+          </div>
+
+          {active && (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-slate-800 p-3"><p className="text-xs text-slate-500">Search query</p><p className="mt-1 text-sm text-slate-200">{active.source_query_en || active.source_query}</p></div>
+              <div className="rounded-lg border border-slate-800 p-3"><p className="text-xs text-slate-500">Source results</p><p className="mt-1 text-lg font-semibold text-slate-100">{active.source_results.length}</p></div>
+              <div className="rounded-lg border border-slate-800 p-3"><p className="text-xs text-slate-500">Run status</p><p className="mt-1 text-sm font-semibold text-emerald-300">{statusLabel(active.status)}</p></div>
+            </div>
+          )}
+
+          {active && (
+            <>
+              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                <div className="mb-3 flex items-center gap-2"><ListChecks size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Search process</h3></div>
+                <ol className="space-y-2">
+                  {active.process_log.map((step, index) => <li key={`${step.stage}-${index}`} className="flex gap-3 text-sm"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-slate-800 text-[10px] text-slate-300">{index + 1}</span><div><p className="text-slate-200">{step.message}</p><p className="text-[11px] uppercase tracking-wide text-slate-600">{step.stage} · {step.status}</p></div></li>)}
+                </ol>
+              </section>
+              <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+                <div className="mb-3 flex items-center gap-2"><Search size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Source search results</h3><span className="text-xs text-slate-500">{active.source_results.length} records</span></div>
+                <div className="space-y-2">{active.source_results.map((result, index) => <div key={`${result.url ?? result.title}-${index}`} className="rounded-lg border border-slate-800 p-3"><div className="flex items-start justify-between gap-3"><p className="text-sm text-slate-200">{result.title_en || result.title || "Untitled result"}</p>{result.url && <a className="shrink-0 text-xs text-cyan-300 hover:underline" href={result.url} target="_blank" rel="noreferrer">Open</a>}</div><p className="mt-1 text-xs text-slate-500">{result.platform} · {result.author_en || result.author || "Unknown author"}</p><ResultMetrics result={result} /></div>)}</div>
+                <p className="mt-3 text-[11px] text-slate-600">* Heat is a derived logarithmic proxy from returned platform metrics; it is not a platform-native score.</p>
+              </section>
+              <AngleSection title="Predicted angles" items={predicted} onAdopt={adopt} />
+              <AngleSection title="Existing platform angles" items={existing} onAdopt={adopt} />
+            </>
+          )}
+          {!active && <p className="py-10 text-center text-sm text-slate-500">Run a generation or select a history record to inspect its English process and results.</p>}
         </div>
-        <button
-          onClick={generate}
-          disabled={generating || !effectiveTopicId}
-          className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:opacity-50"
-        >
-          {generating ? "生成中…" : "生成衍生话题"}
-        </button>
+
+        <aside className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
+          <div className="mb-3 flex items-center gap-2"><History size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Run history</h3></div>
+          <div className="space-y-2">
+            {(runs.data?.items ?? []).map((run) => <button type="button" key={run.id} onClick={() => { setSelectedRunId(run.id); setTranslated(null); setLanguage("en"); }} className={`w-full rounded-lg border p-3 text-left transition ${run.id === activeRunId ? "border-cyan-500/60 bg-cyan-950/20" : "border-slate-800 hover:border-slate-600"}`}><p className="line-clamp-2 text-xs text-slate-200">{run.source_query_en || run.source_query}</p><p className="mt-2 text-[11px] text-slate-500">{new Date(run.created_at).toLocaleString("en-US")} · {run.result_count} angles · {statusLabel(run.status)}</p></button>)}
+            {!runs.data?.items?.length && <p className="text-sm text-slate-500">No runs saved yet.</p>}
+          </div>
+        </aside>
       </div>
-
-      {notice && (
-        <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm text-cyan-200">
-          {notice}
-        </div>
-      )}
-      {derivativesQuery.isError && (
-        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-          {(derivativesQuery.error as Error)?.message ?? "加载失败"}
-        </div>
-      )}
-      {derivativesQuery.isLoading && <p className="text-sm text-slate-400">加载中…</p>}
-
-      {/* AI 预测的潜在衍生话题 */}
-      <section>
-        <h3 className="mb-3 text-base font-semibold text-white">
-          AI 预测的潜在热门衍生话题
-          <span className="ml-2 text-xs font-normal text-slate-500">
-            {predicted.length} 个 · 尚未饱和的角度
-          </span>
-        </h3>
-        <div className="grid gap-3 md:grid-cols-2">
-          {predicted.map((d) => (
-            <div
-              key={d.id}
-              className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  {d.angle && (
-                    <span className="text-xs text-cyan-300">{d.angle}</span>
-                  )}
-                  <p className="font-medium text-slate-100">{d.title}</p>
-                </div>
-                <HeatBadge value={d.predicted_heat_score} />
-              </div>
-              {d.description && (
-                <p className="mt-2 text-sm text-slate-400">{d.description}</p>
-              )}
-              {d.ai_rationale && (
-                <p className="mt-2 rounded-lg bg-slate-900/60 p-2 text-xs text-slate-400">
-                  理由：{d.ai_rationale}
-                </p>
-              )}
-              <div className="mt-3 flex items-center justify-between">
-                <span className="text-xs text-slate-500">
-                  置信度 {Math.round(d.confidence * 100)}%
-                </span>
-                {d.status === "adopted" ? (
-                  <span className="text-xs text-emerald-300">已采纳</span>
-                ) : (
-                  <button
-                    onClick={() => adopt(d.id)}
-                    className="rounded-md border border-cyan-500/40 px-3 py-1 text-xs text-cyan-200 transition hover:bg-cyan-500/10"
-                  >
-                    采纳 → 生成大纲
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-          {predicted.length === 0 && (
-            <p className="text-sm text-slate-500">尚无 AI 预测结果，点击「生成衍生话题」。</p>
-          )}
-        </div>
-      </section>
-
-      {/* 平台上已存在的衍生话题 */}
-      <section>
-        <h3 className="mb-3 text-base font-semibold text-white">
-          平台上已存在的衍生话题
-          <span className="ml-2 text-xs font-normal text-slate-500">
-            {existing.length} 个 · 聚类自真实视频
-          </span>
-        </h3>
-        <div className="grid gap-3 md:grid-cols-2">
-          {existing.map((d) => (
-            <div
-              key={d.id}
-              className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  {d.angle && (
-                    <span className="text-xs text-emerald-300">{d.angle}</span>
-                  )}
-                  <p className="font-medium text-slate-100">{d.title}</p>
-                </div>
-                <HeatBadge value={d.predicted_heat_score} />
-              </div>
-              <p className="mt-2 text-sm text-slate-400">{d.description}</p>
-              {d.evidence?.sample_titles?.length ? (
-                <ul className="mt-2 space-y-1 text-xs text-slate-500">
-                  {d.evidence.sample_titles.slice(0, 3).map((s, i) => (
-                    <li key={i}>· {s}</li>
-                  ))}
-                </ul>
-              ) : null}
-            </div>
-          ))}
-          {existing.length === 0 && (
-            <p className="text-sm text-slate-500">暂无平台上已存在的衍生聚类。</p>
-          )}
-        </div>
-      </section>
     </div>
   );
+}
+
+function AngleSection({ title, items, onAdopt }: { title: string; items: Derivative[]; onAdopt: (id: string) => void }) {
+  return <section><h3 className="mb-3 text-base font-semibold text-white">{title}<span className="ml-2 text-xs font-normal text-slate-500">{items.length} results</span></h3><div className="grid gap-3 md:grid-cols-2">{items.map((item) => <div key={item.id} className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><div className="flex items-start justify-between gap-2"><div><span className="text-xs text-cyan-300">{item.angle_en || item.angle || "Angle"}</span><p className="font-medium text-slate-100">{item.title_en || item.title}</p></div><span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">Heat {heat(item.predicted_heat_score)}</span></div>{(item.description_en || item.description) && <p className="mt-2 text-sm text-slate-400">{item.description_en || item.description}</p>}{(item.ai_rationale_en || item.ai_rationale) && <p className="mt-2 rounded-lg bg-slate-900/60 p-2 text-xs text-slate-400">Why: {item.ai_rationale_en || item.ai_rationale}</p>}<div className="mt-3 flex items-center justify-between"><span className="text-xs text-slate-500">Confidence {Math.round(item.confidence * 100)}%</span>{item.status === "adopted" ? <span className="text-xs text-emerald-300">Adopted</span> : <button type="button" onClick={() => onAdopt(item.id)} className="rounded-md border border-cyan-500/40 px-3 py-1 text-xs text-cyan-200">Adopt → Create</button>}</div></div>)}{!items.length && <p className="text-sm text-slate-500">No results in this category.</p>}</div></section>;
 }

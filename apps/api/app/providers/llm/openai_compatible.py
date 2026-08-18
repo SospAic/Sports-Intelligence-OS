@@ -20,7 +20,7 @@ from app.providers.llm.base import (
     LLMResponse,
     LLMUsage,
 )
-from app.providers.news.utils import ensure_public_endpoint, validate_source_url
+from app.providers.news.utils import ensure_public_llm_endpoint, validate_source_url
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -35,19 +35,46 @@ class OpenAICompatibleProvider(LLMProvider):
         api_key: str | None,
         timeout_seconds: float,
         max_attempts: int,
+        provider_id: str = "openai",
+        display_name: str | None = None,
+        api_key_optional: bool = False,
         organization: str | None = None,
         project: str | None = None,
         custom_headers: Mapping[str, str] | None = None,
         internal_hosts: tuple[str, ...] = (),
     ) -> None:
-        self.base_url = base_url.rstrip("/") if base_url else None
+        self.base_url = self._normalize_base_url(base_url)
         self._api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
+        self.provider_id = provider_id
+        self.api_key_optional = api_key_optional
+        if display_name:
+            self.name = display_name
         self.organization = organization
         self.project = project
         self.custom_headers = dict(custom_headers or {})
         self._internal_hosts = frozenset(h.casefold() for h in internal_hosts)
+
+    @staticmethod
+    def _normalize_base_url(value: str | None) -> str | None:
+        """Accept a provider root or an accidentally pasted endpoint URL.
+
+        Provider forms commonly receive either ``.../v1`` or the full
+        ``.../v1/models`` / ``.../v1/chat/completions`` URL.  Storing and
+        probing the latter verbatim produced ``/models/models`` and
+        ``/chat/completions/models`` failures, even though the credentials
+        were valid.
+        """
+
+        if not value:
+            return None
+        normalized = value.strip().rstrip("/")
+        for suffix in ("/chat/completions", "/models"):
+            if normalized.casefold().endswith(suffix):
+                normalized = normalized[: -len(suffix)].rstrip("/")
+                break
+        return normalized or None
 
     def _is_internal_host(self) -> bool:
         """Return True if base_url targets an allowlisted Docker-internal host."""
@@ -60,7 +87,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     @property
     def configured(self) -> bool:
-        return bool(self.base_url and self._api_key)
+        return bool(self.base_url and (self._api_key or self.api_key_optional))
 
     @staticmethod
     def _is_reasoning_model(model: str) -> bool:
@@ -102,7 +129,7 @@ class OpenAICompatibleProvider(LLMProvider):
     async def validate_config(self, config: Mapping[str, Any]) -> None:
         if not self.configured:
             raise LLMProviderConfigurationError(
-                "OpenAI compatible provider requires backend base URL and API key"
+                "LLM Provider requires a Base URL and API Key (local providers may omit the key)"
             )
         if not self.base_url:
             raise LLMProviderConfigurationError("LLM base URL is required")
@@ -120,17 +147,18 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["response_format"] = {"type": "json_object"}
         headers = {
             **self.custom_headers,
-            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "Idempotency-Key": request.idempotency_key,
         }
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         if self.organization:
             headers["OpenAI-Organization"] = self.organization
         if self.project:
             headers["OpenAI-Project"] = self.project
         if not self._is_internal_host():
             try:
-                await ensure_public_endpoint(str(self.base_url), allow_secret_query=False)
+                await ensure_public_llm_endpoint(str(self.base_url))
             except ValueError as exc:
                 raise LLMProviderConfigurationError(str(exc)) from exc
             except OSError as exc:
@@ -210,17 +238,18 @@ class OpenAICompatibleProvider(LLMProvider):
         # Streaming is incompatible with JSON response format; omit response_format.
         headers = {
             **self.custom_headers,
-            "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "Idempotency-Key": request.idempotency_key,
         }
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         if self.organization:
             headers["OpenAI-Organization"] = self.organization
         if self.project:
             headers["OpenAI-Project"] = self.project
         if not self._is_internal_host():
             try:
-                await ensure_public_endpoint(str(self.base_url), allow_secret_query=False)
+                await ensure_public_llm_endpoint(str(self.base_url))
             except ValueError as exc:
                 raise LLMProviderConfigurationError(str(exc)) from exc
             except OSError as exc:
@@ -317,12 +346,14 @@ class OpenAICompatibleProvider(LLMProvider):
         assert self.base_url is not None
         if not self._is_internal_host():
             try:
-                await ensure_public_endpoint(self.base_url, allow_secret_query=False)
+                await ensure_public_llm_endpoint(self.base_url)
             except ValueError as exc:
                 raise LLMProviderConfigurationError(str(exc)) from exc
             except OSError as exc:
                 raise LLMProviderTransientError(str(exc)) from exc
-        headers = {**self.custom_headers, "Authorization": f"Bearer {self._api_key}"}
+        headers = {**self.custom_headers}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         if self.organization:
             headers["OpenAI-Organization"] = self.organization
         if self.project:
@@ -349,12 +380,14 @@ class OpenAICompatibleProvider(LLMProvider):
         assert self.base_url is not None
         if not self._is_internal_host():
             try:
-                await ensure_public_endpoint(self.base_url, allow_secret_query=False)
+                await ensure_public_llm_endpoint(self.base_url)
             except ValueError as exc:
                 raise LLMProviderConfigurationError(str(exc)) from exc
             except OSError as exc:
                 raise LLMProviderTransientError(str(exc)) from exc
-        headers = {**self.custom_headers, "Authorization": f"Bearer {self._api_key}"}
+        headers = {**self.custom_headers}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         if self.organization:
             headers["OpenAI-Organization"] = self.organization
         if self.project:

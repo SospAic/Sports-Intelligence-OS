@@ -18,6 +18,12 @@ from app.schemas.monitoring import (
     DerivedMetricRead,
     PlatformRead,
 )
+from app.schemas.readiness import (
+    PlatformCanaryRead,
+    PlatformReadinessRead,
+    ReadinessItemRead,
+    ReadinessReportRead,
+)
 
 __all__ = [
     "AccountContentSummary",
@@ -36,6 +42,10 @@ __all__ = [
     "DerivedMetricPage",
     "DerivedMetricRead",
     "PlatformRead",
+    "PlatformCanaryRead",
+    "PlatformReadinessRead",
+    "ReadinessItemRead",
+    "ReadinessReportRead",
     "RuleSetRead",
     "RuleSetVersionRead",
 ]

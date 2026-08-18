@@ -36,6 +36,53 @@ class TrendTopicPage(BaseModel):
     total: int
 
 
+class TrendEvidenceNews(BaseModel):
+    """A news article that supports or contextualizes a hotspot topic."""
+
+    id: UUID | None = None
+    title: str
+    summary: str | None = None
+    url: str
+    source_name: str
+    source_kind: str
+    provider: str
+    published_at: datetime | None = None
+    reliability_score: float | None = None
+    event_id: UUID | None = None
+    matched_by: str
+
+
+class TrendEvidenceVideo(BaseModel):
+    """A short-video sample related to a hotspot topic."""
+
+    id: UUID
+    platform: str
+    external_id: str
+    title: str
+    author_name: str | None = None
+    cover_url: str | None = None
+    video_url: str | None = None
+    view_count: int | None = None
+    like_count: int | None = None
+    comment_count: int | None = None
+    share_count: int | None = None
+    breakout_score: float | None = None
+    category: str | None = None
+    source_kind: str
+    provider: str
+    observed_at: datetime
+    matched_by: str
+
+
+class TrendTopicEvidence(BaseModel):
+    """Evidence chain for one topic, including explicit coverage limits."""
+
+    topic: TrendTopicRead
+    news: list[TrendEvidenceNews] = Field(default_factory=list)
+    videos: list[TrendEvidenceVideo] = Field(default_factory=list)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # 视频
 # ---------------------------------------------------------------------------
@@ -70,6 +117,15 @@ class TrendVideoPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class TrendCategorySummary(BaseModel):
+    """真实热点样本在一个时间窗内的分类计数。"""
+
+    category: str
+    topic_count: int = 0
+    video_count: int = 0
+    total_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -238,14 +294,19 @@ class DerivativeTopicRead(BaseModel):
     id: UUID
     workspace_id: UUID
     source_topic_id: UUID | None = None
+    derivative_run_id: UUID | None = None
     platform: str
     kind: str
     angle: str | None = None
     title: str
+    title_en: str | None = None
     description: str | None = None
+    description_en: str | None = None
     predicted_heat_score: float | None = None
     evidence: dict[str, Any] = Field(validation_alias="evidence_json", default_factory=dict)
     ai_rationale: str | None = None
+    ai_rationale_en: str | None = None
+    angle_en: str | None = None
     status: str
     confidence: float
     adopted_generation_id: UUID | None = None
@@ -261,6 +322,46 @@ class DerivativeTopicPage(BaseModel):
     total: int
 
 
+class DerivativeRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    workspace_id: UUID
+    source_topic_id: UUID
+    requested_by: UUID | None = None
+    status: str
+    source_query: str
+    source_query_en: str | None = None
+    platform: str
+    process_log: list[dict[str, Any]] = Field(
+        validation_alias="process_log_json", default_factory=list
+    )
+    result_count: int
+    notice: str | None = None
+    completed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DerivativeRunPage(BaseModel):
+    items: list[DerivativeRunRead]
+    page: int
+    page_size: int
+    total: int
+
+
+class DerivativeRunDetail(DerivativeRunRead):
+    items: list[DerivativeTopicRead] = Field(default_factory=list)
+    source_results: list[dict[str, Any]] = Field(
+        validation_alias="source_results_json", default_factory=list
+    )
+    language: str = "en"
+
+
+class DerivativeTranslationRequest(BaseModel):
+    target_language: str = Field(min_length=2, max_length=20)
+
+
 class DerivativeGenerateRequest(BaseModel):
     topic_id: UUID
 
@@ -269,6 +370,9 @@ class DerivativeGenerateResponse(BaseModel):
     status: str
     notice: str | None = None
     items: list[DerivativeTopicRead] = Field(default_factory=list)
+    run_id: UUID | None = None
+    process_log: list[dict[str, Any]] = Field(default_factory=list)
+    source_results: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +392,8 @@ class SearchQueryRead(BaseModel):
     id: UUID
     workspace_id: UUID
     query_text: str
+    query_text_en: str | None = None
+    source_language: str | None = None
     platform_scope: str
     saved_name: str | None = None
     is_saved: bool
@@ -315,6 +421,9 @@ class SearchAnalysisRead(BaseModel):
     model_used: str | None = None
     raw_llm: dict[str, Any] | None = None
     results_json: list[Any] | None = None
+    process_log: list[dict[str, Any]] = Field(
+        validation_alias="process_log_json", default_factory=list
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -343,4 +452,13 @@ class SearchAnalysisResponse(BaseModel):
     query: SearchQueryRead
     analysis: SearchAnalysisRead
     results: list[dict[str, Any]] = Field(default_factory=list)
+    language: str = "en"
     notice: str | None = None
+
+
+class SearchTranslationRequest(BaseModel):
+    target_language: str = Field(min_length=2, max_length=20)
+
+
+class SearchTranslationResponse(SearchAnalysisResponse):
+    language: str

@@ -79,6 +79,17 @@ _BUSINESS_HINTS: dict[str, str] = {
         "账号不存在、已被平台隐藏或已删除。请检查网址是否正确，或该内容是否仅对登录用户可见。"
     ),
     "rate_limited": ("触发了平台限流。系统会自动有限重试；若持续失败，请降低抓取频率或稍后再试。"),
+    "platform_canary_unavailable": (
+        "平台官方 API 探针未通过。请检查平台服务状态、凭证有效期、授权范围和配额；"
+        "系统会在下一个探针周期自动复核。"
+    ),
+    "platform_canary_timeout": (
+        "平台官方 API 探针超时，可能是平台或网络暂时不可用；系统会有限重试并在恢复后自动关闭告警。"
+    ),
+    "platform_credentials_not_configured": (
+        "未满足官方 API 探针所需的凭证条件；请在平台管理中配置凭证，或确认环境变量已注入。"
+    ),
+    "platform_adapter_not_registered": "平台官方 API 适配器未注册，当前部署无法执行该探针。",
     "transient_provider_error": (
         "平台或网络暂时不可用（可能是限流、反爬或临时故障）。系统会自动有限重试；"
         "如反复失败可稍后手动重试。"

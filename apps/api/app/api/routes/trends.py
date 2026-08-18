@@ -13,13 +13,18 @@ from app.api.dependencies import (
     DatabaseSession,
     require_workspace_role,
 )
+from app.providers.translation.http import TranslationUnavailable
 from app.schemas.trends import (
     CrossPlatformLinkPage,
     CrossPlatformLinkRead,
     DerivativeGenerateRequest,
     DerivativeGenerateResponse,
+    DerivativeRunDetail,
+    DerivativeRunPage,
+    DerivativeRunRead,
     DerivativeTopicPage,
     DerivativeTopicRead,
+    DerivativeTranslationRequest,
     ScoreExplanation,
     SearchAnalysisRead,
     SearchAnalysisResponse,
@@ -27,9 +32,13 @@ from app.schemas.trends import (
     SearchQueryRead,
     SearchQuerySaveRequest,
     SearchRequest,
+    SearchTranslationRequest,
+    SearchTranslationResponse,
     TrendAggregate,
+    TrendCategorySummary,
     TrendDashboard,
     TrendKeywordSnapshotRead,
+    TrendTopicEvidence,
     TrendTopicPage,
     TrendVideoPage,
 )
@@ -105,6 +114,7 @@ async def list_topics(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
     platform: str | None = None,
+    category: str | None = None,
     window_hours: WindowHours = 24,
     page: Page = 1,
     page_size: PageSize = 20,
@@ -112,6 +122,7 @@ async def list_topics(
     return await TrendService(db).list_topics(
         workspace.workspace_id,
         platform=platform,
+        category=category,
         window_hours=window_hours,
         page=page,
         page_size=page_size,
@@ -123,6 +134,7 @@ async def list_videos(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
     platform: str | None = None,
+    category: str | None = None,
     sort_by: str = "breakout_score",
     window_hours: WindowHours = 24,
     page: Page = 1,
@@ -131,10 +143,27 @@ async def list_videos(
     return await TrendService(db).list_videos(
         workspace.workspace_id,
         platform=platform,
+        category=category,
         sort_by=sort_by,
         window_hours=window_hours,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/categories", response_model=list[TrendCategorySummary])
+async def list_categories(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    platform: str | None = None,
+    window_hours: WindowHours = 24,
+) -> list[TrendCategorySummary]:
+    """Return categories with real live samples in the current window."""
+
+    return await TrendService(db).list_categories(
+        workspace.workspace_id,
+        platform=platform,
+        window_hours=window_hours,
     )
 
 
@@ -195,6 +224,16 @@ async def explain_topic(
 ) -> ScoreExplanation:
     """Return the score breakdown for a trend topic's heat_score."""
     return await TrendService(db).explain_topic(workspace.workspace_id, topic_id)
+
+
+@router.get("/topics/{topic_id}/evidence", response_model=TrendTopicEvidence)
+async def topic_evidence(
+    topic_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> TrendTopicEvidence:
+    """Return the news links and video samples behind one hotspot topic."""
+    return await TrendService(db).topic_evidence(workspace.workspace_id, topic_id)
 
 
 @router.post("/collect", response_model=dict[str, Any], status_code=202)
@@ -379,6 +418,68 @@ async def list_derivatives(
     )
 
 
+def _derivative_detail_response(data: dict[str, Any]) -> DerivativeRunDetail:
+    run = DerivativeRunRead.model_validate(data["run"])
+    return DerivativeRunDetail(
+        **run.model_dump(),
+        items=[DerivativeTopicRead.model_validate(item) for item in data["items"]],
+        source_results=data["source_results"],
+        process_log=data["process_log"],
+        language=data.get("language", "en"),
+    )
+
+
+@router.get("/derivatives/runs", response_model=DerivativeRunPage)
+async def list_derivative_runs(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> DerivativeRunPage:
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    items, total = await svc.list_runs(workspace.workspace_id, page=page, page_size=page_size)
+    return DerivativeRunPage(
+        items=[DerivativeRunRead.model_validate(item) for item in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@router.get("/derivatives/runs/{run_id}", response_model=DerivativeRunDetail)
+async def get_derivative_run(
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> DerivativeRunDetail:
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    try:
+        return _derivative_detail_response(await svc.get_run_detail(workspace.workspace_id, run_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/derivatives/runs/{run_id}/translate", response_model=DerivativeRunDetail)
+async def translate_derivative_run(
+    run_id: UUID,
+    payload: DerivativeTranslationRequest,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> DerivativeRunDetail:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = DerivativeService(db, request.app.state.llm_providers, request.app.state.settings)
+    try:
+        return _derivative_detail_response(
+            await svc.translate_run(workspace.workspace_id, run_id, payload.target_language)
+        )
+    except (ValueError, TranslationUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.post("/derivatives/generate", response_model=DerivativeGenerateResponse, status_code=202)
 async def generate_derivatives(
     workspace: CurrentWorkspace,
@@ -393,10 +494,18 @@ async def generate_derivatives(
     items, notice = await svc.generate_for_topic(
         workspace.workspace_id, payload.topic_id, workspace.auth.user.id
     )
+    run_id = next((item.derivative_run_id for item in items if item.derivative_run_id), None)
+    if run_id is None:
+        latest_run = await svc.latest_run_for_topic(workspace.workspace_id, payload.topic_id)
+        run_id = latest_run.id if latest_run else None
+    detail = await svc.get_run_detail(workspace.workspace_id, run_id) if run_id else None
     return DerivativeGenerateResponse(
         status="completed",
         notice=notice,
         items=[DerivativeTopicRead.model_validate(i) for i in items],
+        run_id=run_id,
+        process_log=detail["process_log"] if detail else [],
+        source_results=detail["source_results"] if detail else [],
     )
 
 
@@ -460,6 +569,8 @@ async def list_searches(
     items, total = await svc.list_queries(
         workspace.workspace_id, page=page, page_size=page_size, saved_only=saved_only
     )
+
+
     return SearchQueryPage(
         items=[SearchQueryRead.model_validate(i) for i in items],
         page=page,
@@ -508,5 +619,40 @@ async def get_search(
         query=SearchQueryRead.model_validate(query),
         analysis=SearchAnalysisRead.model_validate(analysis),
         results=results,
+        language="en",
+        notice=None,
+    )
+
+
+@router.post("/search/{query_id}/translate", response_model=SearchTranslationResponse)
+async def translate_search(
+    query_id: UUID,
+    payload: SearchTranslationRequest,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SearchTranslationResponse:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = SearchAnalysisService(db, request.app.state.llm_providers, request.app.state.settings)
+    try:
+        data = await svc.translate_analysis(
+            workspace.workspace_id, query_id, payload.target_language
+        )
+    except (ValueError, TranslationUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    query = SearchQueryRead.model_validate(data["query"])
+    analysis = SearchAnalysisRead.model_validate(data["analysis"])
+    if data.get("translated_query_text"):
+        query.query_text = str(data["translated_query_text"])
+    if data.get("translated_summary") is not None:
+        analysis.summary = data["translated_summary"]
+    if data.get("process_log") is not None:
+        analysis.process_log = data["process_log"]
+    return SearchTranslationResponse(
+        query=query,
+        analysis=analysis,
+        results=data.get("results", []),
+        language=data.get("language", payload.target_language),
         notice=None,
     )

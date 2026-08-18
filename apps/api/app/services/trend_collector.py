@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -38,6 +37,10 @@ from app.services.metric_calculations import (
     weighted_available_score,
 )
 from app.services.platform_credentials import PlatformCredentialService
+from app.services.trend_categories import canonical_trend_category
+from app.services.trend_categories import infer_sports_category as _infer_sports_category
+from app.services.trend_categories import is_sports_related as _is_sports_related
+from app.services.trend_categories import trend_terms as _trend_terms
 
 logger = logging.getLogger(__name__)
 
@@ -49,98 +52,6 @@ _DEFAULT_HEADERS: dict[str, str] = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
-
-# 体育类关键词，用于检测体育分类
-_SPORTS_KEYWORDS: list[str] = [
-    "NBA",
-    "CBA",
-    "足球",
-    "篮球",
-    "体育",
-    "football",
-    "basketball",
-    "soccer",
-    "UFC",
-    "奥运",
-    "tennis",
-    "F1",
-    "网球",
-    "排球",
-    "乒乓",
-    "羽毛球",
-    "世界杯",
-    "欧冠",
-    "英超",
-    "西甲",
-    "德甲",
-    "意甲",
-    "中超",
-    "ESPN",
-    "马拉松",
-    "游泳",
-    "田径",
-    "拳击",
-    "滑冰",
-    "滑雪",
-    "电竞",
-    "esports",
-    "棒球",
-    "baseball",
-    "高尔夫",
-    "golf",
-    "赛车",
-    "racing",
-    "MotoGP",
-    "NFL",
-    "橄榄球",
-    "曲棍球",
-]
-_HASHTAG_PATTERN = re.compile(r"#([\w\u4e00-\u9fff]{2,40})", re.UNICODE)
-_CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("american_football", ("NFL", "橄榄球")),
-    ("basketball", ("NBA", "CBA", "篮球", "basketball")),
-    (
-        "football",
-        ("足球", "football", "soccer", "世界杯", "欧冠", "英超", "西甲", "德甲", "意甲", "中超"),
-    ),
-    ("baseball", ("棒球", "baseball", "MLB")),
-    ("mma", ("UFC", "MMA", "格斗", "拳击", "boxing")),
-    ("motorsport", ("F1", "赛车", "racing", "MotoGP")),
-    ("table_tennis", ("乒乓", "table tennis")),
-    ("badminton", ("羽毛球", "badminton")),
-    ("tennis", ("网球", "tennis")),
-    ("olympics", ("奥运", "Olympic")),
-    ("esports", ("电竞", "esports")),
-    ("golf", ("高尔夫", "golf")),
-    ("volleyball", ("排球", "volleyball")),
-    ("swimming", ("游泳", "swimming")),
-    ("athletics", ("田径", "马拉松", "athletics", "marathon")),
-    ("ice_hockey", ("曲棍球", "hockey", "NHL")),
-    ("fitness", ("健身", "fitness")),
-)
-
-
-def _is_sports_related(text: str) -> bool:
-    """判断文本是否与体育相关"""
-    lower = text.lower()
-    return any(kw.lower() in lower for kw in _SPORTS_KEYWORDS)
-
-
-def _trend_terms(text: str) -> set[str]:
-    """Extract controlled sports terms and explicit hashtags from real content."""
-    lowered = text.casefold()
-    terms = {keyword for keyword in _SPORTS_KEYWORDS if keyword.casefold() in lowered}
-    terms.update(match.group(1) for match in _HASHTAG_PATTERN.finditer(text))
-    return {term.strip()[:200] for term in terms if term.strip()}
-
-
-def _infer_sports_category(text: str) -> str:
-    lowered = text.casefold()
-    for category, keywords in _CATEGORY_KEYWORDS:
-        if any(keyword.casefold() in lowered for keyword in keywords):
-            return category
-    return "sports"
-
 
 def _position_heat_score(rank: int, total: int) -> float:
     """基于排名位置计算热度分数（rank 1 = 100，递减）"""
@@ -395,7 +306,7 @@ class TrendCollectorService:
                         comment_count=None,
                         share_count=None,
                         breakout_score=score,
-                        category=item.sport or source.category,
+                        category=canonical_trend_category(item.sport or source.category),
                         metadata_json={
                             "source_kind": "live",
                             "provider": item.provider,
@@ -426,10 +337,28 @@ class TrendCollectorService:
                             "count": 0,
                             "sources": set(),
                             "latest": item.published_at,
+                            "article_refs": [],
                         },
                     )
                     aggregate["count"] += 1
                     aggregate["sources"].add(str(source.id))
+                    if len(aggregate["article_refs"]) < 10:
+                        article_ref = {
+                            "external_id": item.external_id,
+                            "url": item.canonical_url,
+                            "title": item.title,
+                            "summary": item.summary,
+                            "source_id": str(source.id),
+                            "source_name": source.name,
+                            "published_at": (
+                                item.published_at.isoformat() if item.published_at else None
+                            ),
+                        }
+                        if not any(
+                            ref.get("external_id") == article_ref["external_id"]
+                            for ref in aggregate["article_refs"]
+                        ):
+                            aggregate["article_refs"].append(article_ref)
                     if item.published_at and (
                         aggregate["latest"] is None or item.published_at > aggregate["latest"]
                     ):
@@ -462,6 +391,8 @@ class TrendCollectorService:
                 "applied_weights": weights,
                 "confidence_score": confidence,
                 "source_count": len(aggregate["sources"]),
+                "source_article_refs": aggregate["article_refs"],
+                "evidence_version": "trend-topic-evidence-v1",
                 "source_published_at": (
                     aggregate["latest"].isoformat() if aggregate["latest"] is not None else None
                 ),
@@ -794,7 +725,7 @@ class TrendCollectorService:
                     "source_providers": sorted(aggregate["providers"]),
                     "access_method": "monitored_account",
                     "metric_kind": "derived",
-                    "derivation_method": "controlled_sports_terms_and_hashtags_v1",
+                    "derivation_method": "ranked_topics_events_entities_v2",
                     "formula_version": "trend-topic-heat-v2",
                     "heat_score_method": (
                         "confidence_adjusted_volume_total_views_average_views_breadth"
@@ -1024,7 +955,7 @@ class TrendCollectorService:
             statistics = item.get("statistics", {})
             title = snippet.get("title", "")
             category_id = snippet.get("categoryId", "")
-            category = category_map.get(category_id, "general")
+            category = canonical_trend_category(category_map.get(category_id, "general"))
             views = _optional_int(statistics.get("viewCount"))
             engagement = _engagement_from_statistics(statistics)
             published_at = snippet.get("publishedAt")

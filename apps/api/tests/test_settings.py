@@ -6,6 +6,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.models.settings import LLMProviderSetting, PlatformCredentialSetting
+from app.providers.llm.openai_compatible import OpenAICompatibleProvider
 from app.services.platform_session_capture import CapturedBrowserSession
 
 from .conftest import PG_SYNC_URL, TEST_PASSWORD
@@ -183,6 +184,71 @@ def test_workspace_llm_configuration_is_encrypted_masked_and_used_by_descriptors
             assert row.config_masked["api_key"] == "••••••••"
     finally:
         sync_engine.dispose()
+
+
+def test_llm_connection_test_uses_current_form_and_persists_saved_health(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    csrf = authenticate(client)
+
+    async def fake_list_models(self: OpenAICompatibleProvider) -> list[dict[str, str | None]]:
+        assert self.base_url == "https://provider.example/v1"
+        assert self._api_key == "sk-current-form"  # noqa: SLF001 - contract test
+        return [{"id": "sports-model-v2", "name": "Sports Model", "owned_by": "test"}]
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "list_models", fake_list_models)
+    probe = client.post(
+        "/api/v1/settings/llm/openai-compatible/test",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "provider_id": "qwen",
+            "name": "当前表单的 Qwen",
+            "base_url": "https://provider.example/v1/chat/completions",
+            "api_key": "sk-current-form",
+            "default_model": "sports-model-v2",
+            "timeout_seconds": 30,
+            "max_attempts": 1,
+        },
+    )
+    assert probe.status_code == 200, probe.text
+    assert probe.json() == {
+        "status": "ok",
+        "detail": "连接与认证成功，已读取 1 个模型；未发起计费生成请求。",
+        "tested_at": probe.json()["tested_at"],
+        "provider_id": "qwen",
+        "default_model": "sports-model-v2",
+        "model_available": True,
+        "model_count": 1,
+        "persisted": False,
+    }
+
+    saved = client.put(
+        "/api/v1/settings/llm/openai-compatible",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "provider_id": "qwen",
+            "name": "工作区 Qwen",
+            "base_url": "https://provider.example/v1",
+            "api_key": "sk-current-form",
+            "default_model": "sports-model-v2",
+            "timeout_seconds": 30,
+            "max_attempts": 1,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["provider_id"] == "qwen"
+    assert saved.json()["name"] == "工作区 Qwen"
+
+    persisted = client.post(
+        "/api/v1/settings/llm/openai-compatible/test",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert persisted.status_code == 200, persisted.text
+    assert persisted.json()["persisted"] is True
+    current = client.get("/api/v1/settings/llm/openai-compatible")
+    assert current.json()["health_status"] == "healthy"
+    assert current.json()["effective_scope"] == "workspace"
 
 
 def test_llm_update_preserves_blank_secret_and_can_clear_optional_values(

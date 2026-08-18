@@ -1009,6 +1009,7 @@ export function AccountsClient() {
           />
         </label>
         <select
+          aria-label="账号平台"
           value={platform}
           onChange={(e) => {
             setPlatform(e.target.value);

@@ -53,7 +53,16 @@ class RuntimeSettingsRead(BaseModel):
 class LLMProviderSettingUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(default="OpenAI 兼容接口", min_length=1, max_length=255)
+    # ``provider_id`` identifies the selected preset; ``name`` is the
+    # workspace operator's display name.  They must not be conflated with the
+    # wire protocol (which is currently OpenAI-compatible for all built-ins).
+    provider_id: str = Field(
+        default="openai",
+        min_length=1,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    )
+    name: str = Field(default="OpenAI", min_length=1, max_length=255)
     base_url: str = Field(min_length=8, max_length=2048)
     api_key: SecretStr | None = None
     clear_api_key: bool = False
@@ -77,6 +86,10 @@ class LLMProviderSettingUpdate(BaseModel):
         from app.providers.news.utils import validate_source_url
 
         normalized = value.strip().rstrip("/")
+        for suffix in ("/chat/completions", "/models"):
+            if normalized.casefold().endswith(suffix):
+                normalized = normalized[: -len(suffix)].rstrip("/")
+                break
         validate_source_url(normalized, allow_secret_query=False)
         return normalized
 
@@ -105,6 +118,8 @@ class LLMProviderSettingUpdate(BaseModel):
 class LLMProviderSettingRead(BaseModel):
     id: UUID | None = None
     provider_key: str
+    provider_id: str
+    provider_protocol: Literal["openai_compatible"]
     name: str
     source: Literal["database", "environment", "unconfigured"]
     base_url: str | None
@@ -116,8 +131,13 @@ class LLMProviderSettingRead(BaseModel):
     output_cost_per_million: Decimal | None
     enabled: bool
     configured: bool
+    effective: bool
+    effective_scope: Literal["workspace", "environment", "none"]
+    effective_scope_detail: str
+    effective_for: list[str] = Field(default_factory=list)
     last_tested_at: datetime | None
     health_status: str
+    health_detail: str
     updated_at: datetime | None
     fields: list[ConfigFieldDescriptor]
 
@@ -126,6 +146,11 @@ class LLMProviderTestRead(BaseModel):
     status: Literal["ok", "degraded", "unavailable"]
     detail: str
     tested_at: datetime
+    provider_id: str = "openai"
+    default_model: str | None = None
+    model_available: bool | None = None
+    model_count: int | None = None
+    persisted: bool = False
 
 
 class LLMModelOption(BaseModel):
@@ -136,6 +161,7 @@ class LLMModelOption(BaseModel):
 
 class LLMModelsRead(BaseModel):
     provider_key: str
+    provider_id: str = "openai"
     source: Literal["live", "catalog", "unavailable"]
     items: list[LLMModelOption] = Field(default_factory=list)
     detail: str | None = None

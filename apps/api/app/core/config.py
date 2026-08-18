@@ -52,6 +52,17 @@ class Settings(BaseSettings):
     )
     password_min_length: int = Field(default=12, ge=12, le=128)
     youtube_api_key: SecretStr | None = None
+    # Optional server-level fallbacks for official platform adapters. These
+    # remain environment-only; workspace-scoped credentials continue to take
+    # precedence and are stored encrypted by PlatformCredentialService.
+    tiktok_client_key: str | None = None
+    tiktok_client_secret: SecretStr | None = None
+    tiktok_access_token: SecretStr | None = None
+    tiktok_refresh_token: SecretStr | None = None
+    douyin_client_key: str | None = None
+    douyin_client_secret: SecretStr | None = None
+    douyin_access_token: SecretStr | None = None
+    douyin_refresh_token: SecretStr | None = None
     video_search_enabled: bool = True
     video_search_default_interval_seconds: int = Field(default=3600, ge=60, le=2_592_000)
     video_search_max_candidates_per_run: int = Field(default=20, ge=1, le=200)
@@ -165,6 +176,16 @@ class Settings(BaseSettings):
     )
     platform_request_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     platform_request_max_attempts: int = Field(default=3, ge=1, le=5)
+    platform_canary_enabled: bool = Field(
+        default=True,
+        description="Enable low-frequency health probes for configured official platform APIs.",
+    )
+    platform_canary_interval_seconds: int = Field(
+        default=3600,
+        ge=900,
+        le=86_400,
+        description="Minimum interval between official platform API canary probes.",
+    )
     hotspot_feed_max_sources: int = Field(
         default=20,
         ge=1,
@@ -444,7 +465,7 @@ class Settings(BaseSettings):
         ),
     )
     llm_internal_hosts_allowlist: list[str] = Field(
-        default_factory=lambda: ["llm-gateway", "llm-experimental"],
+        default_factory=lambda: ["llm-gateway", "llm-experimental", "host.docker.internal"],
         description=(
             "Hostnames permitted to bypass SSRF public-endpoint validation for LLM "
             "base URLs. Used for Docker-internal gateway services such as New API or "

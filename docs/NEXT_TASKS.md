@@ -4,8 +4,8 @@
 
 ## P0：需要外部授权或环境条件
 
-1. 配置有效 YouTube Data API Key，并验证频道、上传列表、视频批量统计、配额和错误分类；未完成前不得标记 YouTube 真实成功。
-2. 更新 TikTok Display API OAuth Token、抖音开放平台 Token；分别验证官方 API，不得用浏览器公开页成功替代官方 API 验收。
+1. YouTube 公开 Data API Key、频道、上传列表、视频批量统计和应用内 Adapter health_check canary 已通过；仍需在重建后的 API/Worker 中执行一次工作区账号添加与同步，并补充配额/错误分类记录，不能把公开 canary 扩大解释为 Analytics OAuth。
+2. TikTok 官方 canary 当前返回 `access_token_invalid`，需更新 Display API OAuth Token/Refresh Token；抖音 Token 仍未完成官方 canary。不得用浏览器公开页成功替代官方 API 验收。
 3. 为 Bilibili 提供加密账号凭证或有效 `storage_state_json`，验证自动登录、会话隔离和一键撤销；遇验证码或 2FA 必须停止，不绕过安全机制。
 4. 修复 Docker DNS/代理将公网域名映射到 `198.18.0.0/15` 的问题，在 SSRF 校验保持开启的条件下重跑全部 RSS。
 5. 配置真实 LLM 和至少一个外部通知渠道，完成可计费生成、Token/成本记录、通知投递、重试和死信端到端验收。
@@ -15,6 +15,14 @@
 5. 产品品牌已统一为 **Content Intelligence OS（内容智能生产平台）**；体育能力作为首期垂直工作区保留，后续可扩展至全品类内容生产。
 
 6. 本轮已完成保存查询、观察性实验、字幕/模型时间段证据定位、热点榜单同题机会聚合、规则适用性模拟/历史反馈、工作区成员邀请和账号级授权本地闭环（含设置中心授权面板，契约见 `docs/WORKSPACE_ACCOUNT_ACCESS.md`）；仍未完成的是关键帧证据索引、规范事件/跨语言事实确认、频道级/发布资源权限、授权 Analytics 驱动的真实 A/B/因果分析、正式发布 Adapter，以及约 36 GB 派生指标历史的备份后分批治理。
+
+7. 能力就绪度与平台探针闭环已完成：`GET /settings/readiness`、管理员 `POST /settings/readiness/{platform_key}/probe`、设置中心诊断面板，以及仅针对已配置官方 API 的 Beat 定期 canary 已上线；探针结果有安全审计、失败转变去重、恢复关闭事件和自动/手动来源标记。仍需补的是配额/字段完整率、新闻/LLM/通知 Provider canary，以及配置真实通知渠道后的外部升级投递。
+
+### 三项当前明确阻断
+
+- 频道级/发布资源权限：现有 YouTube Key 只允许公开 Data API；TikTok Token 还已被官方判定无效，抖音也未完成有效 Token 验证。频道管理、排期/发布和资源读写都需要平台 OAuth scope、账号所有权/企业审核与平台回执，现有“账号级授权”只限制本系统工作区成员，不能创造外部平台权限。
+- 私有 Analytics 的真实 A/B/因果分析：当前实验模块是有真实发布归因证据的 observational comparison。要做因果结论，还需要私有 Analytics OAuth、随机分流或平台实验分配、曝光/处理日志、预先定义指标和样本量、跨平台协变量及统计检验；仅有历史播放/互动快照无法构造反事实。
+- 关键帧与多模态索引：当前已能保存字幕/转写和模型返回的带时间段证据，视频搜索也能做内容分析；但尚未将真实媒体切成关键帧/片段并持久化视觉、OCR、音频和向量索引。要完成还需要合法可读取的媒体、ffmpeg/帧抽取运行时、视觉/OCR/embedding Provider、存储与重建策略；`SIO_GEMINI_API_KEY` 和本地 embedding 后端当前未配置，不能用标题或 Mock 结果代替。
 
 ## LLM 网关集成（已完成）
 

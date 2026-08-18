@@ -7,9 +7,13 @@ import math
 import pytest
 
 from app.models.trends import TrendTopic
-from app.services.derivative_engine import DerivativeService, _classify_angle
+from app.services.derivative_engine import (
+    DerivativeService,
+    _classify_angle,
+    _normalise_search_result,
+)
 from app.services.platform_search import yt_search
-from app.services.search_analysis import _heat_from_views
+from app.services.search_analysis import _detect_language, _heat_from_views, _result_heat
 
 
 def _fake_topic(platform: str = "youtube", title: str = "巴黎奥运乒乓") -> TrendTopic:
@@ -66,3 +70,38 @@ def test_heat_from_views_log_scale():
     assert _heat_from_views(0) == 0.0
     assert 0.0 < _heat_from_views(1_000_000) <= 100.0
     assert _heat_from_views(10**12) <= 100.0
+
+
+def test_search_result_keeps_platform_metrics_and_labels_derived_heat():
+    result = _normalise_search_result(
+        {
+            "title": "Match analysis",
+            "view_count": 1_000_000,
+            "like_count": 12_000,
+            "comment_count": 800,
+        }
+    )
+
+    assert result["view_count"] == 1_000_000
+    assert result["like_count"] == 12_000
+    assert result["comment_count"] == 800
+    assert result["heat_score"] == _heat_from_views(1_000_000)
+    assert result["metric_source"] == "platform_fields_and_log_view_proxy"
+
+
+def test_search_heat_combines_returned_engagement_without_claiming_native_score():
+    result = {
+        "view_count": 1_000_000,
+        "like_count": 10_000,
+        "comment_count": 1_000,
+    }
+
+    assert _result_heat(result) > _heat_from_views(1_000_000)
+    assert _result_heat({"view_count": None, "like_count": None}) == 0.0
+
+
+def test_search_language_detection_supports_primary_input_languages():
+    assert _detect_language("Champions League final") == "en"
+    assert _detect_language("欧冠决赛") == "zh"
+    assert _detect_language("チャンピオンズリーグ") == "ja"
+    assert _detect_language("챔피언스리그") == "ko"

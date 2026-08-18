@@ -312,8 +312,8 @@ Prompt 09 新增 `/topics`、`/topics/batch`、`/operations/tasks`、`/operation
 | 方法 | 路径 | 权限与语义 |
 | --- | --- | --- |
 | GET | `/settings/runtime` | 已登录工作区成员；返回脱敏部署参数描述和环境变量名，不写宿主机配置 |
-| GET | `/settings/llm/openai-compatible` | 已登录工作区成员；只返回配置状态、脱敏摘要和默认参数 |
-| PUT | `/settings/llm/openai-compatible` | Owner/Admin + CSRF；加密保存工作区连接与模型参数 |
-| POST | `/settings/llm/openai-compatible/test` | Owner/Admin + CSRF；对已保存公网连接执行真实 `/models` 验证 |
+| GET | `/settings/llm/openai-compatible` | 已登录工作区成员；返回 Provider 标识、显示名称、有效范围、脱敏摘要、健康状态和默认参数 |
+| PUT | `/settings/llm/openai-compatible` | Owner/Admin + CSRF；加密保存工作区连接与模型参数；`provider_id` 与自定义显示名称一并保存 |
+| POST | `/settings/llm/openai-compatible/test` | Owner/Admin + CSRF；有请求体时测试当前未保存表单，否则测试已保存/环境生效配置；真实调用 `/models`，校验默认模型是否可用，不执行计费生成 |
 
-`GET /llm/providers` 现在按工作区解析 Provider 来源、默认模型和默认参数。`GET /notification-providers` 返回类型化 `config_fields`，供设置页和通知页生成相同的动态表单。所有读取接口均排除密文和明文 Secret。
+测试返回模型数量、默认模型可用性、健康详情和 `persisted` 标记：未保存表单测试不会修改配置或健康状态；对已保存配置执行空请求体测试会更新健康状态并写入审计。`GET /settings/llm/openai-compatible` 和 `GET /llm/providers` 按工作区解析来源：已启用且配置完整的工作区配置为 `workspace`，否则回退到部署环境配置为 `environment`，两者都不可用时为 `none`。本地 Ollama、Chat2API、New API 可在无 API Key 时使用，但仍必须能返回模型列表。所有读取接口均排除密文和明文 Secret。

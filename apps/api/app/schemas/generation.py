@@ -118,6 +118,7 @@ class WorkflowRead(BaseModel):
 
 class ProviderDescriptor(BaseModel):
     key: str
+    provider_id: str = "openai"
     name: str
     configured: bool
     is_mock: bool

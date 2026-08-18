@@ -7,6 +7,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,14 +47,28 @@ class SettingsError(RuntimeError):
         self.status_code = status_code
 
 
+def _secret_configured(value: SecretStr | None) -> bool:
+    """Return whether a secret contains non-whitespace content."""
+
+    return bool(value and value.get_secret_value().strip())
+
+
 LLM_FIELDS = [
+    ConfigFieldDescriptor(
+        key="provider_id",
+        label="提供商预设",
+        value_type="text",
+        required=True,
+        default="openai",
+        help_text="用于选择连接预设；协议类型与可编辑的配置名称分开保存。",
+    ),
     ConfigFieldDescriptor(
         key="name",
         label="配置名称",
         value_type="text",
         required=True,
-        default="OpenAI 兼容接口",
-        help_text="用于区分当前工作区中的模型连接配置。",
+        default="OpenAI",
+        help_text="工作区内显示的自定义名称，不会被协议名称覆盖。",
     ),
     ConfigFieldDescriptor(
         key="base_url",
@@ -61,7 +76,10 @@ LLM_FIELDS = [
         value_type="text",
         required=True,
         placeholder="https://api.openai.com/v1",
-        help_text="必须是公网 HTTP(S) 地址，不得携带 URL 凭证或敏感查询参数。",
+        help_text=(
+            "填写 Provider 根地址，例如 https://api.openai.com/v1；粘贴 /models 或 "
+            "/chat/completions 也会自动规范化。"
+        ),
     ),
     ConfigFieldDescriptor(
         key="api_key",
@@ -476,10 +494,45 @@ class SettingsService:
                         self._field(
                             "youtube_api_key_configured",
                             "YouTube Data API Key",
-                            bool(self.settings.youtube_api_key),
+                            _secret_configured(self.settings.youtube_api_key),
                             "boolean",
                             "SIO_YOUTUBE_API_KEY",
                             "只用于 YouTube 官方公开 Data API；不代表 Analytics OAuth 已实现。",
+                            secret=True,
+                        ),
+                        self._field(
+                            "tiktok_api_credentials_configured",
+                            "TikTok Display API 凭证",
+                            bool(
+                                self.settings.tiktok_client_key
+                                and _secret_configured(self.settings.tiktok_client_secret)
+                                and _secret_configured(self.settings.tiktok_access_token)
+                            ),
+                            "boolean",
+                            (
+                                "SIO_TIKTOK_CLIENT_KEY / SIO_TIKTOK_CLIENT_SECRET / "
+                                "SIO_TIKTOK_ACCESS_TOKEN"
+                            ),
+                            (
+                                "只表示必填字段存在；当前 Token 仍需通过官方实时 canary，"
+                                "不能据此认定有效。"
+                            ),
+                            secret=True,
+                        ),
+                        self._field(
+                            "douyin_api_credentials_configured",
+                            "抖音开放平台凭证",
+                            bool(
+                                self.settings.douyin_client_key
+                                and _secret_configured(self.settings.douyin_client_secret)
+                                and _secret_configured(self.settings.douyin_access_token)
+                            ),
+                            "boolean",
+                            (
+                                "SIO_DOUYIN_CLIENT_KEY / SIO_DOUYIN_CLIENT_SECRET / "
+                                "SIO_DOUYIN_ACCESS_TOKEN"
+                            ),
+                            "只表示必填字段存在；仍需按抖音开放平台权限完成官方 canary。",
                             secret=True,
                         ),
                     ],
@@ -508,6 +561,24 @@ class SettingsService:
                             "包括首次请求在内。",
                             1,
                             5,
+                        ),
+                        self._field(
+                            "platform_canary_enabled",
+                            "平台官方 API 自动探针",
+                            self.settings.platform_canary_enabled,
+                            "boolean",
+                            "SIO_PLATFORM_CANARY_ENABLED",
+                            "仅探测已配置的官方 API 凭证；不会自动访问公开页或登录会话。",
+                        ),
+                        self._field(
+                            "platform_canary_interval_seconds",
+                            "平台探针间隔",
+                            self.settings.platform_canary_interval_seconds,
+                            "number",
+                            "SIO_PLATFORM_CANARY_INTERVAL_SECONDS",
+                            "低频探测间隔，失败会去重升级，恢复后自动关闭内部告警。",
+                            900,
+                            86400,
                         ),
                         self._field(
                             "sync_task_max_retries",
@@ -958,7 +1029,11 @@ class SettingsService:
         config["base_url"] = payload.base_url
         config["timeout_seconds"] = payload.timeout_seconds
         config["max_attempts"] = payload.max_attempts
-        provider = self._provider_from_config(config, enabled=payload.enabled)
+        provider = self._provider_from_config(
+            config,
+            enabled=payload.enabled,
+            display_name=payload.name,
+        )
         try:
             await provider.validate_config({})
         except Exception as exc:
@@ -1017,21 +1092,79 @@ class SettingsService:
         await self.session.refresh(setting)
         return self._llm_read(setting)
 
-    async def test_llm_setting(self, workspace_id: UUID, actor_id: UUID) -> LLMProviderTestRead:
+    async def test_llm_setting(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        payload: LLMProviderSettingUpdate | None = None,
+    ) -> LLMProviderTestRead:
+        """Probe the saved or currently edited connection.
+
+        The previous endpoint ignored the form and always resolved the old
+        database row.  A form can now send its current values, so operators
+        can test before saving.  Unsaved probes are deliberately not written
+        into the saved row; otherwise the status panel would report a healthy
+        connection for a different configuration.
+        """
+
         setting = await self._llm_row(workspace_id)
-        provider = await self.resolve_llm_provider(workspace_id, "openai_compatible")
+        config = await self._llm_config(workspace_id, setting)
+        display_name = setting.name if setting is not None else "部署级 LLM 配置"
+        persist_result = payload is None and setting is not None
+        if payload is not None:
+            config = self._merge_llm_payload(config, payload)
+            display_name = payload.name
+        provider = self._provider_from_config(
+            config,
+            enabled=True,
+            display_name=display_name,
+        )
+        provider_id = str(config.get("provider_id") or "openai")
+        default_model = (
+            payload.default_model
+            if payload is not None
+            else setting.default_model
+            if setting is not None
+            else self.settings.llm_default_model
+        )
         tested_at = datetime.now(UTC)
+        model_count: int | None = None
+        model_available: bool | None = None
         try:
             if not isinstance(provider, OpenAICompatibleProvider):
                 raise SettingsError(
-                    "当前配置不是 OpenAI 兼容 Provider",
+                    "当前配置的协议适配器尚未实现",
                     code="llm_provider_test_unsupported",
                     status_code=422,
                 )
-            health = await provider.test_connection()
+            rows = await provider.list_models()
+            model_count = len(rows)
+            model_ids = {str(row.get("id")) for row in rows if row.get("id")}
+            model_available = default_model in model_ids if model_ids else None
+            if not rows:
+                health = LLMHealth(
+                    status="degraded",
+                    detail=(
+                        "连接与认证成功，但 Provider 没有返回可用模型；请检查模型权限或 "
+                        "手动填写模型 ID。"
+                    ),
+                )
+            elif model_available is False:
+                health = LLMHealth(
+                    status="degraded",
+                    detail=(
+                        f"连接成功，返回 {len(rows)} 个模型，但默认模型 {default_model} "
+                        "不在清单中。"
+                    ),
+                )
+            else:
+                health = LLMHealth(
+                    status="ok",
+                    detail=f"连接与认证成功，已读取 {len(rows)} 个模型；未发起计费生成请求。",
+                )
         except Exception as exc:
             health = LLMHealth(status="unavailable", detail=str(exc))
-        if setting is not None:
+        if persist_result and setting is not None:
             setting.last_tested_at = tested_at
             setting.health_status = (
                 "healthy"
@@ -1045,29 +1178,55 @@ class SettingsService:
                 actor_id,
                 "llm_provider_setting.tested",
                 setting.id,
-                {"status": health.status},
+                {
+                    "status": health.status,
+                    "provider_id": provider_id,
+                    "default_model": default_model,
+                    "model_available": model_available,
+                    "model_count": model_count,
+                },
             )
             await self.session.commit()
-        return LLMProviderTestRead(status=health.status, detail=health.detail, tested_at=tested_at)
+        return LLMProviderTestRead(
+            status=health.status,
+            detail=health.detail,
+            tested_at=tested_at,
+            provider_id=provider_id,
+            default_model=default_model,
+            model_available=model_available,
+            model_count=model_count,
+            persisted=persist_result,
+        )
 
     async def llm_models(self, workspace_id: UUID) -> LLMModelsRead:
         provider = await self.resolve_llm_provider(workspace_id, "openai_compatible")
+        setting = await self._llm_row(workspace_id)
+        provider_id = "openai"
+        if setting is not None:
+            stored_config = self.cipher.decrypt(setting.config_encrypted)
+            provider_id = str(stored_config.get("provider_id") or "openai")
         if not isinstance(provider, OpenAICompatibleProvider) or not provider.configured:
             return LLMModelsRead(
                 provider_key="openai_compatible",
+                provider_id=provider_id,
                 source="unavailable",
-                detail="请先保存可用的 Base URL 与 API Key",
+                detail=(
+                    "请先保存并启用可用的 Base URL 与 API Key；Ollama 等本地 Provider "
+                    "可不填 Key。"
+                ),
             )
         try:
             rows = await provider.list_models()
         except Exception as exc:
             return LLMModelsRead(
                 provider_key="openai_compatible",
+                provider_id=provider_id,
                 source="unavailable",
                 detail=str(exc),
             )
         return LLMModelsRead(
             provider_key="openai_compatible",
+            provider_id=provider_id,
             source="live",
             items=[LLMModelOption.model_validate(row) for row in rows],
             detail="已从当前 Provider 的 /models 接口读取",
@@ -1085,7 +1244,11 @@ class SettingsService:
         if setting is None:
             return self.base_providers.get(key)
         config = self.cipher.decrypt(setting.config_encrypted)
-        return self._provider_from_config(config, enabled=setting.enabled)
+        return self._provider_from_config(
+            config,
+            enabled=setting.enabled,
+            display_name=setting.name,
+        )
 
     async def effective_llm_defaults(
         self, workspace_id: UUID
@@ -1123,10 +1286,16 @@ class SettingsService:
     def _llm_read(self, setting: LLMProviderSetting | None) -> LLMProviderSettingRead:
         if setting is not None:
             config = self.cipher.decrypt(setting.config_encrypted)
+            provider_id = str(config.get("provider_id") or "openai")
             configured = bool(setting.enabled and config.get("base_url") and config.get("api_key"))
+            if provider_id in {"ollama", "chat2api", "new-api"}:
+                configured = bool(setting.enabled and config.get("base_url"))
+            effective = configured and setting.enabled
             return LLMProviderSettingRead(
                 id=setting.id,
                 provider_key=setting.provider_key,
+                provider_id=provider_id,
+                provider_protocol="openai_compatible",
                 name=setting.name,
                 source="database",
                 base_url=str(config.get("base_url")) if config.get("base_url") else None,
@@ -1138,8 +1307,23 @@ class SettingsService:
                 output_cost_per_million=setting.output_cost_per_million,
                 enabled=setting.enabled,
                 configured=configured,
+                effective=effective,
+                effective_scope="workspace" if effective else "none",
+                effective_scope_detail=(
+                    "当前工作区；新的手动生成、Worker 生成和自动化生成任务使用此配置。"
+                    if effective
+                    else "此配置不会参与生成任务；请启用配置并完成连接测试。"
+                ),
+                effective_for=(
+                    ["新的手动生成", "Worker 生成", "自动化 create_generation 动作"]
+                    if effective
+                    else []
+                ),
                 last_tested_at=setting.last_tested_at,
                 health_status=setting.health_status,
+                health_detail=self._llm_health_detail(
+                    setting.health_status, configured, setting.enabled
+                ),
                 updated_at=setting.updated_at,
                 fields=LLM_FIELDS,
             )
@@ -1152,7 +1336,9 @@ class SettingsService:
         return LLMProviderSettingRead(
             id=None,
             provider_key="openai_compatible",
-            name="OpenAI 兼容接口",
+            provider_id="openai",
+            provider_protocol="openai_compatible",
+            name="部署级 LLM 配置",
             source="environment" if configured else "unconfigured",
             base_url=self.settings.llm_openai_compatible_base_url,
             api_key_configured=bool(api_key),
@@ -1172,18 +1358,39 @@ class SettingsService:
             output_cost_per_million=None,
             enabled=True,
             configured=configured,
+            effective=configured,
+            effective_scope="environment" if configured else "none",
+            effective_scope_detail=(
+                "部署级环境变量；工作区保存配置后会覆盖此默认连接。"
+                if configured
+                else "尚未配置工作区或部署级 LLM 连接。"
+            ),
+            effective_for=(
+                ["新的手动生成", "Worker 生成", "自动化 create_generation 动作"]
+                if configured
+                else []
+            ),
             last_tested_at=None,
             health_status="unknown",
+            health_detail=self._llm_health_detail("unknown", configured, True),
             updated_at=None,
             fields=LLM_FIELDS,
         )
 
     def _provider_from_config(
-        self, config: dict[str, Any], *, enabled: bool
+        self,
+        config: dict[str, Any],
+        *,
+        enabled: bool,
+        display_name: str | None = None,
     ) -> OpenAICompatibleProvider:
+        provider_id = str(config.get("provider_id") or "openai")
         return OpenAICompatibleProvider(
             base_url=str(config.get("base_url")) if enabled and config.get("base_url") else None,
             api_key=str(config.get("api_key")) if enabled and config.get("api_key") else None,
+            provider_id=provider_id,
+            display_name=display_name,
+            api_key_optional=provider_id in {"ollama", "chat2api", "new-api"},
             timeout_seconds=float(
                 config.get("timeout_seconds", self.settings.llm_request_timeout_seconds)
             ),
@@ -1194,7 +1401,74 @@ class SettingsService:
                 str(key): str(value)
                 for key, value in dict(config.get("custom_headers") or {}).items()
             },
+            internal_hosts=tuple(self.settings.llm_internal_hosts_allowlist),
         )
+
+    async def _llm_config(
+        self, workspace_id: UUID, setting: LLMProviderSetting | None
+    ) -> dict[str, Any]:
+        if setting is not None:
+            return self.cipher.decrypt(setting.config_encrypted)
+        return {
+            "base_url": self.settings.llm_openai_compatible_base_url,
+            "api_key": (
+                self.settings.llm_openai_compatible_api_key.get_secret_value()
+                if self.settings.llm_openai_compatible_api_key
+                else None
+            ),
+            "provider_id": "openai",
+            "timeout_seconds": self.settings.llm_request_timeout_seconds,
+            "max_attempts": self.settings.llm_request_max_attempts,
+        }
+
+    def _merge_llm_payload(
+        self, existing: dict[str, Any], payload: LLMProviderSettingUpdate
+    ) -> dict[str, Any]:
+        config = dict(existing)
+        values = payload.model_dump(
+            exclude={
+                "api_key",
+                "clear_api_key",
+                "default_model",
+                "temperature",
+                "top_p",
+                "max_tokens",
+                "input_cost_per_million",
+                "output_cost_per_million",
+                "enabled",
+                "name",
+            }
+        )
+        config.update({key: value for key, value in values.items() if value is not None})
+        if payload.api_key is not None:
+            config["api_key"] = payload.api_key.get_secret_value()
+        elif payload.clear_api_key:
+            config.pop("api_key", None)
+        for optional_key in ("organization", "project"):
+            optional_value = getattr(payload, optional_key)
+            if optional_value:
+                config[optional_key] = optional_value
+            else:
+                config.pop(optional_key, None)
+        if payload.custom_headers is not None:
+            config["custom_headers"] = payload.custom_headers
+        config["base_url"] = payload.base_url
+        config["timeout_seconds"] = payload.timeout_seconds
+        config["max_attempts"] = payload.max_attempts
+        return config
+
+    @staticmethod
+    def _llm_health_detail(health_status: str, configured: bool, enabled: bool) -> str:
+        if not enabled:
+            return "配置已保存但未启用，不会被新的生成任务选用。"
+        if not configured:
+            return "缺少可用的 Base URL 或 API Key；本地 Provider 可按说明省略 API Key。"
+        return {
+            "healthy": "最近一次模型清单探测成功。",
+            "degraded": "最近一次探测连接成功，但默认模型不可用或模型清单为空。",
+            "unhealthy": "最近一次模型清单探测失败，请查看测试结果并重新验证。",
+            "unknown": "配置已具备，但尚未执行真实模型清单探测。",
+        }.get(health_status, "状态未知，请重新测试连接。")
 
     @staticmethod
     def _field(

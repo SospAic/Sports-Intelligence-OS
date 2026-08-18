@@ -16,7 +16,7 @@ export default defineConfig({
 
   /* Fail-fast in CI, allow local retries for flakiness */
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  workers: process.env.CI ? 2 : 4,
 
   /* Reporter: HTML in CI for artifact upload, list locally */
   reporter: process.env.CI
@@ -45,6 +45,11 @@ export default defineConfig({
       name: "mobile",
       use: {
         ...devices["iPhone 14 Pro"],
+        // Keep the mobile viewport in the default local browser matrix. The
+        // iPhone device preset selects WebKit, which is not guaranteed to be
+        // installed on developer/CI machines and prevents the rest of the
+        // frontend acceptance suite from running.
+        browserName: "chromium",
         viewport: { width: 390, height: 844 },
       },
     },

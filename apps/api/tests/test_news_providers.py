@@ -163,6 +163,22 @@ async def test_known_media_url_allows_docker_synthetic_dns() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_known_llm_url_allows_docker_synthetic_dns() -> None:
+    from app.providers.news.utils import ensure_public_llm_endpoint
+
+    assert await ensure_public_llm_endpoint("https://api.deepseek.com/v1") == (
+        "https://api.deepseek.com/v1"
+    )
+
+
+def test_llm_url_allowlist_does_not_match_lookalike_hosts() -> None:
+    from app.providers.news.utils import is_known_llm_source
+
+    assert is_known_llm_source("https://api.deepseek.com/v1")
+    assert not is_known_llm_source("https://api.deepseek.com.attacker.example/v1")
+
+
 def test_media_url_allowlist_does_not_match_lookalike_hosts() -> None:
     from app.providers.news.utils import is_known_media_source
 

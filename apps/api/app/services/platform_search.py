@@ -39,7 +39,7 @@ async def yt_search(
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Run a platform search and return ``(results, error_note)``.
 
-    ``results`` entries: ``title, url, author, view_count, like_count,
+    ``results`` entries: ``title, url, author, view_count, like_count, comment_count,
     published, platform``. ``error_note`` is non-None only when the search
     could not run (unconfigured platform / timeout / no output) — callers
     surface it but should not fail the whole request.
@@ -99,6 +99,8 @@ async def yt_search(
                 "cover_url": entry.get("thumbnail"),
                 "view_count": entry.get("view_count"),
                 "like_count": entry.get("like_count"),
+                "comment_count": entry.get("comment_count"),
+                "duration": entry.get("duration"),
                 "published": entry.get("upload_date") or entry.get("timestamp"),
                 "platform": platform,
             }

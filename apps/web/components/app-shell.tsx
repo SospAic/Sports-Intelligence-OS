@@ -181,6 +181,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
   const searchListRef = useRef<HTMLDivElement>(null);
   const [userOpen, setUserOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement>(null);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [optimisticReadInboxIds, setOptimisticReadInboxIds] = useState<Set<string>>(
     () => new Set(),
@@ -188,6 +189,18 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [syncPopoverOpen, setSyncPopoverOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!userOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !userMenuRef.current?.contains(target)) {
+        setUserOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [userOpen]);
   const userQuery = useQuery({
     queryKey: ["current-user"],
     queryFn: () => apiRequest<CurrentUserResponse>("/me"),
@@ -855,7 +868,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 >
                   <Bell size={18} />
                   {unreadInboxItems.length > 0 && (
-                    <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] text-white">
+                    <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-700 px-1 text-center text-[10px] text-white">
                       {unreadInboxItems.length > 99
                         ? "99+"
                         : unreadInboxItems.length}
@@ -955,11 +968,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
-            <div className="relative">
+            <div className="relative" ref={userMenuRef}>
               <button
                 aria-label="用户菜单"
+                aria-expanded={userOpen}
+                aria-haspopup="menu"
                 className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 px-2 text-sm hover:bg-slate-900"
                 onClick={() => setUserOpen((value) => !value)}
+                type="button"
               >
                 <CircleUserRound size={18} />
                 <span className="hidden max-w-28 truncate xl:inline">
@@ -970,7 +986,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <ChevronDown size={14} />
               </button>
               {userOpen && (
-                <div className="absolute top-11 right-0 w-56 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
+                <div className="absolute top-11 right-0 w-56 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl" role="menu">
                   <div className="border-b border-slate-800 p-2">
                     <p className="truncate text-sm text-white">
                       {currentUser?.user.email}

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
 
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,21 @@ REQUIRED_API_FIELDS: dict[str, set[str]] = {
     "tiktok": {"client_key", "client_secret", "access_token"},
     "douyin": {"client_key", "client_secret", "access_token"},
     "bilibili": set(),
+}
+ENVIRONMENT_API_FIELDS: dict[str, dict[str, str]] = {
+    "youtube": {"api_key": "youtube_api_key"},
+    "tiktok": {
+        "client_key": "tiktok_client_key",
+        "client_secret": "tiktok_client_secret",
+        "access_token": "tiktok_access_token",
+        "refresh_token": "tiktok_refresh_token",
+    },
+    "douyin": {
+        "client_key": "douyin_client_key",
+        "client_secret": "douyin_client_secret",
+        "access_token": "douyin_access_token",
+        "refresh_token": "douyin_refresh_token",
+    },
 }
 API_SUPPORTED = frozenset({"youtube", "tiktok", "douyin"})
 MANAGED_PLATFORM_KEYS = frozenset(API_FIELDS)
@@ -263,8 +279,16 @@ class PlatformCredentialService:
             }[row.mode]
             fields = fields | PROXY_FIELDS | LOCAL_BROWSER_FIELDS
             return row.mode, {field: value for field, value in config.items() if field in fields}
-        if key == "youtube" and self.settings.youtube_api_key is not None:
-            return "api", {"api_key": self.settings.youtube_api_key.get_secret_value()}
+        # Environment credentials are a server-level fallback for local and
+        # single-workspace deployments. A disabled/incomplete workspace row is
+        # intentionally not bypassed, so an operator can explicitly turn off
+        # the fallback for that workspace.
+        if row is None:
+            config = self._environment_api_config(key)
+            if key in API_SUPPORTED and all(
+                config.get(field) for field in REQUIRED_API_FIELDS.get(key, set())
+            ):
+                return "api", config
         return "unconfigured", {}
 
     async def capture_browser_session(
@@ -391,15 +415,19 @@ class PlatformCredentialService:
                 config_masked=row.config_masked,
                 updated_at=row.updated_at,
             )
-        if platform_key == "youtube" and self.settings.youtube_api_key is not None:
+        environment_config = self._environment_api_config(platform_key)
+        if environment_config:
+            required = REQUIRED_API_FIELDS.get(platform_key, set())
             return PlatformCredentialRead(
                 platform_key=platform_key,
                 mode="api",
                 source="environment",
                 enabled=True,
-                configured=True,
-                configured_fields=["api_key"],
-                config_masked={"api_key": "configured"},
+                configured=bool(required) and all(
+                    environment_config.get(field) for field in required
+                ),
+                configured_fields=sorted(environment_config),
+                config_masked={field: "configured" for field in environment_config},
                 updated_at=None,
             )
         return PlatformCredentialRead(
@@ -412,6 +440,22 @@ class PlatformCredentialService:
             config_masked={},
             updated_at=None,
         )
+
+    def _environment_api_config(self, platform_key: str) -> dict[str, str]:
+        """Return non-empty server-level API fields without exposing secrets.
+
+        The returned mapping is used only inside the backend adapter boundary.
+        API responses use ``configured_fields`` and masked markers instead.
+        """
+
+        config: dict[str, str] = {}
+        for field, setting_name in ENVIRONMENT_API_FIELDS.get(platform_key, {}).items():
+            value = getattr(self.settings, setting_name, None)
+            if isinstance(value, SecretStr):
+                value = value.get_secret_value()
+            if isinstance(value, str) and value.strip():
+                config[field] = value.strip()
+        return config
 
     async def revoke_login_access(
         self, workspace_id: UUID, actor_id: UUID, platform_key: str

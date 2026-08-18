@@ -2,8 +2,12 @@
 
 import type {
   AdapterDescriptorRead,
+  LLMProviderSettingRecord,
   NewsSourceRecord,
   PlatformRecord,
+  ReadinessReportRead,
+  RuntimeSettingsRecord,
+  YtDlpRuntimeRecord,
 } from "@sio/shared-types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,9 +28,10 @@ import {
   Database,
   Languages,
   HardDrive,
+  ShieldCheck,
   Bell,
 } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { NotificationChannelsClient } from "@/app/notification-channels/notification-channels-client";
 import { useWorkspace } from "@/components/app-shell";
@@ -66,6 +71,43 @@ type PlatformCredential = {
   configured_fields: string[];
   config_masked: Record<string, unknown>;
   updated_at: string | null;
+};
+type NotificationHealthSummary = {
+  channels: Array<{
+    enabled: boolean;
+    health_status: string;
+    success_rate: number | null;
+  }>;
+  deliveries: number;
+  delivered: number;
+  failed: number;
+  generated_at: string;
+};
+type StorageHealthRecord = {
+  quota_percent: number | null;
+  media_file_count: number;
+  tracked_artifact_count: number;
+  warnings: string[];
+  scan_truncated: boolean;
+};
+type SemanticSearchStatusRecord = {
+  enabled: boolean;
+  backend: string;
+  model: string;
+  embedded_items: number;
+  pending_items: number;
+  freshness: "fresh" | "stale" | "empty";
+  freshness_detail: string;
+};
+type OverviewCheckState = "ready" | "checking" | "attention" | "blocked" | "error";
+type OverviewCheck = {
+  key: string;
+  title: string;
+  state: OverviewCheckState;
+  detail: string;
+  nextAction: string;
+  tab: SettingsTab;
+  icon: ReactNode;
 };
 type SettingsTab =
   | "overview"
@@ -154,6 +196,64 @@ export function SettingsClient() {
       apiRequest<AdapterDescriptorRead[]>("/settings/platform-adapters"),
     enabled: Boolean(workspaceId) && tab === "platforms",
   });
+  const readiness = useQuery({
+    queryKey: ["platform-readiness", workspaceId],
+    queryFn: () =>
+      apiRequest<ReadinessReportRead>("/settings/readiness", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && (tab === "platforms" || tab === "overview"),
+    refetchInterval: 60_000,
+  });
+  const overviewRuntime = useQuery<RuntimeSettingsRecord>({
+    queryKey: ["runtime-settings", workspaceId],
+    queryFn: () =>
+      apiRequest<RuntimeSettingsRecord>("/settings/runtime", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+  });
+  const overviewYtdlp = useQuery<YtDlpRuntimeRecord>({
+    queryKey: ["ytdlp-runtime", workspaceId],
+    queryFn: () =>
+      apiRequest<YtDlpRuntimeRecord>("/downloads/runtime", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+  });
+  const overviewLlm = useQuery<LLMProviderSettingRecord>({
+    queryKey: ["llm-setting", workspaceId],
+    queryFn: () =>
+      apiRequest<LLMProviderSettingRecord>("/settings/llm/openai-compatible", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+  });
+  const overviewSemantic = useQuery<SemanticSearchStatusRecord>({
+    queryKey: ["semantic-search-status", workspaceId],
+    queryFn: () =>
+      apiRequest<SemanticSearchStatusRecord>("/semantic-search/status", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+    refetchInterval: 15_000,
+  });
+  const overviewStorage = useQuery<StorageHealthRecord>({
+    queryKey: ["storage-health", workspaceId],
+    queryFn: () =>
+      apiRequest<StorageHealthRecord>("/storage/health", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+  });
+  const overviewNotifications = useQuery<NotificationHealthSummary>({
+    queryKey: ["notification-health", workspaceId],
+    queryFn: () =>
+      apiRequest<NotificationHealthSummary>("/notification-health", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && tab === "overview",
+  });
 
   async function syncSource(id: string) {
     if (!workspaceId) return;
@@ -219,6 +319,259 @@ export function SettingsClient() {
     reliability_score: "50",
   });
   const [sourcePending, setSourcePending] = useState(false);
+
+  async function refreshOverview() {
+    const results = await Promise.all([
+      health.refetch(),
+      sources.refetch(),
+      readiness.refetch(),
+      overviewRuntime.refetch(),
+      overviewYtdlp.refetch(),
+      overviewLlm.refetch(),
+      overviewSemantic.refetch(),
+      overviewStorage.refetch(),
+      overviewNotifications.refetch(),
+    ]);
+    if (results.some((result) => result.error)) {
+      notify("配置检查完成，但有检查项返回错误", "error");
+    } else {
+      notify("配置检查已完成", "success");
+    }
+  }
+
+  const platformItems = readiness.data?.platforms ?? [];
+  const readyPlatformCount = platformItems.filter(
+    (item) => item.status === "ready",
+  ).length;
+  const platformAttentionCount = platformItems.filter(
+    (item) => item.status !== "ready",
+  ).length;
+  const configuredLlm = overviewLlm.data;
+  const enabledNotificationChannels =
+    overviewNotifications.data?.channels.filter((channel) => channel.enabled) ?? [];
+  const unhealthyNotificationChannels = enabledNotificationChannels.filter(
+    (channel) => channel.health_status !== "healthy",
+  ).length;
+  const overviewChecks: OverviewCheck[] = [
+    {
+      key: "services",
+      title: "核心服务",
+      state: health.isLoading
+        ? "checking"
+        : health.error
+          ? "error"
+          : health.data?.status === "ok"
+            ? "ready"
+            : "attention",
+      detail: health.error
+        ? health.error.message
+        : health.data
+          ? `API 已响应；${Object.entries(health.data.checks ?? {})
+              .map(([key, value]) => `${key} ${value}`)
+              .join("，")}`
+          : "正在读取 API、数据库与 Redis 状态。",
+      nextAction: health.error ? "检查容器日志与就绪探针" : "核心服务可用",
+      tab: "overview",
+      icon: <HeartPulse size={17} />,
+    },
+    {
+      key: "platforms",
+      title: "平台凭证与采集能力",
+      state: readiness.isLoading
+        ? "checking"
+        : readiness.error
+          ? "error"
+          : platformItems.length === 0
+            ? "blocked"
+            : platformAttentionCount === 0
+              ? "ready"
+              : "attention",
+      detail: readiness.error
+        ? readiness.error.message
+        : readiness.data
+          ? `${readyPlatformCount} 个平台已通过就绪检查，${platformAttentionCount} 个平台需要配置、探针或授权。`
+          : "正在检查平台适配器、凭证来源和公开/API 能力。",
+      nextAction:
+        platformAttentionCount > 0 ? "打开平台管理查看下一动作" : "平台采集能力正常",
+      tab: "platforms",
+      icon: <Plug size={17} />,
+    },
+    {
+      key: "llm",
+      title: "LLM Provider",
+      state: overviewLlm.isLoading
+        ? "checking"
+        : overviewLlm.error
+          ? "error"
+          : configuredLlm?.effective && configuredLlm.health_status === "healthy"
+            ? "ready"
+            : configuredLlm?.effective
+              ? "attention"
+              : "blocked",
+      detail: overviewLlm.error
+        ? overviewLlm.error.message
+        : configuredLlm?.effective
+          ? `${configuredLlm.name} · ${configuredLlm.effective_scope === "workspace" ? "工作区生效" : "环境回退"} · 默认模型 ${configuredLlm.default_model || "未设置"}`
+          : "尚未形成可生效的 LLM 配置；需要 Base URL、模型及对应凭证。",
+      nextAction:
+        configuredLlm?.health_status === "healthy"
+          ? "已通过最近一次连接检查"
+          : "进入 LLM API 测试配置并检查模型",
+      tab: "llm",
+      icon: <Sparkles size={17} />,
+    },
+    {
+      key: "video-runtime",
+      title: "视频解析运行时",
+      state: overviewYtdlp.isLoading
+        ? "checking"
+        : overviewYtdlp.error
+          ? "error"
+          : overviewYtdlp.data?.status === "ready"
+            ? "ready"
+            : "attention",
+      detail: overviewYtdlp.error
+        ? overviewYtdlp.error.message
+        : overviewYtdlp.data
+          ? `${overviewYtdlp.data.detail} · yt-dlp ${overviewYtdlp.data.yt_dlp_version ?? "未发现"}`
+          : "正在检查 Node.js、yt-dlp 与 EJS 组件。",
+      nextAction:
+        overviewYtdlp.data?.status === "ready"
+          ? "运行时已就绪"
+          : "进入同步设置重新检查运行时",
+      tab: "sync",
+      icon: <RefreshCw size={17} />,
+    },
+    {
+      key: "runtime-config",
+      title: "部署参数与字幕翻译",
+      state: overviewRuntime.isLoading
+        ? "checking"
+        : overviewRuntime.error
+          ? "error"
+          : overviewRuntime.data
+            ? "ready"
+            : "blocked",
+      detail: overviewRuntime.error
+        ? overviewRuntime.error.message
+        : overviewRuntime.data
+          ? `已读取 ${overviewRuntime.data.sections.length} 组部署参数；修改环境变量后需重启服务。`
+          : "尚未读取部署级运行参数。",
+      nextAction: "查看同步、字幕与翻译运行参数",
+      tab: "subtitles",
+      icon: <Languages size={17} />,
+    },
+    {
+      key: "semantic-search",
+      title: "语义检索索引",
+      state: overviewSemantic.isLoading
+        ? "checking"
+        : overviewSemantic.error
+          ? "error"
+          : !overviewSemantic.data?.enabled
+            ? "blocked"
+            : overviewSemantic.data.freshness === "fresh"
+              ? "ready"
+              : "attention",
+      detail: overviewSemantic.error
+        ? overviewSemantic.error.message
+        : overviewSemantic.data?.enabled
+          ? `${overviewSemantic.data.freshness_detail} · 已索引 ${overviewSemantic.data.embedded_items} 条，待处理 ${overviewSemantic.data.pending_items} 条。`
+          : "Embedding 后端或语义检索开关未启用。",
+      nextAction: overviewSemantic.data?.enabled
+        ? "打开语义检索查看索引与重建"
+        : "配置 embedding 后端后启用",
+      tab: "search",
+      icon: <Database size={17} />,
+    },
+    {
+      key: "notifications",
+      title: "通知渠道",
+      state: overviewNotifications.isLoading
+        ? "checking"
+        : overviewNotifications.error
+          ? "error"
+          : enabledNotificationChannels.length === 0
+            ? "blocked"
+            : unhealthyNotificationChannels === 0
+              ? "ready"
+              : "attention",
+      detail: overviewNotifications.error
+        ? overviewNotifications.error.message
+        : overviewNotifications.data
+          ? enabledNotificationChannels.length === 0
+            ? "尚未启用通知渠道，系统只会保留内部事件。"
+            : `${enabledNotificationChannels.length} 个渠道已启用，${unhealthyNotificationChannels} 个渠道需要测试或修复。近 24 小时投递 ${overviewNotifications.data.deliveries} 次。`
+          : "正在读取通知渠道健康与投递摘要。",
+      nextAction:
+        enabledNotificationChannels.length === 0
+          ? "配置并测试一个通知渠道"
+          : "打开通知 Provider 查看投递记录",
+      tab: "notifications",
+      icon: <Send size={17} />,
+    },
+    {
+      key: "storage",
+      title: "媒体存储",
+      state: overviewStorage.isLoading
+        ? "checking"
+        : overviewStorage.error
+          ? "error"
+          : overviewStorage.data &&
+              (overviewStorage.data.warnings.length > 0 ||
+                overviewStorage.data.scan_truncated ||
+                (overviewStorage.data.quota_percent ?? 0) >= 90)
+            ? "attention"
+            : overviewStorage.data
+              ? "ready"
+              : "blocked",
+      detail: overviewStorage.error
+        ? overviewStorage.error.message
+        : overviewStorage.data
+          ? `${overviewStorage.data.media_file_count} 个媒体文件、${overviewStorage.data.tracked_artifact_count} 个已登记资源。${overviewStorage.data.warnings[0] ?? "未发现存储告警。"}`
+          : "正在检查媒体目录、资源登记和配额。",
+      nextAction: "查看存储治理与生命周期策略",
+      tab: "storage",
+      icon: <HardDrive size={17} />,
+    },
+    {
+      key: "news-sources",
+      title: "新闻源",
+      state: sources.isLoading
+        ? "checking"
+        : sources.error
+          ? "error"
+          : (sources.data?.items.filter((item) => item.enabled).length ?? 0) > 0
+            ? "ready"
+            : "attention",
+      detail: sources.error
+        ? sources.error.message
+        : sources.data
+          ? `${sources.data.items.filter((item) => item.enabled).length} 个启用源 / ${sources.data.total} 个已登记源。`
+          : "正在读取新闻源配置。",
+      nextAction: "查看新闻源同步与失败状态",
+      tab: "sources",
+      icon: <Newspaper size={17} />,
+    },
+  ];
+  const overviewReadyCount = overviewChecks.filter((item) => item.state === "ready").length;
+  const overviewAttentionCount = overviewChecks.filter(
+    (item) => item.state === "attention" || item.state === "error",
+  ).length;
+  const overviewBlockedCount = overviewChecks.filter(
+    (item) => item.state === "blocked",
+  ).length;
+  const overviewRefreshing = [
+    health,
+    sources,
+    readiness,
+    overviewRuntime,
+    overviewYtdlp,
+    overviewLlm,
+    overviewSemantic,
+    overviewStorage,
+    overviewNotifications,
+  ].some((query) => query.isFetching);
 
   async function createSource(form: FormData) {
     if (!workspaceId) return;
@@ -306,7 +659,7 @@ export function SettingsClient() {
             <button
               className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
                 tab === item.key
-                  ? "bg-cyan-950 text-cyan-200 ring-1 ring-cyan-800"
+                  ? "bg-cyan-900 text-cyan-100 ring-1 ring-cyan-700"
                   : "text-slate-400 hover:bg-slate-900 hover:text-slate-200"
               }`}
               key={item.key}
@@ -321,26 +674,78 @@ export function SettingsClient() {
       </nav>
 
       {tab === "overview" && (
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
+          <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
+            <Panel className="p-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={19} className="text-cyan-300" />
+                    <h2 className="font-medium text-white">配置检查</h2>
+                    <Badge tone="info">实时诊断</Badge>
+                  </div>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                    集中检查服务、平台凭证、模型、解析运行时、索引、通知、存储和新闻源。配置已填写不等于真实可用；每项都显示当前证据和下一步。
+                  </p>
+                </div>
+                <button
+                  className={secondaryButtonClass}
+                  disabled={overviewRefreshing}
+                  onClick={() => void refreshOverview()}
+                  type="button"
+                >
+                  <RefreshCw
+                    size={14}
+                    className={overviewRefreshing ? "animate-spin" : ""}
+                  />
+                  {overviewRefreshing ? "检查中…" : "重新检查全部"}
+                </button>
+              </div>
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                <OverviewMetric label="已就绪" value={overviewReadyCount} tone="success" />
+                <OverviewMetric label="需要关注" value={overviewAttentionCount} tone="warning" />
+                <OverviewMetric label="未启用/受限" value={overviewBlockedCount} tone="danger" />
+              </div>
+            </Panel>
+            <Panel className="p-5">
+              <h2 className="font-medium text-white">用户与工作区</h2>
+              <dl className="mt-4 grid grid-cols-[6rem_1fr] gap-y-3 text-sm">
+                <dt className="text-slate-500">用户</dt>
+                <dd>{currentUser?.user.email}</dd>
+                <dt className="text-slate-500">工作区</dt>
+                <dd>{currentUser?.memberships[0]?.workspace_name}</dd>
+                <dt className="text-slate-500">权限</dt>
+                <dd><Badge tone="info">{role}</Badge></dd>
+                <dt className="text-slate-500">时区</dt>
+                <dd>{currentUser?.user.timezone}</dd>
+              </dl>
+            </Panel>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {overviewChecks.map((item) => (
+              <ConfigurationCheckCard
+                key={item.key}
+                check={item}
+                onOpen={() => setTab(item.tab)}
+              />
+            ))}
+          </div>
+
           <Panel className="p-5">
-            <h2 className="font-medium text-white">用户与工作区</h2>
-            <dl className="mt-4 grid grid-cols-[8rem_1fr] gap-y-3 text-sm">
-              <dt className="text-slate-500">用户</dt>
-              <dd>{currentUser?.user.email}</dd>
-              <dt className="text-slate-500">显示名称</dt>
-              <dd>{currentUser?.user.display_name || "—"}</dd>
-              <dt className="text-slate-500">工作区</dt>
-              <dd>{currentUser?.memberships[0]?.workspace_name}</dd>
-              <dt className="text-slate-500">权限</dt>
-              <dd>
-                <Badge tone="info">{role}</Badge>
-              </dd>
-              <dt className="text-slate-500">时区</dt>
-              <dd>{currentUser?.user.timezone}</dd>
-            </dl>
-          </Panel>
-          <Panel className="p-5">
-            <h2 className="font-medium text-white">服务健康</h2>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-medium text-white">服务健康明细</h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  这里显示基础设施探针；业务配置检查见上方卡片，不再把“接口能访问”当成“功能已可用”。
+                </p>
+              </div>
+              {health.data?.version && (
+                <span className="text-xs text-slate-600">
+                  API {health.data.version}
+                </span>
+              )}
+            </div>
             {health.error ? (
               <StatePanel
                 type="error"
@@ -349,40 +754,13 @@ export function SettingsClient() {
                 onRetry={() => health.refetch()}
               />
             ) : (
-              <div className="mt-4 space-y-3">
-                <div className="flex justify-between">
-                  <span>API</span>
-                  <Badge
-                    tone={health.data?.status === "ok" ? "success" : "warning"}
-                  >
-                    {health.data?.status ?? "checking"}
-                  </Badge>
-                </div>
-                {Object.entries(health.data?.checks ?? {}).map(
-                  ([key, value]) => (
-                    <div className="flex justify-between text-sm" key={key}>
-                      <span className="text-slate-400">{key}</span>
-                      <Badge tone={value === "ok" ? "success" : "danger"}>
-                        {value}
-                      </Badge>
-                    </div>
-                  ),
-                )}
+              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <ServiceHealthRow label="API" value={health.data?.status ?? "checking"} />
+                {Object.entries(health.data?.checks ?? {}).map(([key, value]) => (
+                  <ServiceHealthRow key={key} label={key} value={value} />
+                ))}
               </div>
             )}
-          </Panel>
-          <Panel className="p-5 xl:col-span-2">
-            <h2 className="font-medium text-white">配置边界</h2>
-            <div className="mt-4 grid gap-4 text-sm md:grid-cols-3">
-              <SummaryCard
-                title="LLM API"
-                detail="工作区级加密配置、默认模型与采样参数、成本、超时、重试和真实连接测试。"
-              />
-              <SummaryCard
-                title="通知 Provider"
-                detail="Email、Webhook、Telegram、Discord、飞书、钉钉、企业微信的专属字段与投递记录。"
-              />
-            </div>
           </Panel>
         </div>
       )}
@@ -683,6 +1061,31 @@ export function SettingsClient() {
               优先；公开页只有在逐项确认许可、robots、字段必要性、采样频率和来源审计后才能启用。
             </p>
           </Panel>
+          {readiness.isLoading && (
+            <Panel className="p-5 text-sm text-slate-500">
+              正在生成能力就绪度诊断…
+            </Panel>
+          )}
+          {readiness.error && (
+            <StatePanel
+              type="error"
+              title="能力就绪度诊断加载失败"
+              detail={readiness.error.message}
+              onRetry={() => readiness.refetch()}
+            />
+          )}
+          {readiness.data && (
+            <ReadinessPanel
+              report={readiness.data}
+              workspaceId={workspaceId!}
+              canProbe={["owner", "admin"].includes(role ?? "")}
+              onProbed={() =>
+                queryClient.invalidateQueries({
+                  queryKey: ["platform-readiness", workspaceId],
+                })
+              }
+            />
+          )}
           {platforms.isLoading && (
             <Panel className="p-5 text-sm text-slate-500">正在加载平台…</Panel>
           )}
@@ -699,6 +1102,9 @@ export function SettingsClient() {
                 onSaved={() => {
                   queryClient.invalidateQueries({
                     queryKey: ["platform-credentials"],
+                  });
+                  queryClient.invalidateQueries({
+                    queryKey: ["platform-readiness", workspaceId],
                   });
                   queryClient.invalidateQueries({ queryKey: ["accounts"] });
                 }}
@@ -756,6 +1162,161 @@ const CAPABILITY_LABELS: Record<string, string> = {
   COMMENTS: "评论",
   SEARCH_TERMS: "搜索词",
 };
+
+const READINESS_STATUS_LABELS: Record<
+  ReadinessReportRead["platforms"][number]["status"],
+  string
+> = {
+  ready: "已就绪",
+  unverified: "已配置·待探针",
+  degraded: "部分可用",
+  needs_setup: "待配置",
+  blocked: "当前受限",
+};
+
+function readinessTone(
+  status: ReadinessReportRead["platforms"][number]["status"],
+): "success" | "warning" | "danger" | "info" {
+  if (status === "ready") return "success";
+  if (status === "unverified") return "info";
+  if (status === "degraded") return "warning";
+  if (status === "needs_setup") return "warning";
+  return "danger";
+}
+
+function ReadinessPanel({
+  report,
+  workspaceId,
+  canProbe,
+  onProbed,
+}: {
+  report: ReadinessReportRead;
+  workspaceId: string;
+  canProbe: boolean;
+  onProbed: () => void;
+}) {
+  const { notify } = useToast();
+  const [probing, setProbing] = useState<string | null>(null);
+
+  async function probe(platformKey: string) {
+    setProbing(platformKey);
+    try {
+      const result = await apiRequest<{ status: string; detail: string }>(
+        `/settings/readiness/${platformKey}/probe`,
+        { method: "POST", workspaceId, csrf: true, body: JSON.stringify({}) },
+      );
+      notify(
+        result.status === "passed"
+          ? "平台探针通过"
+          : `平台探针结果：${result.status}`,
+        result.status === "passed" ? "success" : "error",
+      );
+      onProbed();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "平台探针失败", "error");
+    } finally {
+      setProbing(null);
+    }
+  }
+
+  return (
+    <Panel className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="font-medium text-white">能力就绪度诊断</h2>
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+            “已配置”不等于“实时验证成功”。这里把适配器、凭证、数据来源和产品能力拆开显示，避免把公开指标、私有 Analytics 和发布权限混为一谈。
+          </p>
+        </div>
+        <span className="text-xs text-slate-600">
+          生成于 {formatDate(report.generated_at)}
+        </span>
+      </div>
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {report.platforms.map((item) => (
+          <div
+            key={item.key}
+            className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="font-medium text-slate-200">{item.platform_name}</h3>
+                <p className="mt-1 text-xs text-slate-600">
+                  {item.adapter_key} · {item.credential_source === "environment" ? "环境凭证" : item.credential_source === "database" ? "工作区凭证" : "未配置"}
+                </p>
+              </div>
+              <Badge tone={readinessTone(item.status)}>
+                {READINESS_STATUS_LABELS[item.status]}
+              </Badge>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-400">{item.detail}</p>
+            {item.last_probe && (
+              <div className="mt-3 rounded-lg border border-slate-800/80 bg-slate-900/40 p-3 text-xs leading-5">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-slate-500">
+                  <span>
+                    最近{item.last_probe.trigger === "scheduled" ? "自动" : "手动"}探针 · {formatDate(item.last_probe.checked_at)}
+                  </span>
+                  <span className={item.last_probe.status === "passed" ? "text-emerald-300" : "text-amber-300"}>
+                    {item.last_probe.status}
+                  </span>
+                </div>
+                <p className="mt-1 text-slate-400">{item.last_probe.detail}</p>
+                {item.last_probe.error_code && (
+                  <p className="mt-1 text-rose-300">错误码：{item.last_probe.error_code}</p>
+                )}
+              </div>
+            )}
+            {item.conditions.length > 0 && (
+              <ul className="mt-3 space-y-1 text-xs leading-5 text-slate-500">
+                {item.conditions.slice(0, 3).map((condition) => (
+                  <li key={condition}>· {condition}</li>
+                ))}
+              </ul>
+            )}
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-cyan-300">下一步：{item.next_action}</p>
+              {canProbe && (
+                <button
+                  type="button"
+                  className={secondaryButtonClass}
+                  disabled={probing === item.platform_key}
+                  onClick={() => probe(item.platform_key)}
+                >
+                  {probing === item.platform_key ? "探针执行中…" : "运行探针"}
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-5 border-t border-slate-800 pt-4">
+        <h3 className="text-sm font-medium text-slate-200">跨平台能力边界</h3>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          {report.features.map((item) => (
+            <div
+              key={item.key}
+              className="rounded-xl border border-slate-800/80 bg-slate-900/30 p-4"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-sm text-slate-300">{item.title}</h4>
+                <Badge tone={readinessTone(item.status)}>
+                  {READINESS_STATUS_LABELS[item.status]}
+                </Badge>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p>
+              {item.conditions.length > 0 && (
+                <p className="mt-2 text-xs leading-5 text-slate-600">
+                  条件：{item.conditions.join("；")}
+                </p>
+              )}
+              <p className="mt-2 text-xs text-cyan-300">下一步：{item.next_action}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 function sourceKindLabel(kind: string): string {
   if (kind === "live") return "实时";
@@ -832,11 +1393,85 @@ function PlatformAdapterMatrix({
   );
 }
 
-function SummaryCard({ title, detail }: { title: string; detail: string }) {
+const OVERVIEW_STATE_LABELS: Record<OverviewCheckState, string> = {
+  ready: "已就绪",
+  checking: "检查中",
+  attention: "需要关注",
+  blocked: "未启用 / 受限",
+  error: "检查失败",
+};
+
+function overviewTone(
+  state: OverviewCheckState,
+): "success" | "warning" | "danger" | "info" {
+  if (state === "ready") return "success";
+  if (state === "checking") return "info";
+  if (state === "blocked") return "danger";
+  return "warning";
+}
+
+function ConfigurationCheckCard({
+  check,
+  onOpen,
+}: {
+  check: OverviewCheck;
+  onOpen: () => void;
+}) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
-      <h3 className="font-medium text-slate-200">{title}</h3>
-      <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
+    <div className="flex min-h-[194px] flex-col rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2 text-slate-200">
+          <span className="text-cyan-300">{check.icon}</span>
+          <h3 className="font-medium">{check.title}</h3>
+        </div>
+        <Badge tone={overviewTone(check.state)}>
+          {OVERVIEW_STATE_LABELS[check.state]}
+        </Badge>
+      </div>
+      <p className="mt-3 flex-1 text-xs leading-5 text-slate-400">
+        {check.detail}
+      </p>
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
+        <span className="text-xs text-cyan-300">{check.nextAction}</span>
+        <button
+          type="button"
+          className="shrink-0 text-xs text-slate-400 transition hover:text-white"
+          onClick={onOpen}
+        >
+          查看详情 →
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OverviewMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "success" | "warning" | "danger";
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-500">{label}</span>
+        <Badge tone={tone}>{value}</Badge>
+      </div>
+    </div>
+  );
+}
+
+function ServiceHealthRow({ label, value }: { label: string; value: string }) {
+  const ok = value === "ok";
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-sm">
+      <span className="text-slate-400">{label}</span>
+      <Badge tone={ok ? "success" : value === "checking" ? "info" : "danger"}>
+        {value}
+      </Badge>
     </div>
   );
 }

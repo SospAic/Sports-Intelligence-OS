@@ -1,6 +1,91 @@
 # 项目状态
 
-更新时间：2026-08-12（TikTok 字幕下载链路修复与前端真实验收）
+更新时间：2026-08-18（热点情报中心标签质量与层级规则）
+
+## 2026-08-18：热点标签质量与层级规则
+
+- 根因：`trend_terms` 将体育大类、媒体名和平台噪声与具体热点放在同一层，导致 `ESPN`、`football`、`basketball` 等泛标签占据热点榜单；现有实体提取器也未参与热点标签分层。
+- 规则：默认优先级为具体话题标签 → 具体事件 → 人物 → 队伍 → 联赛 → 地点；体育大类、媒体名、平台噪声只用于体育相关性判断，不进入默认标签和话题榜单。
+- 兼容：新采集使用统一标签分类器；历史 live 快照在读取层过滤泛标签，关键词接口写入 `label_type`、`label_priority`、`label_source` 元数据，前端展示标签类型。
+- 验证：API/Worker/Beat/Web 镜像重建并更新；Ruff、compileall 通过；热点回归 `17 passed, 1 warning`；Web Next 生产构建和 TypeScript 检查通过。
+
+## 2026-08-18：热点标签分类为空修复
+
+- 根因：前端先请求全局榜单第一页，再在浏览器内做分类过滤；分类实际有数据但不在第一页时被误显示为空。另有历史 `general_sports` 等分类别名未统一，采集词表对部分英文体育项目覆盖不足。
+- 修复：新增 `GET /api/v1/trends/categories`，按当前时间窗、平台和去重后的 live 读模型返回真实分类计数；话题/视频列表改为服务端完整 `category` 筛选；前端只展示有真实样本的分类标签并显示计数。
+- 采集与兼容：集中分类词表补充 Olympic、badminton、NHL、MMA、volleyball、swimming、athletics 等词；统一 `general_sports`、`general`、`sport` 等历史别名为 `sports`，不补造数据。
+- 验证：API/Worker/Beat/Web 镜像重建并更新；API、Worker、Beat、Web、PostgreSQL、Redis 健康；Ruff、compileall 通过；热点分类/证据/公开源/热点核心回归通过；Web Next 生产构建、lint（0 errors，1 个既有 warning）、typecheck、Vitest `26 files / 84 tests passed`。
+
+## 2026-08-18：热点情报中心索引工作台与逐层详情
+
+- 交互重构：顶部以“热门话题 / 热门新闻 / 热门视频”三个真实榜单数量作为索引入口；点击后定位到对应榜单，再从榜单行进入详情抽屉，形成“索引 → 榜单 → 详情 → 原文/视频证据”的逐层浏览路径。
+- 详情补齐：热门新闻行打开事件详情抽屉，展示事件摘要、热度/可靠性、报道数量、来源和发布时间；热门视频行打开视频详情抽屉，展示封面、作者、播放/点赞/评论/分享等实际返回指标、来源边界和原视频链接。
+- TAB 体验修复：趋势分析、生成衍生角度、搜索这个赛道不再追加渲染到页面底部，改为工作台顶部的同位置工具视图，并提供“返回机会总览”。
+- 验证：Web 镜像重建成功并通过 Next 生产构建；`docker compose up -d web` 后 Web/API/PostgreSQL/Redis 健康；Web `lint` 0 errors（保留既有 1 warning）、`typecheck` 通过、Vitest `26 files / 84 tests passed`。浏览器 E2E 仍受当前 Alpine 容器无法启动 glibc Chromium 的环境限制，未将其误报为通过。
+
+## 2026-08-18：热点情报中心证据链工作台重构
+
+- 根因：热点榜单只有快照热度、增长率和样本量，新闻/视频/指标解释分散；公开 RSS 新闻被投影成 `platform=web` 趋势视频，无法从话题直接核验原文和内容样本；衍生、搜索、分析作为薄页签，发现与行动脱节。
+- 重构：新增 `GET /api/v1/trends/topics/{topic_id}/evidence`，按来源引用优先、实体匹配回退返回新闻链接和相关视频；RSS 话题聚合保存最多 10 条 `source_article_refs`；旧快照使用有界 72 小时回退，不伪造证据。
+- 前端：热点中心改为“热点机会工作台”，移除四个薄页签；榜单增加“查看证据”抽屉，展示新闻摘要/链接/来源/时间、视频简要信息和真实指标；趋势分析、衍生角度、智能搜索改为按需工具。
+- 行业参考与完整数据契约见 `docs/HOTSPOT_INTELLIGENCE_REDESIGN.md`。
+- 验证：`docker compose build api web`、`docker compose build worker beat` 成功；Compose 更新后 `api/web/worker/beat` 正常运行，API/Web 健康；前端 Next 生产构建、TypeScript、ESLint 通过；热点证据链/公开源/热点核心回归 `6 passed, 1 warning`。浏览器控制插件在当前会话初始化时被宿主可信路径策略拒绝，未将其误报为浏览器通过；已用生产构建、接口契约和容器健康检查替代验证，待浏览器连接恢复后补做抽屉点击回归。
+
+## 2026-08-18：LLM Provider 公网 DNS 误判修复
+
+- 根因确认：Docker 容器内 `api.deepseek.com` 被 Docker Desktop/透明代理 DNS 解析为 `198.18.0.0/15` 与 ULA 合成地址；通用公网 SSRF 校验将其误判为非公网，连接请求尚未发出就返回 `source URL resolved to a non-public IP address`。
+- 修复：LLM 请求、流式请求、连接测试和模型清单统一使用独立的官方 LLM 主机边界兼容校验；只对内置官方域名允许跳过合成 DNS 地址检查，未知自定义 Endpoint 仍执行完整 DNS/IP SSRF 校验。未放宽敏感查询、嵌入式凭证、字面私有 IP 或本地地址保护。
+- 本地 Provider 修复：工作区 Provider 现在继承 `SIO_LLM_INTERNAL_HOSTS_ALLOWLIST`；默认补充 `host.docker.internal`，Ollama 预设改为容器可达的 `http://host.docker.internal:11434/v1`，并明确 `localhost` 在容器内指向 API 自身。
+- 文档与回归：补充官方 LLM 域名边界、Docker DNS 和本地 Ollama 配置说明；新增已知 LLM 域名合成 DNS 兼容、lookalike 域名拒绝、未知 Endpoint 仍拒绝私网解析和内部主机白名单测试。
+- 验证：`docker compose config --quiet` 通过；API/Worker/Beat/Web 镜像重建并更新成功；API 目标回归 `26 passed, 1 warning`；Ruff 全部通过；当前容器真实 `/models` 探测返回 `2` 个模型（首个模型 ID 已验证，未发起计费生成请求）；正式设置测试路由返回 HTTP 200，连接与认证成功，因已保存默认模型不在 Provider 返回的 2 个模型中而标记为 `degraded`；API `/health/live=200`、`/health/ready=200`，代理 `/login=200`，API、Worker、Beat、Web、PostgreSQL、Redis、Browser、Translation 均正常运行。未删除卷、未清空数据库。
+
+## 2026-08-18：前端全功能盘点与三视口全链路验收
+
+- 建立前端功能清单门禁：46 个 Next 页面路由全部登记到 `apps/web/lib/frontend-function-manifest.ts`，测试会扫描页面文件并阻止新增/删除路由未同步清单；清单同时记录每页的关键动作和测试层级。
+- 新增路由全量冒烟 `apps/web/e2e/route-smoke.spec.ts`：登录后覆盖全部静态入口，并跟随可发现的动态详情链接；检查登录重定向、工作区加载、Application Error、未处理运行时错误和页面错误。
+- 修复浏览器验收暴露的问题：用户菜单点击外部关闭、通知铃铛未读信息弹窗与历史入口、移动抽屉精确关闭断言、账号平台选择框标签、设置选中 Tab 对比度、仪表盘文档标题、通用主按钮对比度，以及无障碍扫描等待动态页面挂载/动画完成。
+- 发现并修复热点分析聚合阻塞：原热点数据为追加快照，30 日数据约 2.58 万话题/13.88 万视频；聚类候选存在高频词放大的比较开销。现使用倒排索引、命中数门槛和高频词降噪，真实 30 日聚合耗时从约 110 秒降至约 10.5 秒，榜单仍按同题机会去重而不重复累加。
+- 验证结果：Web Vitest `26 files / 84 tests passed`；容器内 API 可靠性/趋势回归 `8 passed, 1 warning`；Playwright `117` 项最终 `111 passed / 6 skipped / 0 failed`，覆盖 mobile / tablet / desktop。跳过项仅为桌面/平板不适用的移动抽屉测试。
+- Docker 门禁：已按改动重建 `api`、`worker`、`beat`、`subtitle-worker`、`web`，Compose 更新成功；API、Web、PostgreSQL、Redis、Browser、Translation 均健康，登录入口和 API live/ready 已验证。未删除卷、未清空数据库。
+
+## 2026-08-17：前端功能清单门禁、运行时检查反馈与设置配置检查
+
+- 根因修复：视频解析“检查运行时”此前只触发 React Query `refetch`，没有成功/降级/失败反馈，也没有最近检查时间；现在显示检查中状态、旋转图标、toast 和最近检查时间，仍调用真实 `/downloads/runtime`，不把页面刷新当作检查成功。
+- 设置概览改为“配置检查”：集中检查核心服务、平台凭证/采集能力、LLM Provider、视频解析运行时、部署参数与字幕翻译、语义检索索引、通知渠道、媒体存储和新闻源；每项显示状态、证据、下一步和详情入口，支持“重新检查全部”。
+- 防遗漏机制：新增 `apps/web/lib/frontend-function-manifest.ts` 和配套测试，自动扫描所有 Next.js 页面并要求路由登记测试层级及关键动作；新增 `docs/FRONTEND_TEST_MATRIX.md` 规定 smoke / interaction / workflow 三层及成功、加载、空、错、权限、幂等和脱敏边界。
+- 验证：Web 镜像重建成功，Next TypeScript/生产构建通过；Web Vitest `26 files / 84 tests` 通过；API live/ready 与 `/settings` 返回 200；未登录访问 `/api/v1/downloads/runtime`、`/api/v1/settings/readiness` 返回 401，认证边界未被绕过；Web 容器健康。
+- 真实浏览器限制：当前浏览器没有已登录会话，本轮只完成未登录路由/权限探针和自动化前端交互测试，未输入或读取任何密码；登录态全页面巡检需用户先在浏览器完成登录后继续执行清单。
+
+## 2026-08-17：LLM Provider 配置与可用性测试修复
+
+- 修复设置中心始终显示“OpenAI 兼容接口”的问题：配置保存 `provider_id` 与自定义显示名称，生成 Provider 描述、模型列表和状态面板使用实际配置。
+- 修复连通性测试：支持对当前未保存表单直接测试，也支持对已保存配置执行真实 `/models` 检查；返回模型数量、默认模型是否可用和明确健康详情。测试不发起计费生成请求；未保存测试不落库，已保存测试才更新健康状态并写审计。
+- 修复状态与生效范围：明确显示工作区配置、部署环境回退或未生效；列出实际生效任务。Ollama、Chat2API、New API 支持无 Key 的本地/自托管模式，但必须返回模型列表。
+- 修复模型选择下拉不再使用假静态模型目录；保存且可访问时展示 Provider 实时模型，无法获取时只保留当前输入并明确说明原因。
+- 验证：API 目标回归 `13 passed, 1 warning`，Ruff 通过；Web Vitest `25 files / 81 tests` 通过，TypeScript 与 Next 生产构建通过；Compose 已更新 API/Worker/Beat/Web，全部相关容器健康，Alembic `20260817_0013 (head)` 且 `alembic check` 无新操作，API live/ready 与代理登录入口均返回 200。
+
+## 2026-08-17：官方 API 自动探针与失败恢复
+
+- 新增 `app.tasks.platform_canary.run_scheduled_platform_canaries`，由 Celery Beat 每小时触发，并按可配置间隔去重；只检查已配置的官方 API，不会后台启动公开页或授权浏览器会话。
+- 每次结果复用 `external_call_attempts`、审计和 `system_events`：失败/降级转变只创建一条 `platform.canary_failed` 内部事件，持续失败不重复升级，恢复后同一事件标记为 `resolved`。
+- 设置中心最近探针显示 `自动/手动` 来源、检查时间、状态、错误码和安全详情；新增 `SIO_PLATFORM_CANARY_ENABLED`、`SIO_PLATFORM_CANARY_INTERVAL_SECONDS` 运行配置。
+- 真实边界：自动探针只证明官方 API 连通与当前凭证可用，不等于私有 Analytics、频道级资源权限或发布权限；未配置通知 Provider 时只记录内部事件，不宣称外部通知已发送。
+- 验证：Ruff、目标模块 Mypy（7 个源文件）、AST 解析与调度纯函数检查通过；容器内目标回归 `13 passed, 1 warning`。Docker Desktop CLI `29.7.2` / Compose `v5.3.1` 已通过绝对路径执行：`api`、`worker`、`beat`、`web` 镜像构建成功，Compose 更新成功，PostgreSQL/Redis/Browser/API/Web 健康，API live/ready 返回 200，Caddy `/login` 返回 200，Alembic `20260817_0013 (head)` 且 `alembic check` 无新操作；Worker 已注册自动探针任务。手动触发一次自动探针任务返回 `enabled=1, workspaces=1, checked=0, skipped=4, errors=0`，表示当前 4 个平台均未处于可自动探测的 `api + configured` 模式，因此没有擅自发起外部 API 调用。
+
+## 2026-08-17：平台凭证回退接入与真实 canary
+
+- 发现并修复配置缺口：`.env` 中的 TikTok/Douyin 官方凭证此前只是存档，未进入 `Settings`、Docker Compose 或 `PlatformCredentialService.resolve()`；现在支持 `SIO_TIKTOK_*` / `SIO_DOUYIN_*`，并保持工作区加密配置优先。环境变量只作为本地/单工作区回退，不写入数据库、不回显秘密；工作区显式禁用或配置不完整时不会绕过该设置。YouTube 空 Key 也不再被误判为已配置。
+- YouTube 官方只读 canary 已通过：公开频道资料 1 条、上传列表 5 条、视频统计 5 条；验证了 Key、频道读取、上传列表和批量视频统计链路。本轮又通过应用内 `YouTubeAdapter.health_check` 官方 API 探针；该结果只证明公开 Data API，不代表 Analytics OAuth、发布权限或私有指标已获得。
+- TikTok `GET /v2/user/info/` canary 返回 `access_token_invalid`；当前 Token 不能用于官方 Display API 验收，需更新 Token/Refresh Token 后重跑。抖音 `.env` 当前仅确认存在配置字符串，未将其标为有效官方凭证。
+- 验证：凭证回退纯单元测试 `2 passed`、Ruff 通过、配置文件编译通过；完整数据库回归与 Docker 重建在当前环境 BLOCKED（宿主机无 Docker CLI，宿主机测试夹具无法解析 Compose 内部主机 `postgres`）。
+
+## 2026-08-17：全功能审查与能力就绪度诊断
+
+- 全域审查结论与行业案例映射见 `docs/PRODUCT_AUDIT_2026-08-17.md`：当前最高收益不是继续增加孤立页面，而是先把平台采集、私有权限、发布状态和索引能力的条件边界显式化。
+- 新增 `GET /api/v1/settings/readiness` 与设置中心“能力就绪度诊断”面板；新增管理员 `POST /api/v1/settings/readiness/{platform_key}/probe`，调用 Adapter health_check，并将非敏感结果写入 `external_call_attempts` 与审计表。平台项区分适配器实现、工作区/环境/默认凭证、待配置、待探针、部分可用和最近探针失败；功能项明确列出频道级/发布资源权限、私有 Analytics/A-B/因果分析、关键帧/多模态索引和文本语义检索的下一动作。
+- 该接口不执行外部调用、不回显秘密；“已配置·待探针”只代表本地配置满足启动条件，不代表 OAuth 未过期或平台已授予私有权限。
+- 运行时设置概览改为检查 SecretStr 的实际内容，并补充 TikTok / 抖音必填 API 字段是否存在的布尔状态；空字符串不会再被显示为已配置，字段状态也不等于官方 canary 成功。
+- 验证：能力就绪度、探针状态映射、探针审计落盘与凭证回退纯单测 `10 passed`，Ruff 通过，后端全量 Mypy `231 source files` 通过，Web TypeScript 通过；同时修正可选 `faster-whisper` 未安装时的 Mypy 导入标注。宿主机仍无 Docker CLI，因此本轮 Docker 重建、`compose up`、迁移和浏览器验收继续记录为 BLOCKED。
 
 ## 2026-08-12：TikTok 字幕下载链路修复（真实文件验收）
 
@@ -2074,3 +2159,14 @@ explicitly enable it.
 - 非管理员成员没有显式授权时保持旧的工作区角色兼容；成员一旦拥有授权记录，账号列表、账号详情、快照/指标/同步记录、作品列表/详情/评论等接口均按授权账号过滤或返回标准 `account_access_denied`，管理员/所有者绕过该层。
 - 设置中心新增 owner/admin 可见的“账号授权”面板，支持选择账号、成员和 viewer/editor 权限，以及撤销授权；viewer 写操作返回 `account_write_denied`，发布记录同样按账号范围保护。
 - 验证：后端受影响集成回归 `32 passed`；Web Vitest `25 files / 81 tests`、ESLint 和 TypeScript 通过；Ruff、mypy `228 source files`、Alembic `20260817_0013 (head)` 与 `alembic check` 通过；API/Worker/Beat/Web 镜像已重建并更新，API live/ready 与代理 `/login`、`/settings` 返回 200。频道级/发布资源权限与真实发布 Adapter 仍未完成。
+
+## 2026-08-18 全量功能验收与热点工具历史闭环
+
+- 热点情报中心的“生成衍生角度”和“搜索这个赛道”改为按运行持久化：新增 `derivative_runs` 与迁移 `20260817_0014_trend_run_history`；每次运行保存英文搜索过程、原始搜索结果、角度/分析结果、状态、降级原因和时间，可从历史记录重新打开详情。
+- 两条链路新增多语言翻译投影（en/zh/ja/ko/es/fr/de/pt），翻译结果缓存到对应分析/运行记录；翻译服务不可用时返回明确的 degraded/条件提示，不伪造成功。搜索结果展示平台实际返回的浏览量、点赞、评论、作者、链接，并显示清晰标注的派生热度代理值与 `metric_source`。
+- 新增前端单测覆盖热点历史加载、英文过程、指标展示和翻译切换；最终 Web Vitest `28 files / 88 tests passed`，Next production build 与 TypeScript 通过，ESLint `0 errors / 1 existing warning`。
+- 最终后端全量 pytest：`681 passed, 6 deselected, 1 warning`；Ruff、compileall、mypy（233 个源文件）均通过；Alembic `20260817_0014 (head)`、`alembic check` 通过，仅保留既有 pgvector 类型识别 warning。
+- Docker 门禁已完成：`docker compose build api worker beat web` 成功，Compose 更新后 API/Web healthy、Postgres/Redis/Translation healthy，Worker/Beat 正常运行；API `/health/live`、`/health/ready`、代理 `http://127.0.0.1:8080/login` 均返回 200。未执行 `down -v`、删除卷或清空数据库。
+- 浏览器页面级回归仍受浏览器插件运行时信任路径错误阻断（`Trusted RPC dependency must resolve within a configured trusted code path`），因此未宣称真实登录态 Playwright/浏览器交互通过；API、组件、构建和容器门禁已完成。
+
+下一入口：补真实登录态浏览器回归；继续等待频道级/发布资源 OAuth、私有 Analytics 随机实验与因果分析、关键帧/多模态索引、正式发布 Adapter 以及派生指标历史治理所需的外部凭证、媒体/模型运行时和备份维护窗口。

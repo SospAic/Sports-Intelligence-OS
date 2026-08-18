@@ -71,8 +71,12 @@ test.describe("Keyboard navigation", () => {
     expect(url).not.toBe("");
   });
 
-  test("Enter activates focused navigation link", async ({ page }) => {
+  test("Enter activates focused navigation link", async ({ page, isMobile }) => {
     const nav = page.getByRole("navigation", { name: "主导航" });
+    if (isMobile) {
+      await page.getByLabel("打开导航").click();
+      await expect(nav).toBeVisible();
+    }
     const trendsLink = nav.getByRole("link", { name: "热点情报中心" });
 
     await trendsLink.focus();
@@ -98,12 +102,14 @@ test.describe("Keyboard navigation", () => {
     await expect(nav).toBeVisible();
 
     // Close with the X button
-    const closeButton = page.getByLabel("关闭导航");
+    const closeButton = page.getByLabel("关闭导航", { exact: true });
     await expect(closeButton).toBeVisible();
     await closeButton.click();
 
-    // Drawer should be hidden (translated off-screen)
-    await expect(nav).not.toBeVisible({ timeout: 3_000 });
+    // Drawer remains mounted for responsive layout but is translated off-screen.
+    await expect(page.locator("aside")).toHaveClass(/-translate-x-full/, {
+      timeout: 3_000,
+    });
   });
 
   test("mobile drawer closes via overlay click", async ({ page, isMobile }) => {
@@ -119,7 +125,9 @@ test.describe("Keyboard navigation", () => {
     const overlay = page.getByLabel("关闭导航遮罩");
     await overlay.click();
 
-    await expect(nav).not.toBeVisible({ timeout: 3_000 });
+    await expect(page.locator("aside")).toHaveClass(/-translate-x-full/, {
+      timeout: 3_000,
+    });
   });
 
   test("global search input supports Escape to clear", async ({ page }) => {
@@ -155,19 +163,17 @@ test.describe("Keyboard navigation", () => {
     });
   });
 
-  test("quick create menu toggles with Enter", async ({ page }) => {
-    const quickCreateButton = page.getByLabel("快速创建");
-    await quickCreateButton.focus();
+  test("unread inbox opens with Enter and exposes history", async ({ page }) => {
+    const inboxButton = page.getByLabel(/未读信息，/);
+    await inboxButton.focus();
     await page.keyboard.press("Enter");
 
-    // Menu items should appear
-    await expect(page.getByText("添加账号")).toBeVisible({ timeout: 3_000 });
-    await expect(page.getByText("创建内容")).toBeVisible();
-    await expect(page.getByText("新建自动化")).toBeVisible();
+    await expect(page.getByRole("dialog", { name: "未读信息中心" })).toBeVisible({ timeout: 3_000 });
+    await expect(page.getByRole("link", { name: /更多 · 查看信息历史/ })).toBeVisible();
 
-    // Toggle closed
+    // Toggle closed; the plus/quick-create entry was intentionally removed.
     await page.keyboard.press("Enter");
-    await expect(page.getByText("添加账号")).not.toBeVisible({
+    await expect(page.getByRole("dialog", { name: "未读信息中心" })).not.toBeVisible({
       timeout: 3_000,
     });
   });

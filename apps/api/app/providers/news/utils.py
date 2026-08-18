@@ -44,6 +44,36 @@ MEDIA_SOURCE_HOST_SUFFIXES = frozenset(
     }
 )
 
+# Docker Desktop and some transparent proxy DNS implementations can map public
+# API hostnames to synthetic RFC 2544 / ULA addresses.  LLM providers need the
+# same compatibility path as public media hosts, but the allowlist is kept
+# separate and intentionally narrow: arbitrary user-supplied URLs must still
+# pass the full DNS-based SSRF check.
+LLM_SOURCE_HOST_SUFFIXES = frozenset(
+    {
+        "api.openai.com",
+        "generativelanguage.googleapis.com",
+        "api.mistral.ai",
+        "api.x.ai",
+        "api.groq.com",
+        "openrouter.ai",
+        "api.together.xyz",
+        "api.perplexity.ai",
+        "api.cohere.ai",
+        "api.deepseek.com",
+        "api.moonshot.cn",
+        "open.bigmodel.cn",
+        "dashscope.aliyuncs.com",
+        "ark.cn-beijing.volces.com",
+        "spark-api-open.xf-yun.com",
+        "api.hunyuan.cloud.tencent.com",
+        "qianfan.baidubce.com",
+        "api.minimax.chat",
+        "api.stepfun.com",
+        "ai.360.cn",
+    }
+)
+
 
 def clean_text(value: object, *, limit: int = 100_000) -> str | None:
     if value is None:
@@ -146,6 +176,21 @@ def is_known_media_source(value: str) -> bool:
     )
 
 
+def is_known_llm_source(value: str) -> bool:
+    """Return whether ``value`` belongs to a built-in public LLM host.
+
+    This is a DNS compatibility allowlist, not an authentication or provider
+    capability check.  The suffix boundary prevents lookalike domains such as
+    ``api.deepseek.com.attacker.example`` from matching.
+    """
+
+    normalized = validate_source_url(value)
+    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
+    return any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in LLM_SOURCE_HOST_SUFFIXES
+    )
+
+
 async def ensure_public_media_endpoint(value: str) -> str:
     """Validate a downloader URL without rejecting Docker synthetic DNS.
 
@@ -159,6 +204,22 @@ async def ensure_public_media_endpoint(value: str) -> str:
     return await ensure_public_endpoint(
         normalized,
         skip_dns_check=is_known_media_source(normalized),
+    )
+
+
+async def ensure_public_llm_endpoint(value: str) -> str:
+    """Validate a public LLM URL without rejecting Docker synthetic DNS.
+
+    Only the built-in provider hostnames above may skip the runtime DNS
+    address check.  Custom OpenAI-compatible endpoints continue to require a
+    globally routable DNS result, which preserves the SSRF boundary.
+    """
+
+    normalized = validate_source_url(value, allow_secret_query=False)
+    return await ensure_public_endpoint(
+        normalized,
+        allow_secret_query=False,
+        skip_dns_check=is_known_llm_source(normalized),
     )
 
 

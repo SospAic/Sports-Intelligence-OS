@@ -453,6 +453,28 @@ export function SyncSettingsPanel() {
   const [pending, setPending] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [runtimeUpdating, setRuntimeUpdating] = useState(false);
+  const [runtimeCheckedAt, setRuntimeCheckedAt] = useState<string | null>(null);
+
+  async function checkRuntime() {
+    const result = await runtime.refetch();
+    setRuntimeCheckedAt(new Date().toISOString());
+    if (result.error) {
+      notify(
+        result.error instanceof Error
+          ? `运行时检查失败：${result.error.message}`
+          : "运行时检查失败",
+        "error",
+      );
+      return;
+    }
+    const checked = result.data;
+    notify(
+      checked?.status === "ready"
+        ? "视频解析运行时检查通过"
+        : `运行时检查完成：${checked?.detail ?? "当前运行时需要关注"}`,
+      checked?.status === "ready" ? "success" : "error",
+    );
+  }
 
   async function updateRuntime() {
     if (!workspaceId || !runtime.data?.update_enabled) return;
@@ -631,11 +653,11 @@ export function SyncSettingsPanel() {
             <button
               className={secondaryButtonClass}
               disabled={runtime.isFetching}
-              onClick={() => void runtime.refetch()}
+              onClick={() => void checkRuntime()}
               type="button"
             >
-              <RefreshCw size={14} />
-              检查运行时
+              <RefreshCw size={14} className={runtime.isFetching ? "animate-spin" : ""} />
+              {runtime.isFetching ? "检查中…" : "检查运行时"}
             </button>
             <button
               className={buttonClass}
@@ -685,6 +707,11 @@ export function SyncSettingsPanel() {
             <code className="ml-1 text-slate-300">
               {runtime.data.update_command}
             </code>
+          </p>
+        )}
+        {runtimeCheckedAt && (
+          <p className="mt-2 text-xs text-slate-600">
+            本次检查：{new Date(runtimeCheckedAt).toLocaleString("zh-CN")}
           </p>
         )}
       </Panel>

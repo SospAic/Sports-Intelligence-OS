@@ -30,7 +30,7 @@ const AUTHENTICATED_PAGES = [
 test.describe("Visual regression screenshots", () => {
   test("login page screenshot", async ({ page }, testInfo) => {
     await page.goto("/login");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
 
     // Ensure the form is fully rendered
     await expect(page.getByLabel("邮箱")).toBeVisible();
@@ -52,7 +52,7 @@ test.describe("Visual regression screenshots", () => {
 
       // Navigate to target page
       await page.goto(path);
-      await page.waitForLoadState("networkidle");
+      await page.waitForLoadState("domcontentloaded");
 
       // Wait for the app shell to settle (loading spinner gone)
       await page

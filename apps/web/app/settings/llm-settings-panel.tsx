@@ -32,6 +32,7 @@ import { formatDate } from "@/lib/format";
 type LLMCallMode = "api" | "browser_proxy";
 
 type LLMForm = {
+  provider_id: string;
   name: string;
   base_url: string;
   api_key: string;
@@ -52,14 +53,15 @@ type LLMForm = {
 };
 
 const EMPTY_FORM: LLMForm = {
-  name: "OpenAI 兼容接口",
+  provider_id: "openai",
+  name: "OpenAI",
   base_url: "https://api.openai.com/v1",
   api_key: "",
   clear_api_key: false,
   organization: "",
   project: "",
   custom_headers: "",
-  default_model: "gpt-5.6-terra",
+  default_model: "gpt-4o-mini",
   temperature: 0.4,
   top_p: 1,
   max_tokens: 8192,
@@ -87,6 +89,8 @@ function formFromRecord(value: LLMProviderSettingRecord | undefined): LLMForm {
         ? "browser_proxy"
         : "api";
   return {
+    provider_id:
+      typeof config.provider_id === "string" ? config.provider_id : value.provider_id,
     name: value.name,
     base_url: value.base_url ?? "https://api.openai.com/v1",
     api_key: "",
@@ -126,22 +130,19 @@ const LLM_PRESETS: Array<{
   base_url: string;
   default_model: string;
 }> = [
+  // All built-ins below use the provider's documented OpenAI-compatible
+  // endpoint. Native Anthropic/Bedrock signing is intentionally not shown as
+  // available until a dedicated adapter is implemented.
   // ─── 国际主流 ───────────────────────────────────────────────────────
   {
     key: "openai",
     label: "OpenAI",
     base_url: "https://api.openai.com/v1",
-    default_model: "gpt-5.6-terra",
-  },
-  {
-    key: "anthropic",
-    label: "Anthropic (Claude)",
-    base_url: "https://api.anthropic.com/v1",
-    default_model: "claude-sonnet-5",
+    default_model: "gpt-4o-mini",
   },
   {
     key: "gemini",
-    label: "Google Gemini",
+    label: "Google Gemini（兼容协议）",
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
     default_model: "gemini-3.5-flash",
   },
@@ -186,13 +187,6 @@ const LLM_PRESETS: Array<{
     label: "Cohere",
     base_url: "https://api.cohere.ai/compatibility/v1",
     default_model: "command-a-03-2025",
-  },
-  {
-    key: "bedrock",
-    label: "AWS Bedrock (OpenAI 兼容)",
-    base_url:
-      "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
-    default_model: "anthropic.claude-sonnet-5",
   },
   // ─── 国内主流 ───────────────────────────────────────────────────────
   {
@@ -265,7 +259,7 @@ const LLM_PRESETS: Array<{
   {
     key: "ollama",
     label: "Ollama（本地）",
-    base_url: "http://localhost:11434/v1",
+    base_url: "http://host.docker.internal:11434/v1",
     default_model: "qwen3.5:9b",
   },
   {
@@ -281,36 +275,6 @@ const LLM_PRESETS: Array<{
     default_model: "gpt-5.6-terra",
   },
 ];
-
-const MODEL_CATALOGS: Record<string, string[]> = {
-  // 预制项是脱离 API Key 时的安全基线；保存配置后会以 Provider /models
-  // 实时清单覆盖它们。模型 ID 按 2026-08-06 官方目录复核。
-  openai: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-4.1-mini"],
-  anthropic: ["claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
-  gemini: ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"],
-  mistral: ["mistral-medium-3.5", "mistral-small-4", "mistral-large-3"],
-  grok: ["grok-4.5", "grok-4", "grok-3-mini"],
-  "groq-lpu": ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "groq/compound", "groq/compound-mini"],
-  openrouter: ["openai/gpt-5.6-terra", "anthropic/claude-opus-5", "google/gemini-3.6-flash", "deepseek/deepseek-chat", "openai/gpt-4.1-mini"],
-  together: ["thinkingmachines/Inkling", "MiniMaxAI/MiniMax-M3", "Qwen/Qwen3.7-Max", "moonshotai/Kimi-K3", "zai-org/GLM-5.2", "openai/gpt-oss-120b"],
-  perplexity: ["sonar", "sonar-pro", "sonar-reasoning-pro", "sonar-deep-research"],
-  cohere: ["command-a-03-2025", "command-r-plus-08-2024", "command-r7b-12-2024"],
-  bedrock: ["anthropic.claude-fable-5", "anthropic.claude-opus-5", "anthropic.claude-sonnet-5", "anthropic.claude-haiku-4-5"],
-  deepseek: ["deepseek-chat", "deepseek-reasoner"],
-  moonshot: ["kimi-k3", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"],
-  zhipu: ["glm-5", "glm-4.7", "glm-4.5"],
-  qwen: ["qwen3.8-max", "qwen3.7-plus", "qwen3.7-flash", "qwen3-max", "qwen-plus"],
-  doubao: ["doubao-seed-1-8-251228", "doubao-seed-1-6-251015", "doubao-1-5-pro-32k-250115"],
-  spark: ["generalv3.5", "generalv3.5-16k", "general4v"],
-  hunyuan: ["hunyuan-turbos", "hunyuan-pro", "hunyuan-large"],
-  wenxin: ["ernie-4.5-turbo-32k", "ernie-5.0-thinking-preview", "ernie-4.0-turbo-8k"],
-  minimax: ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-01"],
-  step: ["step-3.5-flash", "step-3.5", "step-2-16k"],
-  360: ["360GPT2-Pro", "360GPT2-Pro-32K"],
-  ollama: ["qwen3.5:9b", "qwen3:8b", "llama3.3", "deepseek-r1:8b"],
-  "new-api": ["gpt-5.6-terra", "claude-sonnet-5", "gemini-3.5-flash", "gpt-4.1-mini"],
-  chat2api: ["gpt-5.6-terra", "claude-sonnet-5", "gemini-3.5-flash"],
-};
 
 /** Detect which preset matches a saved base_url (by hostname). */
 function detectPresetKey(baseUrl: string | undefined): string {
@@ -371,8 +335,14 @@ export function LLMSettingsPanel() {
   useEffect(() => {
     if (presetDetected.current || !setting.data) return;
     presetDetected.current = true;
+    const savedProviderId = setting.data.provider_id;
     const savedUrl = setting.data.base_url;
-    if (savedUrl) {
+    if (savedProviderId && LLM_PRESETS.some((item) => item.key === savedProviderId)) {
+      // Restore the saved provider identity; URL detection remains the
+      // compatibility fallback for rows written before provider_id existed.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSelectedPreset(savedProviderId);
+    } else if (savedUrl) {
       // One-time preset detection from saved base_url; guarded by a ref.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedPreset(detectPresetKey(savedUrl));
@@ -386,10 +356,10 @@ export function LLMSettingsPanel() {
   const modelOptions = useMemo(() => {
     const live = modelCatalog.data?.items ?? [];
     if (live.length) return live.map((item) => ({ id: item.id, name: item.name }));
-    const preset = LLM_PRESETS.find((item) => item.key === selectedPreset);
-    const ids = MODEL_CATALOGS[selectedPreset] ?? (preset ? [preset.default_model] : []);
-    return ids.map((id) => ({ id, name: id }));
-  }, [modelCatalog.data?.items, selectedPreset]);
+    // A model ID is not an availability claim. Until the Provider returns a
+    // live /models list, keep only the operator's current input selectable.
+    return form.default_model ? [{ id: form.default_model, name: form.default_model }] : [];
+  }, [form.default_model, modelCatalog.data?.items]);
 
   function update<K extends keyof LLMForm>(key: K, value: LLMForm[K]) {
     setFormOverrides((current) => ({ ...current, [key]: value }));
@@ -401,6 +371,7 @@ export function LLMSettingsPanel() {
     if (preset) {
       setFormOverrides((current) => ({
         ...current,
+        provider_id: preset.key,
         name: preset.label,
         base_url: preset.base_url,
         default_model: preset.default_model,
@@ -436,6 +407,7 @@ export function LLMSettingsPanel() {
       );
     }
     return {
+      provider_id: form.provider_id,
       name: form.name,
       base_url: form.base_url,
       ...(form.api_key ? { api_key: form.api_key } : {}),
@@ -493,22 +465,30 @@ export function LLMSettingsPanel() {
     if (!workspaceId) return;
     if (
       !window.confirm(
-        "将向当前 LLM Base URL 发起真实的模型列表请求，是否继续？",
+        "将向当前表单中的 LLM Base URL 发起真实的 /models 请求（不会发起计费生成请求），是否继续？",
       )
     )
       return;
     setBusy(true);
     try {
+      const hasUnsavedChanges = Object.keys(formOverrides).length > 0;
       const result = await apiRequest<LLMProviderTestResult>(
         "/settings/llm/openai-compatible/test",
-        { method: "POST", workspaceId, csrf: true, body: JSON.stringify({}) },
+        {
+          method: "POST",
+          workspaceId,
+          csrf: true,
+          ...(hasUnsavedChanges ? { body: JSON.stringify(buildPayload()) } : {}),
+        },
       );
       setTestResult(result);
       notify(
         result.status === "ok" ? "LLM 连接测试成功" : result.detail,
         result.status === "ok" ? "success" : "error",
       );
-      await queryClient.invalidateQueries({ queryKey: ["llm-setting"] });
+      if (result.persisted) {
+        await queryClient.invalidateQueries({ queryKey: ["llm-setting"] });
+      }
     } catch (error) {
       notify(
         error instanceof Error ? error.message : "LLM 连接测试失败",
@@ -540,14 +520,14 @@ export function LLMSettingsPanel() {
             <div>
               <h2 className="font-medium text-white">LLM Provider 配置</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                选择模型提供商，填写 API Key
-                后即可用于内容生成。所有提供商均通过 OpenAI 兼容接口对接。
+                提供商预设只负责填充官方连接参数；配置名称、模型和工作区生效状态均可独立维护。
+                当前内置连接统一使用 OpenAI-compatible 协议适配器，尚未实现的原生协议不会伪装成可用。
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <button
                 className={secondaryButtonClass}
-                disabled={busy || !canAdmin || !record?.configured}
+                disabled={busy || !canAdmin || !form.base_url || !form.default_model}
                 onClick={testConnection}
                 type="button"
               >
@@ -589,8 +569,8 @@ export function LLMSettingsPanel() {
               ))}
             </select>
             <div className="flex items-center gap-2">
-              <Badge tone={record?.configured ? "success" : "warning"}>
-                {record?.configured ? "已配置" : "尚未可用"}
+              <Badge tone={record?.effective ? "success" : "warning"}>
+                {record?.effective ? "已生效" : record?.configured ? "已配置但未生效" : "待配置"}
               </Badge>
             </div>
           </div>
@@ -682,17 +662,17 @@ export function LLMSettingsPanel() {
                 <span className="truncate text-[11px] text-slate-500">
                   {modelCatalog.data?.source === "live"
                     ? "当前 Provider 实时清单"
-                    : "官方目录基线"}
+                    : "保存并测试后读取实时清单"}
                 </span>
                 <button
                   type="button"
                   className={`${secondaryButtonClass} h-8 shrink-0 px-2 text-xs`}
-                  disabled={!record?.configured || modelCatalog.isFetching}
+                  disabled={!record?.effective || modelCatalog.isFetching}
                   onClick={() => void modelCatalog.refetch()}
                   title={
                     record?.configured
                       ? "刷新当前 Provider 的 /models 清单"
-                      : "保存并配置 API Key 后可刷新"
+                      : "启用并保存配置后可刷新"
                   }
                 >
                   <RefreshCw
@@ -720,7 +700,7 @@ export function LLMSettingsPanel() {
               ))}
             </select>
             <p className="mt-1 text-[11px] leading-4 text-slate-500">
-              保存并配置 API Key 后，系统会从当前 Provider 的 <code>/models</code> 接口刷新可用模型；未配置时显示官方目录基线（2026-08-06）。
+              只有当前 Provider 实际返回的 <code>/models</code> 清单才会被标记为可用；未读取到实时清单时不会伪造模型目录。
             </p>
           </div>
           <TextField
@@ -829,13 +809,51 @@ export function LLMSettingsPanel() {
             <h2 className="font-medium text-white">状态与生效范围</h2>
             <dl className="mt-3 grid grid-cols-[9rem_1fr] gap-y-2 text-xs">
               <dt className="text-slate-500">健康状态</dt>
-              <dd>{record?.health_status ?? "unknown"}</dd>
+              <dd className="flex items-center gap-2">
+                <Badge
+                  tone={
+                    testResult?.status === "ok" || record?.health_status === "healthy"
+                      ? "success"
+                      : testResult?.status === "degraded" || record?.health_status === "degraded"
+                        ? "warning"
+                        : "danger"
+                  }
+                >
+                  {testResult?.status === "ok"
+                    ? "连接正常"
+                    : testResult?.status === "degraded"
+                      ? "连接正常但模型需处理"
+                      : record?.health_status === "healthy"
+                        ? "连接正常"
+                        : record?.health_status === "degraded"
+                          ? "需检查模型"
+                          : record?.health_status === "unhealthy"
+                            ? "连接失败"
+                            : record?.effective
+                              ? "未测试"
+                              : "未生效"}
+                </Badge>
+                <span className="text-slate-400">
+                  {testResult?.detail ?? record?.health_detail ?? "状态未知"}
+                </span>
+              </dd>
               <dt className="text-slate-500">最近测试</dt>
-              <dd>{formatDate(record?.last_tested_at)}</dd>
+              <dd>
+                {testResult && !testResult.persisted
+                  ? `${formatDate(testResult.tested_at)}（未保存配置）`
+                  : formatDate(record?.last_tested_at)}
+              </dd>
               <dt className="text-slate-500">最近更新</dt>
               <dd>{formatDate(record?.updated_at)}</dd>
-              <dt className="text-slate-500">生效任务</dt>
-              <dd>新的手动生成、Worker 生成与自动化 create_generation 动作</dd>
+              <dt className="text-slate-500">生效范围</dt>
+              <dd>
+                {record?.effective_scope_detail ?? "尚未形成有效配置。"}
+                {(record?.effective_for ?? []).length ? (
+                  <span className="mt-1 block text-slate-500">
+                    {(record?.effective_for ?? []).join(" · ")}
+                  </span>
+                ) : null}
+              </dd>
             </dl>
           </div>
         </div>

@@ -263,6 +263,7 @@ export interface GenerationWorkflow {
 
 export interface LLMProviderDescriptor {
   key: string;
+  provider_id?: string;
   name: string;
   configured: boolean;
   is_mock: boolean;
@@ -391,6 +392,8 @@ export interface SyncSettingsRecord {
 export interface LLMProviderSettingRecord {
   id: string | null;
   provider_key: string;
+  provider_id: string;
+  provider_protocol: "openai_compatible";
   name: string;
   source: "database" | "environment" | "unconfigured";
   base_url: string | null;
@@ -402,8 +405,13 @@ export interface LLMProviderSettingRecord {
   output_cost_per_million: string | number | null;
   enabled: boolean;
   configured: boolean;
+  effective: boolean;
+  effective_scope: "workspace" | "environment" | "none";
+  effective_scope_detail: string;
+  effective_for: string[];
   last_tested_at: string | null;
   health_status: string;
+  health_detail: string;
   updated_at: string | null;
   fields: ConfigFieldDescriptor[];
 }
@@ -412,6 +420,11 @@ export interface LLMProviderTestResult {
   status: "ok" | "degraded" | "unavailable";
   detail: string;
   tested_at: string;
+  provider_id: string;
+  default_model: string | null;
+  model_available: boolean | null;
+  model_count: number | null;
+  persisted: boolean;
 }
 
 export interface LLMModelOption {
@@ -422,6 +435,7 @@ export interface LLMModelOption {
 
 export interface LLMModelsResult {
   provider_key: string;
+  provider_id: string;
   source: "live" | "catalog" | "unavailable";
   items: LLMModelOption[];
   detail: string | null;
@@ -588,6 +602,60 @@ export interface AdapterDescriptorRead {
   capabilities: Record<string, boolean>;
   config_fields: AdapterConfigFieldRead[];
   source_kinds: string[];
+}
+
+export type ReadinessStatus =
+  | "ready"
+  | "unverified"
+  | "degraded"
+  | "needs_setup"
+  | "blocked";
+
+export interface ReadinessItemRead {
+  key: string;
+  title: string;
+  status: ReadinessStatus;
+  detail: string;
+  conditions: string[];
+  next_action: string;
+}
+
+export interface PlatformCanaryRead {
+  platform_key: string;
+  adapter_key: string;
+  trigger: "manual" | "scheduled";
+  mode: "api" | "public_page" | "authorized_login" | "authorized_session";
+  credential_source: "database" | "environment" | "default";
+  status: "passed" | "degraded" | "failed" | "blocked";
+  checked_at: string;
+  detail: string;
+  error_code: string | null;
+  duration_ms: number | null;
+  response_summary: Record<string, string | number | boolean | null>;
+}
+
+export interface PlatformReadinessRead extends ReadinessItemRead {
+  platform_key: string;
+  platform_name: string;
+  adapter_key: string;
+  adapter_implementation_status: "implemented" | "skeleton";
+  credential_mode:
+    | "api"
+    | "public_page"
+    | "authorized_login"
+    | "authorized_session";
+  credential_source: "database" | "environment" | "default";
+  configured_fields: string[];
+  missing_configuration: string[];
+  capabilities: Record<string, boolean>;
+  source_kinds: string[];
+  last_probe: PlatformCanaryRead | null;
+}
+
+export interface ReadinessReportRead {
+  generated_at: string;
+  platforms: PlatformReadinessRead[];
+  features: ReadinessItemRead[];
 }
 
 export interface AccountSnapshot {

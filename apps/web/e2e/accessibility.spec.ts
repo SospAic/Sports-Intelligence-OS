@@ -20,12 +20,24 @@ async function login(page: import("@playwright/test").Page) {
   await page.getByLabel("密码").fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: "登录" }).click();
   await page.waitForURL("**/dashboard", { timeout: 15_000 });
+  await waitForVisualStability(page);
+}
+
+async function waitForVisualStability(page: import("@playwright/test").Page) {
+  const animatedPage = page.locator(".page-enter").first();
+  await animatedPage
+    .waitFor({ state: "attached", timeout: 10_000 })
+    .catch(() => undefined);
+  if ((await animatedPage.count()) === 0) return;
+  await animatedPage.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
 }
 
 test.describe("Accessibility — axe-core scans", () => {
   test("login page has no critical a11y violations", async ({ page }) => {
     await page.goto("/login");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
@@ -43,7 +55,8 @@ test.describe("Accessibility — axe-core scans", () => {
 
   test("dashboard has no critical a11y violations", async ({ page }) => {
     await login(page);
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
+    await waitForVisualStability(page);
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
@@ -64,7 +77,8 @@ test.describe("Accessibility — axe-core scans", () => {
   test("accounts page has no critical a11y violations", async ({ page }) => {
     await login(page);
     await page.goto("/accounts");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
+    await waitForVisualStability(page);
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
@@ -83,7 +97,8 @@ test.describe("Accessibility — axe-core scans", () => {
   test("settings page has no critical a11y violations", async ({ page }) => {
     await login(page);
     await page.goto("/settings");
-    await page.waitForLoadState("networkidle");
+    await page.waitForLoadState("domcontentloaded");
+    await waitForVisualStability(page);
 
     const results = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21aa"])

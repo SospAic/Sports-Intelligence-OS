@@ -37,6 +37,11 @@
 
 历史账号 `metadata.adapter_config` 会迁移到加密的平台凭证表，迁移成功后删除明文；API、日志和前端只返回 `configured_fields`，不回显秘密。
 
+YouTube、TikTok 和抖音也支持部署级环境变量作为本地/单工作区回退：
+`SIO_YOUTUBE_API_KEY`、`SIO_TIKTOK_CLIENT_KEY`、`SIO_TIKTOK_CLIENT_SECRET`、
+`SIO_TIKTOK_ACCESS_TOKEN`、`SIO_TIKTOK_REFRESH_TOKEN` 以及对应的
+`SIO_DOUYIN_*` 字段。工作区“平台管理”中的加密配置优先；如果工作区存在但被禁用或配置不完整，系统不会越过该显式设置回退到环境变量。环境变量只返回脱敏状态，不会写入数据库或进入日志。
+
 ## 3. 当前 Adapter 边界
 
 | 平台 | 官方模式 | 浏览器模式 | 当前边界 |

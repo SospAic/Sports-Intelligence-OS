@@ -8,9 +8,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.operations import DeadLetterEvent, OutboxEvent, OutboxEventAttempt
-from app.models.trends import TrendTopic, TrendVideo
+from app.models.trends import TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.models.workspace import Workspace
 from app.services.outbox import OutboxService
+from app.services.trend_categories import classify_trend_label, extract_trend_labels
 from app.services.trend_collector import _infer_sports_category, _trend_terms
 from app.services.trends import TrendService
 
@@ -387,11 +388,157 @@ def test_trend_terms_use_controlled_sports_vocabulary_and_explicit_hashtags() ->
     assert _trend_terms("普通生活记录") == set()
 
 
+def test_trend_labels_prioritize_specific_topics_and_drop_generic_noise() -> None:
+    assert classify_trend_label("ESPN") is None
+    assert classify_trend_label("FOOTBALL") is None
+    assert classify_trend_label("basketball") is None
+    assert classify_trend_label("#NBAFinals").label_type.value == "topic"
+    assert classify_trend_label("World Cup").label_type.value == "event"
+    assert classify_trend_label("LeBron").label_type.value == "person"
+    labels = extract_trend_labels("#NBAFinals LeBron World Cup football ESPN")
+    assert labels[0].text == "NBAFinals"
+    assert labels[0].label_type.value == "topic"
+    assert {label.text.casefold() for label in labels} >= {"nbafinals", "lebron"}
+    assert "football" not in {label.text.casefold() for label in labels}
+    assert "espn" not in {label.text.casefold() for label in labels}
+
+
 def test_trend_category_is_derived_from_sports_vocabulary() -> None:
     assert _infer_sports_category("NBA 总决赛") == "basketball"
     assert _infer_sports_category("世界杯决赛") == "football"
     assert _infer_sports_category("NFL draft") == "american_football"
+    assert _infer_sports_category("Olympic badminton final") == "badminton"
+    assert _infer_sports_category("NHL hockey playoffs") == "ice_hockey"
     assert _infer_sports_category("综合体育观察") == "sports"
+
+
+@pytest.mark.asyncio
+async def test_trend_category_filter_uses_full_category_read_model(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    """A category filter must not be limited to the global first page."""
+
+    authenticate(client)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            session.add_all(
+                [
+                    TrendTopic(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        title="Category filter basketball sample",
+                        category="basketball",
+                        heat_score=99,
+                        rank=1,
+                        sample_size=5,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                    TrendVideo(
+                        workspace_id=workspace_id,
+                        platform="youtube",
+                        external_id="category-filter-general-sports",
+                        title="Category filter general sports sample",
+                        category="general_sports",
+                        breakout_score=99,
+                        metadata_json={"source_kind": "live"},
+                        observed_at=now,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        topic_response = client.get(
+            "/api/v1/trends/topics?category=basketball&window_hours=24&page_size=100"
+        )
+        assert topic_response.status_code == 200, topic_response.text
+        topic_body = topic_response.json()
+        assert topic_body["total"] >= 1
+        assert all(item["category"] == "basketball" for item in topic_body["items"])
+
+        video_response = client.get(
+            "/api/v1/trends/videos?category=sports&window_hours=24&page_size=100"
+        )
+        assert video_response.status_code == 200, video_response.text
+        video_body = video_response.json()
+        assert any(
+            item["external_id"] == "category-filter-general-sports"
+            for item in video_body["items"]
+        )
+
+        category_response = client.get("/api/v1/trends/categories?window_hours=24")
+        assert category_response.status_code == 200, category_response.text
+        category_body = {item["category"]: item for item in category_response.json()}
+        assert category_body["sports"]["video_count"] >= 1
+        assert category_body["basketball"]["topic_count"] >= 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_trend_keywords_hide_generic_labels_and_expose_label_type(
+    client: TestClient,
+) -> None:
+    authenticate(client)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            session.add_all(
+                [
+                    TrendKeywordSnapshot(
+                        workspace_id=workspace_id,
+                        keyword="ESPN",
+                        platform="web",
+                        observed_at=now,
+                        video_count=20,
+                        heat_index=100,
+                        metadata_json={"source_kind": "live"},
+                    ),
+                    TrendKeywordSnapshot(
+                        workspace_id=workspace_id,
+                        keyword="FOOTBALL",
+                        platform="web",
+                        observed_at=now,
+                        video_count=20,
+                        heat_index=99,
+                        metadata_json={"source_kind": "live"},
+                    ),
+                    TrendKeywordSnapshot(
+                        workspace_id=workspace_id,
+                        keyword="LeBron",
+                        platform="tiktok",
+                        observed_at=now,
+                        video_count=4,
+                        heat_index=79,
+                        metadata_json={"source_kind": "live"},
+                    ),
+                ]
+            )
+            await session.commit()
+
+        response = client.get("/api/v1/trends/keywords?window_hours=24")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        keywords = {item["keyword"].casefold(): item for item in body}
+        assert "espn" not in keywords
+        assert "football" not in keywords
+        assert keywords["lebron"]["metadata"]["label_type"] == "person"
+    finally:
+        await engine.dispose()
 
 
 def test_dashboard_stats_endpoint_returns_fresh_complete_shape(client: TestClient) -> None:

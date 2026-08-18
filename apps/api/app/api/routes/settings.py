@@ -1,6 +1,7 @@
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response
+from sqlalchemy import select
 
 from app.api.dependencies import (
     CsrfProtectedAuth,
@@ -9,10 +10,13 @@ from app.api.dependencies import (
     require_workspace_role,
 )
 from app.core.problems import problem_response
+from app.models.monitoring import Platform
+from app.models.operations import ExternalCallAttempt
 from app.schemas.adapters import (
     AdapterDescriptorRead,
     build_adapter_descriptor_read,
 )
+from app.schemas.readiness import PlatformCanaryRead, ReadinessReportRead
 from app.schemas.settings import (
     LLMModelsRead,
     LLMProviderSettingRead,
@@ -26,6 +30,7 @@ from app.schemas.settings import (
     SyncSettingsRead,
     SyncSettingsUpdate,
 )
+from app.services.platform_canary import run_platform_canary
 from app.services.platform_credentials import (
     PlatformCredentialError,
     PlatformCredentialService,
@@ -35,6 +40,7 @@ from app.services.platform_session_capture import (
     BrowserSessionCaptureError,
     open_login_page,
 )
+from app.services.readiness import build_readiness_report
 from app.services.settings import SettingsError, SettingsService
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -95,9 +101,14 @@ async def test_llm_setting(
     workspace: CurrentWorkspace,
     auth: CsrfProtectedAuth,
     db: DatabaseSession,
+    payload: LLMProviderSettingUpdate | None = None,
 ) -> LLMProviderTestRead:
     require_workspace_role(workspace, {"owner", "admin"})
-    return await service(request, db).test_llm_setting(workspace.workspace_id, auth.user.id)
+    return await service(request, db).test_llm_setting(
+        workspace.workspace_id,
+        auth.user.id,
+        payload,
+    )
 
 
 @router.get("/llm/models", response_model=LLMModelsRead)
@@ -279,3 +290,102 @@ async def list_platform_adapters(
     del workspace, db
     registry = request.app.state.platform_adapters
     return [build_adapter_descriptor_read(adapter.descriptor) for adapter in registry.values()]
+
+
+@router.get("/readiness", response_model=ReadinessReportRead)
+async def readiness_report(
+    request: Request, workspace: CurrentWorkspace, db: DatabaseSession
+) -> ReadinessReportRead:
+    """Return actionable configuration and capability readiness diagnostics.
+
+    This endpoint intentionally performs no provider calls. A configured item
+    is reported as ``unverified`` until an explicit live canary is recorded.
+    """
+
+    platforms = list(
+        (
+            await db.scalars(
+                select(Platform).where(Platform.enabled.is_(True)).order_by(Platform.name)
+            )
+        ).all()
+    )
+    credentials = await PlatformCredentialService(db, request.app.state.settings).list(
+        workspace.workspace_id
+    )
+    attempts = list(
+        (
+            await db.scalars(
+                select(ExternalCallAttempt)
+                .where(
+                    ExternalCallAttempt.workspace_id == workspace.workspace_id,
+                    ExternalCallAttempt.call_type == "platform_api",
+                    ExternalCallAttempt.entity_type == "platform_canary",
+                )
+                .order_by(ExternalCallAttempt.started_at.desc())
+                .limit(1000)
+            )
+        ).all()
+    )
+    last_probes: dict[str, PlatformCanaryRead] = {}
+    for attempt in attempts:
+        request_summary = attempt.request_summary or {}
+        platform_key = request_summary.get("platform_key")
+        if not isinstance(platform_key, str) or platform_key in last_probes:
+            continue
+        response_summary = attempt.response_summary or {}
+        health_status = response_summary.get("health_status")
+        if attempt.error_code == "platform_credentials_not_configured":
+            canary_status = "blocked"
+        elif attempt.status != "success":
+            canary_status = "failed"
+        elif health_status == "degraded":
+            canary_status = "degraded"
+        else:
+            canary_status = "passed"
+        last_probes[platform_key] = PlatformCanaryRead.model_validate(
+            {
+                "platform_key": platform_key,
+                "adapter_key": attempt.provider_key,
+                "trigger": request_summary.get("trigger", "manual"),
+                "mode": request_summary.get("mode", "public_page"),
+                "credential_source": request_summary.get("credential_source", "default"),
+                "status": canary_status,
+                "checked_at": attempt.started_at,
+                "detail": (
+                    attempt.error_detail_safe
+                    or response_summary.get("detail")
+                    or ("平台探针通过。" if canary_status == "passed" else "平台探针未通过。")
+                ),
+                "error_code": attempt.error_code,
+                "duration_ms": attempt.duration_ms,
+                "response_summary": response_summary,
+            }
+        )
+    return build_readiness_report(
+        settings=request.app.state.settings,
+        platforms=platforms,
+        credentials=credentials,
+        registry=request.app.state.platform_adapters,
+        last_probes=last_probes,
+    )
+
+
+@router.post("/readiness/{platform_key}/probe", response_model=PlatformCanaryRead)
+async def probe_platform_readiness(
+    platform_key: str,
+    request: Request,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> PlatformCanaryRead:
+    """Run one safe adapter health probe and persist its redacted result."""
+
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await run_platform_canary(
+        session=db,
+        settings=request.app.state.settings,
+        registry=request.app.state.platform_adapters,
+        workspace_id=workspace.workspace_id,
+        actor_id=auth.user.id,
+        platform_key=platform_key,
+    )

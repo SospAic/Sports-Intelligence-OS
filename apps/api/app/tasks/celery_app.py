@@ -19,6 +19,7 @@ celery_app = Celery(
         "app.tasks.video_search",
         "app.tasks.embedding",
         "app.tasks.subtitles",
+        "app.tasks.platform_canary",
     ],
 )
 celery_app.conf.update(
@@ -54,6 +55,7 @@ celery_app.conf.update(
         # 复用既有队列，避免为一个新特性改 compose 的 worker -Q 列表。
         "app.tasks.embedding.*": {"queue": "video-search"},
         "app.tasks.subtitles.*": {"queue": "subtitle"},
+        "app.tasks.platform_canary.*": {"queue": "maintenance"},
     },
     beat_schedule={
         "system-heartbeat": {
@@ -123,6 +125,10 @@ celery_app.conf.update(
         "collect-platform-trends": {
             "task": "app.tasks.trends.collect_platform_trends",
             "schedule": 3600.0,  # 每小时采集一次各平台趋势数据
+        },
+        "run-platform-canaries": {
+            "task": "app.tasks.platform_canary.run_scheduled_platform_canaries",
+            "schedule": 3600.0,
         },
         "schedule-due-video-search-plans": {
             "task": "app.tasks.video_search.schedule_due_video_search_plans",

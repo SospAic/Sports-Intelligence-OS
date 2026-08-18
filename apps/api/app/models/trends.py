@@ -165,6 +165,7 @@ class DerivativeTopic(TimestampMixin, Base):
         Index("ix_derivative_topic_workspace", "workspace_id"),
         Index("ix_derivative_topic_source", "source_topic_id"),
         Index("ix_derivative_topic_kind", "workspace_id", "kind"),
+        Index("ix_derivative_topic_run", "derivative_run_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -174,22 +175,66 @@ class DerivativeTopic(TimestampMixin, Base):
     source_topic_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("trend_topics.id", ondelete="CASCADE"), nullable=True
     )
+    derivative_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("derivative_runs.id", ondelete="SET NULL"), nullable=True
+    )
     platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     kind: Mapped[str] = mapped_column(String(20), nullable=False, default="existing_on_platform")
     angle: Mapped[str | None] = mapped_column(String(100), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
+    title_en: Mapped[str | None] = mapped_column(String(500), nullable=True)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    description_en: Mapped[str | None] = mapped_column(String(2000), nullable=True)
     predicted_heat_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     evidence_json: Mapped[dict[str, Any]] = mapped_column(
         "evidence", JSON, nullable=False, default=dict
     )
     ai_rationale: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    ai_rationale_en: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    angle_en: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="suggested", index=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     adopted_generation_id: Mapped[UUID | None] = mapped_column(nullable=True)
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
+
+
+class DerivativeRun(TimestampMixin, Base):
+    """One auditable derivative-angle generation/search run."""
+
+    __tablename__ = "derivative_runs"
+    __table_args__ = (
+        Index("ix_derivative_run_workspace_created", "workspace_id", "created_at"),
+        Index("ix_derivative_run_topic", "source_topic_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    source_topic_id: Mapped[UUID] = mapped_column(
+        ForeignKey("trend_topics.id", ondelete="CASCADE"), nullable=False
+    )
+    requested_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    source_query: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_query_en: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    process_log_json: Mapped[list[Any]] = mapped_column(
+        "process_log", JSON, nullable=False, default=list
+    )
+    source_results_json: Mapped[list[Any]] = mapped_column(
+        "source_results", JSON, nullable=False, default=list
+    )
+    translations_json: Mapped[dict[str, Any]] = mapped_column(
+        "translations", JSON, nullable=False, default=dict
+    )
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notice: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SearchQuery(TimestampMixin, Base):
@@ -203,6 +248,8 @@ class SearchQuery(TimestampMixin, Base):
         ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
     )
     query_text: Mapped[str] = mapped_column(String(2000), nullable=False)
+    query_text_en: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    source_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     platform_scope: Mapped[str] = mapped_column(String(32), nullable=False, default="all")
     saved_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     is_saved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
@@ -238,3 +285,9 @@ class SearchAnalysis(TimestampMixin, Base):
     model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
     raw_llm: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     results_json: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    process_log_json: Mapped[list[Any]] = mapped_column(
+        "process_log", JSON, nullable=False, default=list
+    )
+    translations_json: Mapped[dict[str, Any]] = mapped_column(
+        "translations", JSON, nullable=False, default=dict
+    )

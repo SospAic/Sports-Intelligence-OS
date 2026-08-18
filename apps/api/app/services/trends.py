@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.news import Article, Source
 from app.models.trends import TrendKeywordSnapshot, TrendTopic, TrendVideo
 from app.providers.news.utils import normalize_title, title_similarity
 from app.schemas.trends import (
@@ -16,8 +18,12 @@ from app.schemas.trends import (
     ScoreComponent,
     ScoreExplanation,
     TrendAggregateItem,
+    TrendCategorySummary,
     TrendDashboard,
+    TrendEvidenceNews,
+    TrendEvidenceVideo,
     TrendKeywordSnapshotRead,
+    TrendTopicEvidence,
     TrendTopicPage,
     TrendTopicRead,
     TrendVideoPage,
@@ -28,10 +34,16 @@ from app.services.entity_extraction import (
     compute_entity_similarity,
     extract_entities,
 )
+from app.services.trend_categories import (
+    canonical_trend_category,
+    category_variants,
+    classify_trend_label,
+    is_generic_trend_label,
+)
 
 # 支持的平台列表
 PLATFORMS = ("youtube", "tiktok", "douyin", "bilibili", "web")
-OPPORTUNITY_CLUSTER_ALGORITHM = "opportunity-cluster-v1"
+OPPORTUNITY_CLUSTER_ALGORITHM = "opportunity-cluster-v2-indexed"
 
 
 @dataclass(slots=True)
@@ -177,7 +189,7 @@ class TrendService:
                 kind="topic",
                 title=row.title,
                 platform=row.platform,
-                category=row.category or "general",
+                category=canonical_trend_category(row.category),
                 metric=float(row.heat_score),
                 observed_at=row.observed_at,
                 entities=extract_entities(row.title),
@@ -191,7 +203,7 @@ class TrendService:
             kind="video",
             title=row.title,
             platform=row.platform,
-            category=row.category or "general",
+            category=canonical_trend_category(row.category),
             metric=float(row.breakout_score or 0.0),
             observed_at=row.observed_at,
             entities=extract_entities(row.title),
@@ -248,12 +260,84 @@ class TrendService:
             reverse=True,
         )
         clusters: list[_OpportunityCluster] = []
+        # Matching every representation against every existing cluster is
+        # quadratic.  A busy workspace can contain tens of thousands of
+        # append-only observations, which previously made the analytics
+        # endpoint monopolize the API worker.  These conservative inverted
+        # indexes preserve the existing matcher while limiting comparisons to
+        # titles/entities that can actually satisfy one of its thresholds.
+        title_index: dict[str, list[int]] = {}
+        token_index: dict[str, set[int]] = {}
+        cjk_bigram_index: dict[str, set[int]] = {}
+        entity_index: dict[tuple[str, str], set[int]] = {}
+
+        def signatures(title: str) -> tuple[str, set[str], set[str]]:
+            normalized = normalize_title(title)
+            tokens = set(normalized.split())
+            cjk = "".join(char for char in normalized if "\u3400" <= char <= "\u9fff")
+            bigrams = {cjk[index : index + 2] for index in range(len(cjk) - 1)}
+            return normalized, tokens, bigrams
+
         for candidate in representations:
+            normalized, tokens, bigrams = signatures(candidate.title)
+            candidate_indexes: set[int] = set(title_index.get(normalized, ()))
+            if not candidate_indexes:
+                token_hits: dict[int, int] = {}
+                bigram_hits: dict[int, int] = {}
+                entity_hits: dict[int, int] = {}
+                for token in tokens:
+                    postings = token_index.get(token, ())
+                    # Generic terms such as “sports”, years and league names
+                    # are present in a large fraction of the feed.  A single
+                    # hit on one of those terms is not useful evidence and
+                    # creates a near-cartesian comparison set.
+                    if len(postings) > 64:
+                        continue
+                    for index in postings:
+                        token_hits[index] = token_hits.get(index, 0) + 1
+                for bigram in bigrams:
+                    postings = cjk_bigram_index.get(bigram, ())
+                    if len(postings) > 128:
+                        continue
+                    for index in postings:
+                        bigram_hits[index] = bigram_hits.get(index, 0) + 1
+                for entity in candidate.entities:
+                    postings = entity_index.get((entity.text.casefold(), entity.entity_type), ())
+                    if len(postings) > 128:
+                        continue
+                    for index in postings:
+                        entity_hits[index] = entity_hits.get(index, 0) + 1
+
+                # The matcher itself requires substantial title similarity or
+                # at least two shared entities.  Keep only candidates that can
+                # satisfy one of those conditions before invoking the costly
+                # SequenceMatcher/CJK comparison.
+                candidate_indexes.update(
+                    index
+                    for index, hits in token_hits.items()
+                    if hits >= 2
+                )
+                candidate_indexes.update(
+                    index
+                    for index, hits in bigram_hits.items()
+                    if hits >= 2
+                )
+                candidate_indexes.update(
+                    index
+                    for index, hits in entity_hits.items()
+                    if hits >= 2
+                )
+
             cluster = next(
-                (item for item in clusters if cls._matches_opportunity(item, candidate)),
+                (
+                    clusters[index]
+                    for index in sorted(candidate_indexes)
+                    if cls._matches_opportunity(clusters[index], candidate)
+                ),
                 None,
             )
             if cluster is None:
+                cluster_index = len(clusters)
                 clusters.append(
                     _OpportunityCluster(
                         representations=[candidate],
@@ -261,6 +345,15 @@ class TrendService:
                         entities=list(candidate.entities),
                     )
                 )
+                title_index.setdefault(normalized, []).append(cluster_index)
+                for token in tokens:
+                    token_index.setdefault(token, set()).add(cluster_index)
+                for bigram in bigrams:
+                    cjk_bigram_index.setdefault(bigram, set()).add(cluster_index)
+                for entity in candidate.entities:
+                    entity_index.setdefault(
+                        (entity.text.casefold(), entity.entity_type), set()
+                    ).add(cluster_index)
             else:
                 cluster.representations.append(candidate)
         return clusters
@@ -359,6 +452,10 @@ class TrendService:
             if (row.metadata_json or {}).get("source_kind") == "live"
             and self._row_is_in_window(row, cutoff, topic=True)
         ]
+        # A topic row is a derived label, not a raw content title. Remove
+        # broad sport/publisher labels here as well as during collection so
+        # historical snapshots cannot pollute the default ranking.
+        live_rows = [row for row in live_rows if not is_generic_trend_label(row.title)]
         return self._latest_unique(live_rows, self._topic_identity)
 
     async def _latest_videos(
@@ -441,11 +538,15 @@ class TrendService:
         workspace_id: UUID,
         *,
         platform: str | None = None,
+        category: str | None = None,
         window_hours: int = 24,
         page: int = 1,
         page_size: int = 20,
     ) -> TrendTopicPage:
         rows = await self._latest_topics(workspace_id, platform, window_hours=window_hours)
+        if category:
+            requested = canonical_trend_category(category)
+            rows = [row for row in rows if canonical_trend_category(row.category) == requested]
         rows.sort(key=lambda item: item.heat_score, reverse=True)
         start = (page - 1) * page_size
         items = rows[start : start + page_size]
@@ -461,12 +562,16 @@ class TrendService:
         workspace_id: UUID,
         *,
         platform: str | None = None,
+        category: str | None = None,
         sort_by: str = "breakout_score",
         window_hours: int = 24,
         page: int = 1,
         page_size: int = 20,
     ) -> TrendVideoPage:
         rows = await self._latest_videos(workspace_id, platform, window_hours=window_hours)
+        if category:
+            requested = canonical_trend_category(category)
+            rows = [row for row in rows if canonical_trend_category(row.category) == requested]
         allowed_sort_fields = {
             "breakout_score",
             "view_count",
@@ -488,6 +593,46 @@ class TrendService:
             page_size=page_size,
             total=len(rows),
         )
+
+    async def list_categories(
+        self,
+        workspace_id: UUID,
+        *,
+        platform: str | None = None,
+        window_hours: int = 24,
+    ) -> list[TrendCategorySummary]:
+        """Return only categories backed by current live hotspot samples.
+
+        This is intentionally derived from the same de-duplicated read models
+        as the topic/video lists. A category with no live sample is not exposed
+        as an empty clickable chip, and no placeholder counts are introduced.
+        """
+
+        topics = await self._latest_topics(workspace_id, platform, window_hours=window_hours)
+        videos = await self._latest_videos(workspace_id, platform, window_hours=window_hours)
+        counts: dict[str, dict[str, int]] = {}
+        for row in topics:
+            category = canonical_trend_category(row.category)
+            counts.setdefault(category, {"topic_count": 0, "video_count": 0})[
+                "topic_count"
+            ] += 1
+        for video_row in videos:
+            category = canonical_trend_category(video_row.category)
+            counts.setdefault(category, {"topic_count": 0, "video_count": 0})[
+                "video_count"
+            ] += 1
+        return [
+            TrendCategorySummary(
+                category=category,
+                topic_count=values["topic_count"],
+                video_count=values["video_count"],
+                total_count=values["topic_count"] + values["video_count"],
+            )
+            for category, values in sorted(
+                counts.items(),
+                key=lambda item: (-item[1]["topic_count"] - item[1]["video_count"], item[0]),
+            )
+        ]
 
     async def list_keywords(
         self,
@@ -515,13 +660,294 @@ class TrendService:
         for row in rows:
             if row.metadata_json.get("source_kind") != "live":
                 continue
+            label = classify_trend_label(row.keyword, source="legacy")
+            if label is None:
+                continue
             identity = (row.platform, row.keyword.casefold())
             if identity not in seen:
                 seen.add(identity)
-                latest.append(TrendKeywordSnapshotRead.model_validate(row))
+                item = TrendKeywordSnapshotRead.model_validate(row)
+                item.metadata = {
+                    **item.metadata,
+                    "label_type": label.label_type.value,
+                    "label_priority": label.priority,
+                    "label_source": label.source,
+                }
+                latest.append(item)
             if len(latest) == 200:
                 break
+        latest.sort(
+            key=lambda item: (
+                -int(item.metadata.get("label_priority") or 0),
+                -(item.heat_index or 0.0),
+                item.keyword.casefold(),
+            )
+        )
         return latest
+
+    # ------------------------------------------------------------------
+    # Topic evidence chain
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _evidence_terms(title: str) -> set[str]:
+        """Create conservative title terms for evidence retrieval.
+
+        Hotspot titles are controlled terms (for example NBA, 奥运 or a
+        hashtag), not arbitrary generated summaries.  Keeping the matching
+        vocabulary small prevents a broad sport label from attaching every
+        article in the workspace to one topic.
+        """
+
+        normalized = normalize_title(title).strip()
+        terms = {normalized} if len(normalized.replace(" ", "")) >= 2 else set()
+        terms.update(
+            token
+            for token in re.findall(r"[a-z0-9][a-z0-9._-]{1,}|[\u3400-\u9fff]{2,}", normalized)
+            if len(token.replace(" ", "")) >= 2
+        )
+        terms.update(
+            entity.text.casefold()
+            for entity in extract_entities(title)
+            if len(entity.text.strip()) >= 2
+        )
+        return {term.casefold() for term in terms if term.strip()}
+
+    @staticmethod
+    def _evidence_match(text: str, terms: set[str]) -> tuple[int, str | None]:
+        normalized = normalize_title(text).casefold()
+        hits = [term for term in terms if term and term in normalized]
+        if not hits:
+            return 0, None
+        return len(hits), max(hits, key=len)
+
+    @staticmethod
+    def _metadata_values(metadata: dict[str, Any], key: str) -> set[str]:
+        value = metadata.get(key)
+        if isinstance(value, list):
+            return {str(item).strip().casefold() for item in value if str(item).strip()}
+        if value is None:
+            return set()
+        return {str(value).strip().casefold()} if str(value).strip() else set()
+
+    async def topic_evidence(self, workspace_id: UUID, topic_id: UUID) -> TrendTopicEvidence:
+        """Return the inspectable evidence behind one hotspot topic.
+
+        The trend tables are append-only projections.  This endpoint therefore
+        resolves the topic's explicit collector references first, then uses a
+        bounded title/entity match as a backward-compatible fallback for old
+        snapshots that predate evidence references.  It never manufactures a
+        news item or metric when the source is unavailable.
+        """
+
+        topic = await self.session.get(TrendTopic, topic_id)
+        if topic is None or topic.workspace_id != workspace_id:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="趋势话题未找到")
+
+        metadata = topic.metadata_json or {}
+        terms = self._evidence_terms(topic.title)
+        source_article_ids = self._metadata_values(metadata, "source_article_ids")
+        source_video_ids = self._metadata_values(metadata, "source_video_ids")
+        source_entity_ids = self._metadata_values(metadata, "source_entity_ids")
+        article_refs = metadata.get("source_article_refs")
+        if isinstance(article_refs, list):
+            for ref in article_refs:
+                if not isinstance(ref, dict):
+                    continue
+                for key in ("external_id", "source_article_id", "url", "source_url"):
+                    value = str(ref.get(key) or "").strip().casefold()
+                    if value:
+                        source_article_ids.add(value)
+
+        cutoff = datetime.now(UTC) - timedelta(hours=72)
+        article_rows = (
+            await self.session.execute(
+                select(Article, Source)
+                .join(Source, Source.id == Article.source_id)
+                .where(
+                    Article.workspace_id == workspace_id,
+                    (Article.published_at >= cutoff) | (Article.fetched_at >= cutoff),
+                )
+                .order_by(Article.published_at.desc().nullslast(), Article.fetched_at.desc())
+                .limit(800)
+            )
+        ).all()
+
+        news_candidates: list[tuple[int, datetime, TrendEvidenceNews]] = []
+        seen_news: set[str] = set()
+        for article, source in article_rows:
+            external_id = str(article.external_id).strip().casefold()
+            canonical_url = str(article.canonical_url).strip().casefold()
+            exact_ref = external_id in source_article_ids or canonical_url in source_article_ids
+            hit_count, _ = self._evidence_match(
+                f"{article.title}\n{article.summary or ''}", terms
+            )
+            if not exact_ref and hit_count == 0:
+                continue
+            news_key = canonical_url or str(article.id)
+            if news_key in seen_news:
+                continue
+            seen_news.add(news_key)
+            score = 100 if exact_ref else 50 + min(hit_count, 5) * 5
+            published_at = article.published_at or article.fetched_at
+            news_candidates.append(
+                (
+                    score,
+                    published_at,
+                    TrendEvidenceNews(
+                        id=article.id,
+                        title=article.title,
+                        summary=article.summary,
+                        url=article.canonical_url,
+                        source_name=source.name,
+                        source_kind=article.source_kind,
+                        provider=article.source_provider,
+                        published_at=article.published_at,
+                        reliability_score=float(source.reliability_score),
+                        matched_by="采集引用" if exact_ref else "标题/摘要实体匹配",
+                    ),
+                )
+            )
+
+        video_rows = (
+            await self.session.scalars(
+                select(TrendVideo)
+                .where(
+                    TrendVideo.workspace_id == workspace_id,
+                    TrendVideo.observed_at >= cutoff,
+                )
+                .order_by(TrendVideo.observed_at.desc())
+                .limit(1_500)
+            )
+        ).all()
+        live_videos = [
+            row for row in video_rows if (row.metadata_json or {}).get("source_kind") == "live"
+        ]
+        latest_videos = self._latest_unique(live_videos, self._video_identity)
+        video_candidates: list[tuple[int, datetime, TrendEvidenceVideo]] = []
+        seen_videos: set[tuple[str, str]] = set()
+        for video in latest_videos:
+            if video.platform == "web":
+                # RSS-backed web rows are article projections and belong in
+                # the news column, not in the short-video evidence list.
+                continue
+            video_metadata = video.metadata_json or {}
+            external_id = video.external_id.strip().casefold()
+            entity_id = str(video_metadata.get("source_entity_id") or "").strip().casefold()
+            exact_ref = external_id in source_video_ids or entity_id in source_entity_ids
+            hit_count, _ = self._evidence_match(video.title, terms)
+            if not exact_ref and hit_count == 0:
+                continue
+            video_key = (video.platform, external_id)
+            if video_key in seen_videos:
+                continue
+            seen_videos.add(video_key)
+            same_platform = topic.platform == video.platform
+            score = 100 if exact_ref else 50 + min(hit_count, 5) * 5
+            if same_platform:
+                score += 10
+            video_candidates.append(
+                (
+                    score,
+                    video.observed_at,
+                    TrendEvidenceVideo(
+                        id=video.id,
+                        platform=video.platform,
+                        external_id=video.external_id,
+                        title=video.title,
+                        author_name=video.author_name,
+                        cover_url=video.cover_url,
+                        video_url=video.video_url,
+                        view_count=video.view_count,
+                        like_count=video.like_count,
+                        comment_count=video.comment_count,
+                        share_count=video.share_count,
+                        breakout_score=video.breakout_score,
+                        category=video.category,
+                        source_kind=str(video_metadata.get("source_kind") or "live"),
+                        provider=str(video_metadata.get("provider") or "unknown"),
+                        observed_at=video.observed_at,
+                        matched_by="采集引用" if exact_ref else "标题实体匹配",
+                    ),
+                )
+            )
+
+        # Old RSS trend snapshots did not carry Article ids.  Preserve their
+        # visible source links as a transparent fallback instead of silently
+        # showing an empty evidence column.
+        for video in latest_videos:
+            if video.platform != "web" or not video.video_url:
+                continue
+            video_metadata = video.metadata_json or {}
+            exact_ref = (
+                str(video_metadata.get("source_article_id") or "").strip().casefold()
+                in source_article_ids
+            )
+            hit_count, _ = self._evidence_match(video.title, terms)
+            if not exact_ref and hit_count == 0:
+                continue
+            key = str(video.video_url).strip().casefold()
+            if key in seen_news:
+                continue
+            seen_news.add(key)
+            source_name = str(video_metadata.get("source_name") or "公开新闻源")
+            news_candidates.append(
+                (
+                    90 if exact_ref else 45 + min(hit_count, 5) * 5,
+                    video.observed_at,
+                    TrendEvidenceNews(
+                        id=None,
+                        title=video.title,
+                        summary=None,
+                        url=video.video_url,
+                        source_name=source_name,
+                        source_kind="live",
+                        provider=str(video_metadata.get("provider") or "public_rss"),
+                        published_at=video_metadata.get("source_published_at"),
+                        reliability_score=None,
+                        matched_by="趋势快照来源回退",
+                    ),
+                )
+            )
+
+        news_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        video_candidates.sort(
+            key=lambda item: (
+                item[0],
+                item[2].breakout_score or 0.0,
+                item[1],
+            ),
+            reverse=True,
+        )
+        news = [item[2] for item in news_candidates[:12]]
+        videos = [item[2] for item in video_candidates[:12]]
+        exact_news = sum(1 for item in news if item.matched_by == "采集引用")
+        exact_videos = sum(1 for item in videos if item.matched_by == "采集引用")
+        notes: list[str] = []
+        if not news:
+            notes.append("当前时间窗没有匹配到已采集新闻；请启用新闻源并完成同步。")
+        if not videos:
+            notes.append("当前时间窗没有匹配到视频样本；视频指标需要相应平台公开数据或监控账号。")
+        if not notes:
+            notes.append("新闻链接来自已采集来源，视频指标仅展示适配器实际返回的字段。")
+
+        return TrendTopicEvidence(
+            topic=TrendTopicRead.model_validate(topic),
+            news=news,
+            videos=videos,
+            coverage={
+                "window_hours": 72,
+                "news_count": len(news),
+                "video_count": len(videos),
+                "exact_reference_news": exact_news,
+                "exact_reference_videos": exact_videos,
+                "source_kind": metadata.get("source_kind", "unknown"),
+                "provider": metadata.get("provider"),
+                "notes": notes,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Aggregation (single/multi-platform + category)
@@ -551,7 +977,9 @@ class TrendService:
         if platforms:
             tstmt = tstmt.where(TrendTopic.platform.in_(platforms))
         if category:
-            tstmt = tstmt.where(TrendTopic.category == category)
+            tstmt = tstmt.where(
+                func.lower(TrendTopic.category).in_(category_variants(category))
+            )
         topic_rows = (
             await self.session.scalars(tstmt.order_by(TrendTopic.observed_at.desc()).limit(20_000))
         ).all()
@@ -563,7 +991,9 @@ class TrendService:
         if platforms:
             vstmt = vstmt.where(TrendVideo.platform.in_(platforms))
         if category:
-            vstmt = vstmt.where(TrendVideo.category == category)
+            vstmt = vstmt.where(
+                func.lower(TrendVideo.category).in_(category_variants(category))
+            )
         video_rows = (
             await self.session.scalars(vstmt.order_by(TrendVideo.observed_at.desc()).limit(20_000))
         ).all()
