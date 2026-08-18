@@ -2170,3 +2170,8 @@ explicitly enable it.
 - 浏览器页面级回归仍受浏览器插件运行时信任路径错误阻断（`Trusted RPC dependency must resolve within a configured trusted code path`），因此未宣称真实登录态 Playwright/浏览器交互通过；API、组件、构建和容器门禁已完成。
 
 下一入口：补真实登录态浏览器回归；继续等待频道级/发布资源 OAuth、私有 Analytics 随机实验与因果分析、关键帧/多模态索引、正式发布 Adapter 以及派生指标历史治理所需的外部凭证、媒体/模型运行时和备份维护窗口。
+## 2026-08-18：热点工具界面中文化与英文内容边界修正
+
+- 按产品语言约定调整“生成衍生角度”和“搜索这个赛道”：网站界面文案保持中文，后台执行日志、英文搜索词、来源结果标题/作者、分析摘要和衍生内容默认展示英文。
+- 多语言选择器仍可将执行过程和结果内容翻译为中文、日语、韩语、西班牙语、法语、德语或葡萄牙语；翻译不会切换导航、按钮或字段语言。
+- 验证：`docker compose build web`、`docker compose up -d web` 成功；Web healthy；前端 Vitest `28 files / 88 tests passed`；TypeScript 通过；Lint 0 errors，保留 1 条既有 warning。

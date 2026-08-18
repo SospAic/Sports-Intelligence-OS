@@ -111,9 +111,9 @@ describe("SearchPanel", () => {
     expect(await screen.findByText("Champions League final")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Champions League final/ }));
 
-    expect(await screen.findByText("English analysis summary")).toBeInTheDocument();
+    expect(await screen.findByText("英文分析摘要")).toBeInTheDocument();
     expect(screen.getByText("1.2M")).toBeInTheDocument();
-    expect(screen.getByText("Heat 74.2*")).toBeInTheDocument();
+    expect(screen.getByText("派生热度 74.2*")).toBeInTheDocument();
     expect(screen.getByText("Completed platform search with 1 raw result.")).toBeInTheDocument();
   });
 
@@ -122,7 +122,7 @@ describe("SearchPanel", () => {
     fireEvent.click(
       await screen.findByRole("button", { name: /Champions League final/ }),
     );
-    await screen.findByText("English analysis summary");
+    await screen.findByText("英文分析摘要");
 
     fireEvent.change(screen.getAllByRole("combobox")[1]!, {
       target: { value: "zh" },

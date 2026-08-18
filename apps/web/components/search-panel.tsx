@@ -68,13 +68,13 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
       setSavedName(result.query.saved_name ?? "");
       setLanguage("en");
     } catch (error) {
-      notify(`History load failed: ${(error as Error).message}`, "error");
+      notify(`加载历史失败：${(error as Error).message}`, "error");
     }
   };
 
   const run = async () => {
     if (!query.trim()) {
-      notify("Enter a search description", "error");
+      notify("请输入搜索描述", "error");
       return;
     }
     setRunning(true);
@@ -84,9 +84,9 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
       setSavedName(result.query.saved_name ?? "");
       setLanguage("en");
       await history.refetch();
-      notify("Search completed and saved to history", "success");
+      notify("搜索完成，已保存到历史记录", "success");
     } catch (error) {
-      notify(`Search failed: ${(error as Error).message}`, "error");
+      notify(`搜索失败：${(error as Error).message}`, "error");
     } finally {
       setRunning(false);
     }
@@ -102,7 +102,7 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
       const result = await apiRequest<Response>(`/trends/search/${data.query.id}/translate`, { method: "POST", csrf: true, workspaceId, body: JSON.stringify({ target_language: target }) });
       setData(result);
     } catch (error) {
-      notify(`Translation failed: ${(error as Error).message}`, "error");
+      notify(`翻译失败：${(error as Error).message}`, "error");
       setLanguage("en");
     }
   };
@@ -114,9 +114,9 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
       const queryRecord = await apiRequest<QueryRecord>(`/trends/search/${data.query.id}/saved`, { method: "PATCH", csrf: true, workspaceId, body: JSON.stringify({ is_saved: isSaved, saved_name: savedName.trim() || null }) });
       setData({ ...data, query: queryRecord });
       await history.refetch();
-      notify(isSaved ? "Search saved" : "Search unsaved", "success");
+      notify(isSaved ? "搜索已保存" : "已取消保存搜索", "success");
     } catch (error) {
-      notify(`Save failed: ${(error as Error).message}`, "error");
+      notify(`保存失败：${(error as Error).message}`, "error");
     } finally {
       setSaving(false);
     }
@@ -125,26 +125,26 @@ export function SearchPanel({ workspaceId }: { workspaceId: string }) {
   const analysis = data?.analysis;
   const volume = analysis?.volume_estimate;
   return <div className="space-y-6">
-    <div className="flex items-center gap-2"><Search size={18} className="text-cyan-400" /><h2 className="font-semibold text-white">Search this track</h2><span className="text-xs text-slate-500">English search process and result metrics</span></div>
-    <p className="text-sm text-slate-500">Search real platform results, persist every run, inspect the measured metrics, and translate the complete record into another language.</p>
+    <div className="flex items-center gap-2"><Search size={18} className="text-cyan-400" /><h2 className="font-semibold text-white">搜索这个赛道</h2><span className="text-xs text-slate-500">后台过程与结果默认英文</span></div>
+    <p className="text-sm text-slate-500">搜索真实平台结果，保存每次执行记录，查看采集指标，并将完整记录翻译为其他语言。</p>
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <div className="space-y-5">
         <div className="rounded-xl border border-slate-800 bg-slate-950/50 p-4">
-          <label className="mb-1 block text-xs font-medium text-slate-400">Search description</label>
-          <textarea value={query} onChange={(event) => setQuery(event.target.value)} rows={3} placeholder="Example: controversy and best short-video angles around the latest Champions League match" className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600" />
-          <div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-xs text-slate-400">Scope<select value={platform} onChange={(event) => setPlatform(event.target.value)} className="mt-1 block rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">{PLATFORMS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label className="text-xs text-slate-400">Results per platform<input type="number" min={5} max={30} value={limit} onChange={(event) => setLimit(Number(event.target.value))} className="mt-1 block w-28 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" /></label><button type="button" onClick={() => void run()} disabled={running} className="rounded-lg bg-cyan-500 px-5 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">{running ? "Searching…" : "Search and analyze"}</button><label className="ml-auto flex items-center gap-2 text-xs text-slate-400"><Languages size={15} /><select value={language} onChange={(event) => void translate(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-slate-100">{LANGUAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div>
-          <p className="mt-3 text-xs text-slate-600">Views, likes, and comments are shown only when returned by the platform. Heat is a derived proxy and is labelled separately.</p>
+          <label className="mb-1 block text-xs font-medium text-slate-400">搜索描述</label>
+          <textarea value={query} onChange={(event) => setQuery(event.target.value)} rows={3} placeholder="例如：围绕最新欧冠比赛的争议点和短视频创作角度" className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600" />
+          <div className="mt-3 flex flex-wrap items-end gap-3"><label className="text-xs text-slate-400">平台范围<select value={platform} onChange={(event) => setPlatform(event.target.value)} className="mt-1 block rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100">{PLATFORMS.map(([key, label]) => <option key={key} value={key}>{({ all: "所有平台", youtube: "YouTube", bilibili: "哔哩哔哩", tiktok: "TikTok", douyin: "抖音" } as Record<string, string>)[key] ?? label}</option>)}</select></label><label className="text-xs text-slate-400">每个平台结果数<input type="number" min={5} max={30} value={limit} onChange={(event) => setLimit(Number(event.target.value))} className="mt-1 block w-28 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" /></label><button type="button" onClick={() => void run()} disabled={running} className="rounded-lg bg-cyan-500 px-5 py-2 text-sm font-semibold text-slate-950 disabled:opacity-50">{running ? "搜索中…" : "搜索并分析"}</button><label className="ml-auto flex items-center gap-2 text-xs text-slate-400"><Languages size={15} /><span>结果语言</span><select value={language} onChange={(event) => void translate(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-slate-100">{LANGUAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label></div>
+          <p className="mt-3 text-xs text-slate-600">仅展示平台实际返回的浏览量、点赞和评论；派生热度会单独标注，不冒充平台原生指标。</p>
         </div>
         {data && <>
           {data.notice && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">{data.notice}</div>}
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5"><StatCard label="Related heat" value={analysis?.related_hotness == null ? "—" : analysis.related_hotness.toFixed(1)} /><StatCard label="Results" value={compact(volume?.total_hits)} /><StatCard label="Total views" value={compact(volume?.total_views)} /><StatCard label="Likes" value={compact(volume?.total_likes)} /><StatCard label="Comments" value={compact(volume?.total_comments)} /></div>
-          <div className="rounded-xl border border-cyan-900/40 bg-cyan-950/10 p-3"><div className="flex flex-wrap items-center gap-2"><span className="text-xs text-slate-400">Workspace history</span><input aria-label="Save search name" value={savedName} onChange={(event) => setSavedName(event.target.value)} placeholder="Optional saved name" className="min-w-48 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100" /><button type="button" onClick={() => void save(true)} disabled={saving} className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950">{data.query.is_saved ? "Update saved" : "Save search"}</button>{data.query.is_saved && <button type="button" onClick={() => void save(false)} disabled={saving} className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300">Unsave</button>}</div></div>
-          <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><div className="mb-3 flex items-center gap-2"><ListChecks size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Search process</h3></div><ol className="space-y-2">{(analysis?.process_log ?? []).map((step, index) => <li key={`${step.stage}-${index}`} className="flex gap-3 text-sm"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-slate-800 text-[10px] text-slate-300">{index + 1}</span><div><p className="text-slate-200">{step.message}</p><p className="text-[11px] uppercase tracking-wide text-slate-600">{step.stage} · {step.status}</p></div></li>)}</ol></section>
-          {analysis?.summary && <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><h3 className="mb-2 font-semibold text-slate-100">English analysis summary</h3><p className="text-sm leading-6 text-slate-300">{analysis.summary}</p></section>}
-          <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><div className="mb-3 flex items-center gap-2"><Search size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Search results</h3><span className="text-xs text-slate-500">{data.results.length} records</span></div><div className="space-y-2">{data.results.map((result, index) => <div key={`${result.url ?? result.title}-${index}`} className="rounded-lg border border-slate-800 p-3"><div className="flex items-start justify-between gap-3"><p className="text-sm text-slate-200">{result.title_en || result.title || "Untitled result"}</p>{result.url && <a href={result.url} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-cyan-300 hover:underline">Open</a>}</div><p className="mt-1 text-xs text-slate-500">{result.platform} · {result.author_en || result.author || "Unknown author"}</p><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500"><span>Views {compact(result.view_count)}</span><span>Likes {compact(result.like_count)}</span><span>Comments {compact(result.comment_count)}</span><span className="text-amber-300">Heat {result.heat_score == null ? "—" : result.heat_score.toFixed(1)}*</span></div></div>)}</div><p className="mt-3 text-[11px] text-slate-600">* Heat is derived from returned views, likes, and comments; it is not a platform-native metric.</p></section>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5"><StatCard label="相关热度" value={analysis?.related_hotness == null ? "—" : analysis.related_hotness.toFixed(1)} /><StatCard label="结果数" value={compact(volume?.total_hits)} /><StatCard label="总浏览量" value={compact(volume?.total_views)} /><StatCard label="总点赞数" value={compact(volume?.total_likes)} /><StatCard label="总评论数" value={compact(volume?.total_comments)} /></div>
+          <div className="rounded-xl border border-cyan-900/40 bg-cyan-950/10 p-3"><div className="flex flex-wrap items-center gap-2"><span className="text-xs text-slate-400">历史记录</span><input aria-label="保存搜索名称" value={savedName} onChange={(event) => setSavedName(event.target.value)} placeholder="可选的保存名称" className="min-w-48 flex-1 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100" /><button type="button" onClick={() => void save(true)} disabled={saving} className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950">{data.query.is_saved ? "更新保存记录" : "保存本次搜索"}</button>{data.query.is_saved && <button type="button" onClick={() => void save(false)} disabled={saving} className="rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-300">取消保存</button>}</div></div>
+          <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><div className="mb-3 flex items-center gap-2"><ListChecks size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">执行过程</h3><span className="text-xs text-slate-500">英文日志</span></div><ol className="space-y-2">{(analysis?.process_log ?? []).map((step, index) => <li key={`${step.stage}-${index}`} className="flex gap-3 text-sm"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-slate-800 text-[10px] text-slate-300">{index + 1}</span><div><p className="text-slate-200">{step.message}</p><p className="text-[11px] uppercase tracking-wide text-slate-600">{step.stage} · {step.status}</p></div></li>)}</ol></section>
+          {analysis?.summary && <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><h3 className="mb-2 font-semibold text-slate-100">英文分析摘要</h3><p className="text-sm leading-6 text-slate-300">{analysis.summary}</p></section>}
+          <section className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"><div className="mb-3 flex items-center gap-2"><Search size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">搜索结果</h3><span className="text-xs text-slate-500">{data.results.length} 条</span></div><div className="space-y-2">{data.results.map((result, index) => <div key={`${result.url ?? result.title}-${index}`} className="rounded-lg border border-slate-800 p-3"><div className="flex items-start justify-between gap-3"><p className="text-sm text-slate-200">{result.title_en || result.title || "未命名结果"}</p>{result.url && <a href={result.url} target="_blank" rel="noreferrer" className="shrink-0 text-xs text-cyan-300 hover:underline">查看来源</a>}</div><p className="mt-1 text-xs text-slate-500">{result.platform} · {result.author_en || result.author || "未知作者"}</p><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500"><span>浏览量 {compact(result.view_count)}</span><span>点赞 {compact(result.like_count)}</span><span>评论 {compact(result.comment_count)}</span><span className="text-amber-300">派生热度 {result.heat_score == null ? "—" : result.heat_score.toFixed(1)}*</span></div></div>)}</div><p className="mt-3 text-[11px] text-slate-600">* 派生热度根据返回的浏览量、点赞和评论计算，不代表平台原生指标。</p></section>
         </>}
       </div>
-      <aside className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><div className="mb-3 flex items-center gap-2"><History size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">Search history</h3></div><div className="space-y-2">{(history.data?.items ?? []).map((record) => <button type="button" key={record.id} onClick={() => void load(record.id)} className={`w-full rounded-lg border p-3 text-left transition ${record.id === data?.query.id ? "border-cyan-500/60 bg-cyan-950/20" : "border-slate-800 hover:border-slate-600"}`}><p className="line-clamp-2 text-xs text-slate-200">{record.query_text_en || record.query_text}</p><p className="mt-2 text-[11px] text-slate-500">{new Date(record.created_at).toLocaleString("en-US")} · {record.result_count} results {record.is_saved ? "· Saved" : ""}</p></button>)}{!history.data?.items?.length && <p className="text-sm text-slate-500">No search history yet.</p>}</div></aside>
+      <aside className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><div className="mb-3 flex items-center gap-2"><History size={16} className="text-cyan-400" /><h3 className="font-semibold text-slate-100">搜索历史</h3></div><div className="space-y-2">{(history.data?.items ?? []).map((record) => <button type="button" key={record.id} onClick={() => void load(record.id)} className={`w-full rounded-lg border p-3 text-left transition ${record.id === data?.query.id ? "border-cyan-500/60 bg-cyan-950/20" : "border-slate-800 hover:border-slate-600"}`}><p className="line-clamp-2 text-xs text-slate-200">{record.query_text_en || record.query_text}</p><p className="mt-2 text-[11px] text-slate-500">{new Date(record.created_at).toLocaleString("zh-CN")} · {record.result_count} 条结果 {record.is_saved ? "· 已保存" : ""}</p></button>)}{!history.data?.items?.length && <p className="text-sm text-slate-500">暂无搜索历史。</p>}</div></aside>
     </div>
   </div>;
 }

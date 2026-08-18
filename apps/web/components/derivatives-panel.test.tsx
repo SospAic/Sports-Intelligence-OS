@@ -118,16 +118,16 @@ describe("DerivativesPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("button", { name: /Champions League final/ }));
-    expect(await screen.findByText("Source search results")).toBeInTheDocument();
-    expect(screen.getByText("Views 1.2M")).toBeInTheDocument();
-    expect(screen.getByText("Heat 74.2*")).toBeInTheDocument();
+    expect(await screen.findByText("来源搜索结果")).toBeInTheDocument();
+    expect(screen.getByText("浏览量 1.2M")).toBeInTheDocument();
+    expect(screen.getByText("派生热度 74.2*")).toBeInTheDocument();
     expect(screen.getByText("Platform search completed with 1 raw result.")).toBeInTheDocument();
   });
 
   it("translates a saved run without losing its metrics", async () => {
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: /Champions League final/ }));
-    await screen.findByText("Source search results");
+    await screen.findByText("来源搜索结果");
 
     fireEvent.change(screen.getAllByRole("combobox")[1]!, {
       target: { value: "zh" },
@@ -139,6 +139,6 @@ describe("DerivativesPanel", () => {
       ),
     );
     expect(await screen.findByText("平台搜索完成。")).toBeInTheDocument();
-    expect(screen.getByText("Heat 74.2*")).toBeInTheDocument();
+    expect(screen.getByText("派生热度 74.2*")).toBeInTheDocument();
   });
 });
