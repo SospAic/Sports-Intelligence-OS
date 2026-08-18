@@ -188,6 +188,9 @@ class TrendCollectorService:
             "quota_guard_unavailable",
         }:
             youtube_result["status"] = youtube["status"]
+        for key in ("api_strategy", "credential_source"):
+            if youtube.get(key):
+                youtube_result[key] = youtube[key]
         if youtube.get("quota"):
             youtube_result["quota"] = youtube["quota"]
         if progress:
@@ -842,6 +845,7 @@ class TrendCollectorService:
             "keywords": 0,
             "status": "not_configured",
             "api_strategy": "daily_budgeted_api_plus_continuous_public_sources",
+            "credential_source": "unconfigured",
             "quota": {
                 "search_daily_budget": self._settings.youtube_search_daily_budget,
                 "general_daily_budget": self._settings.youtube_general_daily_budget,
@@ -854,7 +858,8 @@ class TrendCollectorService:
         }
 
         # 检查 API Key 是否可用
-        mode, credential = await PlatformCredentialService(self.session, self._settings).resolve(
+        credential_service = PlatformCredentialService(self.session, self._settings)
+        mode, credential = await credential_service.resolve_api(
             workspace_id, "youtube"
         )
         api_key = credential.get("api_key") if mode == "api" else None
@@ -875,6 +880,12 @@ class TrendCollectorService:
             return counts
         key = api_key
         counts["status"] = "configured"
+        environment_key = (
+            self._settings.youtube_api_key.get_secret_value()
+            if self._settings.youtube_api_key
+            else ""
+        )
+        counts["credential_source"] = "environment" if key == environment_key else "workspace"
         quota = self._quota_budget(key)
 
         # YouTube categoryId 到分类名称的映射

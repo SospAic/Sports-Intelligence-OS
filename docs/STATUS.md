@@ -1,6 +1,12 @@
 # 项目状态
 
-更新时间：2026-08-18（体育热点来源扩充与自适应补采）
+更新时间：2026-08-19（YouTube API 凭证解析修复与混合来源核验）
+
+## 2026-08-19：YouTube API 实际调用链修复
+
+- 核查发现：服务器级 `SIO_YOUTUBE_API_KEY` 已注入 API/Worker 容器，但该工作区数据库中的 YouTube 采集模式为 `authorized_session`；旧的通用凭证解析器因此跳过了环境 API Key，日志出现 `youtube_api_key_not_configured`，页面已有数据不代表本轮调用了 YouTube API。
+- 修复：新增 API 专用凭证解析路径。账号同步继续遵循工作区的浏览器授权模式；热点 API 采集在没有显式禁用/不完整 API 模式时，可使用已配置的服务器级 YouTube API Key，并在采集结果中记录 `credential_source`。
+- 定向验证：凭证解析、YouTube 配额、公开源测试 `8 passed, 1 warning`；真实采集批次已成功执行，Redis 记录 `search=80`、`general=82`，最近 10 分钟写入 `official_api` 来源的 YouTube 视频 2,803 条、话题 2,798 条；API/Worker/Beat 重建后健康检查通过。该批次同时保留 RSS/Atom 公开源采集。
 
 ## 2026-08-18：可扩展性基线、体育项目覆盖与界面语言切换
 

@@ -291,6 +291,44 @@ class PlatformCredentialService:
                 return "api", config
         return "unconfigured", {}
 
+    async def resolve_api(
+        self, workspace_id: UUID, platform_key: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Resolve an API credential for a capability that is API-specific.
+
+        A workspace may legitimately use an authorized browser session for
+        account synchronization while using a server-level API key for public
+        trend collection.  The generic ``resolve`` method must keep honoring
+        the workspace acquisition mode, so API-only collectors use this
+        explicit resolver instead.  An explicit, disabled or incomplete API
+        row remains an opt-out and does not fall back to the environment key.
+        """
+
+        key = platform_key.removesuffix("_browser")
+        row = await self._row(workspace_id, key)
+        if row is not None and row.mode == "api":
+            config = self.cipher.decrypt(row.config_encrypted)
+            api_config = {
+                field: value
+                for field, value in config.items()
+                if field in API_FIELDS.get(key, set())
+            }
+            if row.enabled and key in API_SUPPORTED and all(
+                api_config.get(field) for field in REQUIRED_API_FIELDS.get(key, set())
+            ):
+                return "api", api_config
+            return "unconfigured", {}
+
+        # Non-API workspace modes (authorized_session/public_page) remain
+        # available to their own adapters while public API-only collectors can
+        # use a configured server-level key.
+        environment_config = self._environment_api_config(key)
+        if key in API_SUPPORTED and all(
+            environment_config.get(field) for field in REQUIRED_API_FIELDS.get(key, set())
+        ):
+            return "api", environment_config
+        return "unconfigured", {}
+
     async def capture_browser_session(
         self,
         workspace_id: UUID,
