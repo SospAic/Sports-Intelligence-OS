@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import re
 import time
@@ -29,6 +30,8 @@ from app.adapters.platforms.base import (
     RateLimitError,
     TransientAdapterError,
 )
+from app.core.config import Settings
+from app.services.youtube_quota import YouTubeQuotaBudget
 
 logger = logging.getLogger(__name__)
 YOUTUBE_API_BASE_URL = "https://www.googleapis.com/youtube/v3/"
@@ -122,6 +125,7 @@ class YouTubeAdapter(PlatformAdapter):
         max_attempts: int = 3,
         retry_base_seconds: float = 0.25,
         min_request_interval: float = 0.0,
+        settings: Settings | None = None,
     ) -> None:
         self._client = client or httpx.AsyncClient(
             base_url=base_url,
@@ -134,10 +138,32 @@ class YouTubeAdapter(PlatformAdapter):
         self._min_request_interval = max(0.0, min_request_interval)
         self._request_lock = asyncio.Lock()
         self._last_request_at = 0.0
+        self._settings = settings
+        self._quota: YouTubeQuotaBudget | None = None
+        self._quota_scope: str | None = None
 
     async def aclose(self) -> None:
+        if self._quota is not None:
+            await self._quota.aclose()
+            self._quota = None
         if self._owns_client:
             await self._client.aclose()
+
+    async def _reserve_general_quota(self, api_key: str) -> None:
+        if self._settings is None:
+            return
+        scope = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+        if self._quota is None or self._quota_scope != scope:
+            if self._quota is not None:
+                await self._quota.aclose()
+            self._quota = YouTubeQuotaBudget(self._settings, api_key=api_key)
+            self._quota_scope = scope
+        decision = await self._quota.reserve("general")
+        if not decision.allowed:
+            raise RateLimitError(
+                f"YouTube local quota budget unavailable: {decision.reason}",
+                retry_after=60.0,
+            )
 
     async def validate_config(self, config: Mapping[str, Any]) -> None:
         api_key = config.get("api_key")
@@ -155,7 +181,9 @@ class YouTubeAdapter(PlatformAdapter):
         self, ctx: AdapterCallContext, endpoint: str, params: Mapping[str, Any]
     ) -> dict[str, Any]:
         await self.validate_config(ctx.config)
-        request_params = {**params, "key": cast(str, ctx.config["api_key"])}
+        api_key = cast(str, ctx.config["api_key"])
+        await self._reserve_general_quota(api_key)
+        request_params = {**params, "key": api_key}
         last_error: Exception | None = None
         for attempt in range(1, self._max_attempts + 1):
             await self._throttle()

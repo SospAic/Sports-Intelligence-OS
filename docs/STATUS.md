@@ -13,6 +13,14 @@
 - 详细评估、优先级、限制和下一步见 `docs/EXTENSIBILITY_OPTIMIZATION_REPORT_2026-08-18.md`。
 - 本轮验证完成：后端 `api/worker/beat/subtitle-worker` 受影响镜像已重建并通过 Compose 更新；Alembic `check` 无新增迁移；Ruff、Mypy 通过；后端全量 `691 passed, 6 deselected, 1 warning`；Web 全量 Vitest `29 files / 90 tests passed`；API `/health/live=200`、`/health/ready=200`、代理 `/login=200`，API、Worker、Beat、Web、PostgreSQL、Redis 均正常运行。真实 YouTube 80 项项目覆盖仍取决于有效官方 API 凭证与配额，不能用无凭证测试结果代替。
 
+## 2026-08-18：YouTube 配额与公开源混合采集
+
+- YouTube 热点采集增加 Redis 分布式配额闸门：按 API Key 哈希和太平洋时间配额日计数，默认每天最多 80 次 `search.list`，同一工作区每天只执行一次项目搜索批次；官方热门榜默认每 4 小时刷新。
+- 热点任务仍可每小时运行，但 API 项目搜索和榜单请求只在预算窗口内执行；RSS/Atom 等公开源不受 YouTube 配额闸门影响，API 跳过或耗尽时继续采集并返回明确的 `deferred_to_public_sources` / `deferred_by_quota` 状态。
+- YouTube 非搜索热点请求使用保守的 5,000 通用单位日预算，保留项目其他账号同步和手动调用的余量；所有预算以 Redis 失败关闭，禁止通过重复重试绕过配额。
+- 新增 `apps/api/app/services/youtube_quota.py` 及配额回归测试；配置入口为 `SIO_YOUTUBE_SEARCH_DAILY_BUDGET`、`SIO_YOUTUBE_GENERAL_DAILY_BUDGET`、`SIO_YOUTUBE_CHART_REFRESH_SECONDS`。
+- 本轮验证完成：后端 `api/worker/beat/subtitle-worker` 镜像重建并通过 Compose 更新；`docker compose config --quiet`、Alembic `check`、Ruff、Mypy 通过；配额/体育目录/公开源回归 `9 passed, 1 warning`，平台适配器/账号批量对比/首轮交付回归 `14 passed, 1 warning`；API `/health/live=200`、`/health/ready=200`、代理 `/login=200`。本轮未重复运行 Web 测试（无前端改动），沿用上一轮 Web `29 files / 90 tests passed` 基线。
+
 ## 2026-08-18：衍生角度结果不可见修复与全功能审计
 
 - 根因：`GET /trends/derivatives/runs/{run_id}` 的响应组装将 ORM 列 `process_log_json` 映射后的 `process_log` 重复传入 `DerivativeRunDetail`，运行时抛出 `got multiple values for keyword argument 'process_log'`，前端生成后再读取详情时收到 HTTP 500，因此结果区保持空白。

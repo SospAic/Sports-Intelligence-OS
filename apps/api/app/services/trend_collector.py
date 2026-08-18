@@ -42,6 +42,7 @@ from app.services.trend_categories import canonical_trend_category
 from app.services.trend_categories import infer_sports_category as _infer_sports_category
 from app.services.trend_categories import is_sports_related as _is_sports_related
 from app.services.trend_categories import trend_terms as _trend_terms
+from app.services.youtube_quota import YouTubeQuotaBudget
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ def _catalog_sport_category(item: dict[str, Any]) -> str | None:
         if any(alias.casefold() in text for alias in aliases if alias.strip()):
             return profile.key
     return None
+
 
 def _position_heat_score(rank: int, total: int) -> float:
     """基于排名位置计算热度分数（rank 1 = 100，递减）"""
@@ -138,6 +140,17 @@ class TrendCollectorService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self._settings = get_settings()
+        self._youtube_quota: YouTubeQuotaBudget | None = None
+
+    def _quota_budget(self, api_key: str) -> YouTubeQuotaBudget:
+        if self._youtube_quota is None:
+            self._youtube_quota = YouTubeQuotaBudget(self._settings, api_key=api_key)
+        return self._youtube_quota
+
+    async def _close_quota_budget(self) -> None:
+        if self._youtube_quota is not None:
+            await self._youtube_quota.aclose()
+            self._youtube_quota = None
 
     # ------------------------------------------------------------------
     # 主入口
@@ -158,8 +171,9 @@ class TrendCollectorService:
         if progress:
             sample_videos = sum(int(item.get("videos", 0)) for item in results.values())
             progress(f"监控样本处理完成：{sample_videos} 条作品", "monitored_samples")
-            progress("正在检查 YouTube 官方 API 配置并采集公开趋势", "youtube")
+            progress("正在按每日预算检查 YouTube API；公开 RSS/Atom 源持续采集", "youtube")
         youtube = await self.collect_youtube_trends(workspace_id)
+        await self._close_quota_budget()
         youtube_result = results.setdefault(
             "youtube",
             {"topics": 0, "videos": 0, "keywords": 0, "status": "no_authorized_samples"},
@@ -168,8 +182,14 @@ class TrendCollectorService:
             youtube_result[key] += youtube[key]
         if any(int(youtube.get(key, 0)) > 0 for key in ("topics", "videos", "keywords")):
             youtube_result["status"] = "collected"
-        elif youtube.get("status") == "configured_no_samples":
-            youtube_result["status"] = "configured_no_samples"
+        elif youtube.get("status") in {
+            "configured_no_samples",
+            "deferred_to_public_sources",
+            "quota_guard_unavailable",
+        }:
+            youtube_result["status"] = youtube["status"]
+        if youtube.get("quota"):
+            youtube_result["quota"] = youtube["quota"]
         if progress:
             progress("正在独立采集已启用的公开 RSS/Atom 热点源（最近 72 小时）", "public_sources")
         public_sources = await self.collect_public_source_trends(
@@ -821,6 +841,15 @@ class TrendCollectorService:
             "videos": 0,
             "keywords": 0,
             "status": "not_configured",
+            "api_strategy": "daily_budgeted_api_plus_continuous_public_sources",
+            "quota": {
+                "search_daily_budget": self._settings.youtube_search_daily_budget,
+                "general_daily_budget": self._settings.youtube_general_daily_budget,
+                "search_calls_reserved": 0,
+                "general_units_reserved": 0,
+                "lane_sweep_status": "not_started",
+                "chart_status": "not_started",
+            },
             "sports_coverage": {},
         }
 
@@ -846,6 +875,7 @@ class TrendCollectorService:
             return counts
         key = api_key
         counts["status"] = "configured"
+        quota = self._quota_budget(key)
 
         # YouTube categoryId 到分类名称的映射
         category_map = {
@@ -872,51 +902,70 @@ class TrendCollectorService:
                 seen_video_ids: set[str] = set()
                 chart_items_by_profile: dict[str, list[dict[str, Any]]] = {}
                 chart_saved_by_profile: dict[str, int] = {}
+                chart_window = await quota.claim_chart_window()
+                counts["quota"]["chart_status"] = chart_window.reason
+
+                async def fetch_chart(
+                    params: dict[str, Any],
+                ) -> tuple[list[dict[str, Any]], str | None]:
+                    if not chart_window.allowed:
+                        return [], f"quota:{chart_window.reason}"
+                    decision = await quota.reserve("general")
+                    if not decision.allowed:
+                        return [], f"quota:{decision.reason}"
+                    counts["quota"]["general_units_reserved"] += 1
+                    try:
+                        response = await client.get(
+                            "https://www.googleapis.com/youtube/v3/videos",
+                            params=params,
+                        )
+                        response.raise_for_status()
+                        payload = response.json()
+                        items = payload.get("items", [])
+                        if not isinstance(items, list):
+                            return [], "invalid_items_shape"
+                        return [item for item in items if isinstance(item, dict)], None
+                    except Exception as exc:  # noqa: BLE001 - isolate chart source
+                        return [], f"{type(exc).__name__}: {str(exc)[:240]}"
 
                 # 1. 热门趋势视频
-                try:
-                    resp = await client.get(
-                        "https://www.googleapis.com/youtube/v3/videos",
-                        params={
-                            "part": "snippet,statistics",
-                            "chart": "mostPopular",
-                            "regionCode": "US",
-                            "maxResults": 50,
-                            "key": key,
-                        },
+                items, chart_error = await fetch_chart(
+                    {
+                        "part": "snippet,statistics",
+                        "chart": "mostPopular",
+                        "regionCode": "US",
+                        "maxResults": 50,
+                        "key": key,
+                    }
+                )
+                if chart_error:
+                    logger.info("youtube_trending_skipped: %s", chart_error)
+                elif items:
+                    counts["videos"] += self._save_youtube_videos(
+                        workspace_id,
+                        items,
+                        category_map,
+                        "trending",
+                        seen_external_ids=seen_video_ids,
                     )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    items = data.get("items", [])
-                    if items:
-                        counts["videos"] += self._save_youtube_videos(
-                            workspace_id,
-                            items,
-                            category_map,
-                            "trending",
-                            seen_external_ids=seen_video_ids,
-                        )
-                except Exception as exc:
-                    logger.warning("youtube_trending_failed: %s", exc)
 
                 # 2. The official sports chart is a much stronger baseline than
                 # treating a generic keyword search as a platform ranking.
                 # YouTube documents videoCategoryId=17 as Sports; the chart is
                 # still source data, not a synthetic expansion of the lanes.
-                try:
-                    resp = await client.get(
-                        "https://www.googleapis.com/youtube/v3/videos",
-                        params={
-                            "part": "snippet,statistics",
-                            "chart": "mostPopular",
-                            "videoCategoryId": "17",
-                            "regionCode": "US",
-                            "maxResults": 50,
-                            "key": key,
-                        },
-                    )
-                    resp.raise_for_status()
-                    sports_items = resp.json().get("items", [])
+                sports_items, sports_chart_error = await fetch_chart(
+                    {
+                        "part": "snippet,statistics",
+                        "chart": "mostPopular",
+                        "videoCategoryId": "17",
+                        "regionCode": "US",
+                        "maxResults": 50,
+                        "key": key,
+                    }
+                )
+                if sports_chart_error:
+                    logger.info("youtube_sports_chart_skipped: %s", sports_chart_error)
+                else:
                     for item in sports_items:
                         profile_key = _catalog_sport_category(item)
                         if profile_key in _SPORT_CATALOG_KEYS:
@@ -945,18 +994,20 @@ class TrendCollectorService:
                             category_override="sports",
                             seen_external_ids=seen_video_ids,
                         )
-                except Exception as exc:
-                    logger.warning("youtube_sports_chart_failed: %s", exc)
 
                 # 3. Bounded, adaptive real queries per catalog lane.  A
                 # semaphore keeps the 80-lane expansion below provider and
                 # worker limits.
+                lane_sweep = await quota.claim_daily_lane_sweep(workspace_id)
+                counts["quota"]["lane_sweep_status"] = lane_sweep.reason
                 semaphore = asyncio.Semaphore(self._settings.hotspot_sport_query_concurrency)
 
                 async def fetch_sport_lane(
                     profile: SportProfile,
                 ) -> tuple[SportProfile, list[dict[str, Any]], str | None]:
                     target = self._sport_target(profile)
+                    if not lane_sweep.allowed:
+                        return profile, [], f"quota:{lane_sweep.reason}"
                     try:
                         async with semaphore:
                             query_variants = tuple(
@@ -972,6 +1023,10 @@ class TrendCollectorService:
                             for query in query_variants[
                                 : self._settings.hotspot_sport_max_queries_per_lane
                             ]:
+                                decision = await quota.reserve("search")
+                                if not decision.allowed:
+                                    return profile, [], f"quota:{decision.reason}"
+                                counts["quota"]["search_calls_reserved"] += 1
                                 search_response = await client.get(
                                     "https://www.googleapis.com/youtube/v3/search",
                                     params={
@@ -1005,6 +1060,19 @@ class TrendCollectorService:
                             if not video_ids:
                                 return profile, [], None
 
+                            raw_items = [
+                                {
+                                    "id": video_id,
+                                    "snippet": search_by_id[video_id].get("snippet", {}),
+                                    "statistics": {},
+                                }
+                                for video_id in video_ids
+                            ]
+                            detail_decision = await quota.reserve("general")
+                            if not detail_decision.allowed:
+                                return profile, raw_items, None
+                            counts["quota"]["general_units_reserved"] += 1
+
                             # Statistics are fetched in one batch per lane,
                             # which is the maximum legal videos.list batch.
                             detail_response = await client.get(
@@ -1022,14 +1090,7 @@ class TrendCollectorService:
 
                             # A real search result is still useful when the
                             # optional statistics enrichment is unavailable.
-                            return profile, [
-                                {
-                                    "id": video_id,
-                                    "snippet": search_by_id[video_id].get("snippet", {}),
-                                    "statistics": {},
-                                }
-                                for video_id in video_ids
-                            ], None
+                            return profile, raw_items, None
                     except Exception as exc:  # noqa: BLE001 - isolate one sport lane
                         return profile, [], f"{type(exc).__name__}: {str(exc)[:240]}"
 
@@ -1041,6 +1102,11 @@ class TrendCollectorService:
                     chart_items = chart_items_by_profile.get(profile.key, [])
                     chart_saved = chart_saved_by_profile.get(profile.key, 0)
                     if error:
+                        topic_count = self._save_youtube_sport_topics(
+                            workspace_id, profile, chart_items, target
+                        )
+                        counts["topics"] += topic_count
+                        quota_limited = error.startswith("quota:")
                         if chart_saved:
                             counts["sports_coverage"][profile.key] = {
                                 "name_zh": profile.name_zh,
@@ -1049,7 +1115,13 @@ class TrendCollectorService:
                                 "target_items": target,
                                 "actual_items": chart_saved,
                                 "status": (
-                                    "met" if chart_saved >= target else "limited_by_source"
+                                    "met"
+                                    if chart_saved >= target
+                                    else (
+                                        "deferred_by_quota"
+                                        if quota_limited
+                                        else "limited_by_source"
+                                    )
                                 ),
                                 "source": "youtube_sports_chart",
                                 "lane_error": error,
@@ -1061,7 +1133,7 @@ class TrendCollectorService:
                             "tier": profile.tier,
                             "target_items": target,
                             "actual_items": 0,
-                            "status": "failed",
+                            "status": "deferred_by_quota" if quota_limited else "failed",
                             "reason": error,
                         }
                         continue
@@ -1106,7 +1178,20 @@ class TrendCollectorService:
             logger.error("youtube_collection_failed: %s", exc, exc_info=True)
 
         if not any(int(counts.get(key, 0)) > 0 for key in ("topics", "videos", "keywords")):
-            counts["status"] = "configured_no_samples"
+            quota_statuses = {
+                str(counts["quota"].get("lane_sweep_status")),
+                str(counts["quota"].get("chart_status")),
+            }
+            if "quota_guard_unavailable" in quota_statuses:
+                counts["status"] = "quota_guard_unavailable"
+            elif quota_statuses & {
+                "lane_sweep_already_claimed",
+                "chart_window_already_claimed",
+                "daily_budget_exhausted",
+            }:
+                counts["status"] = "deferred_to_public_sources"
+            else:
+                counts["status"] = "configured_no_samples"
         return counts
 
     def _sport_target(self, profile: SportProfile) -> int:

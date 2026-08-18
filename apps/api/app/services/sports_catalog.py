@@ -134,9 +134,8 @@ SPORTS_CATALOG_VERSION = "sports-hotspot-taxonomy-v1"
 SPORTS_COLLECTION_STRATEGY_KEY = "official-chart-plus-adaptive-lane-search-v2"
 SPORTS_COLLECTION_STRATEGY_LABEL = "官方体育榜单 + 项目检索补采"
 SPORTS_COLLECTION_STRATEGY_SUMMARY = (
-    "YouTube 官方体育榜单提供跨项目基线；每个项目再按热点排序检索，"
-    "只有未达到目标的项目才使用有限的英文查询变体补采。所有视频按平台外部 ID 去重，"
-    "不足时展示 Provider 实际上限。"
+    "YouTube 官方体育榜单提供跨项目基线；每个项目每天按预算执行一次英文热点检索，"
+    "剩余配额只给高价值稀疏项目补采。所有视频按平台外部 ID 去重，不足时展示 Provider 实际上限。"
 )
 
 if len(MAINSTREAM_SPORTS) != 50 or len(GENERAL_SPORTS) != 30:  # pragma: no cover

@@ -52,6 +52,30 @@ class Settings(BaseSettings):
     )
     password_min_length: int = Field(default=12, ge=12, le=128)
     youtube_api_key: SecretStr | None = None
+    youtube_search_daily_budget: int = Field(
+        default=80,
+        ge=0,
+        le=100,
+        description=(
+            "Maximum daily YouTube search.list calls reserved for hotspot collection; "
+            "the remaining granular Search Queries quota is kept for manual and other tasks."
+        ),
+    )
+    youtube_general_daily_budget: int = Field(
+        default=5000,
+        ge=1,
+        le=10_000,
+        description=(
+            "Conservative daily YouTube budget for non-search hotspot requests; "
+            "keeps headroom below the project's general 10,000-unit allocation."
+        ),
+    )
+    youtube_chart_refresh_seconds: int = Field(
+        default=14_400,
+        ge=3_600,
+        le=86_400,
+        description="Minimum interval between shared YouTube public chart refreshes.",
+    )
     # Optional server-level fallbacks for official platform adapters. These
     # remain environment-only; workspace-scoped credentials continue to take
     # precedence and are stored encrypted by PlatformCredentialService.
@@ -211,12 +235,12 @@ class Settings(BaseSettings):
         description="Bounded concurrency for the 50 + 30 live sport discovery queries.",
     )
     hotspot_sport_max_queries_per_lane: int = Field(
-        default=2,
+        default=1,
         ge=1,
         le=3,
         description=(
-            "Maximum adaptive YouTube search queries per sport lane; the second query "
-            "is used only when the first real result set is below target."
+            "Maximum adaptive YouTube search queries per sport lane; the daily quota "
+            "gate defaults to one query per lane and reserves the remaining budget."
         ),
     )
     hotspot_mainstream_target_items: int = Field(
