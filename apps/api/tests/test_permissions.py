@@ -10,7 +10,7 @@ from app.core.security import hash_password
 from app.models.user import User
 from app.models.workspace import Workspace, WorkspaceMembership
 
-from .conftest import TEST_PLATFORM_ID
+from .conftest import PG_SYNC_URL, TEST_PLATFORM_ID
 
 VIEWER_PASSWORD = "viewer-correct-horse-battery-staple"  # noqa: S105 - test fixture
 
@@ -18,7 +18,7 @@ VIEWER_PASSWORD = "viewer-correct-horse-battery-staple"  # noqa: S105 - test fix
 def test_viewer_cannot_mutate_and_cross_workspace_access_is_denied(
     client: TestClient, database_path: Path
 ) -> None:
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         workspace = session.scalar(select(Workspace))
         assert workspace is not None

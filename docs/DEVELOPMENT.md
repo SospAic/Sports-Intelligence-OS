@@ -4,7 +4,7 @@
 
 - Python 3.12
 - Node.js 24、pnpm 11.9
-- PostgreSQL 17、Redis 7.4；单元测试可使用临时 SQLite
+- PostgreSQL 17、Redis 7.4；单元测试使用本地 Docker PostgreSQL 隔离数据库
 
 ```powershell
 python -m venv .venv
@@ -33,6 +33,17 @@ pnpm dev
 
 或分别运行 Ruff、Mypy、Pytest、TypeScript、ESLint、Vitest、Prettier 和 Next.js 构建。`pytest -m integration` 运行本地确定性多模块链路，不访问外部平台。
 
+Compose 环境下使用以下工作区命令运行前端门禁：
+
+```powershell
+docker compose exec -T web pnpm --filter @sio/web test
+docker compose exec -T web pnpm --filter @sio/web typecheck
+docker compose exec -T web pnpm --filter @sio/web lint
+docker compose exec -T web pnpm --filter @sio/web build
+```
+
+不要从 `/workspace` 根目录直接执行 `pnpm vitest run`；该命令会绕过 Web 包的 Vitest 配置，产生错误的套件路径/环境结果。
+
 ## 测试结构
 
 - `apps/api/tests`：领域、API、Adapter/Provider 和 Mock 垂直链路。
@@ -45,7 +56,7 @@ pnpm dev
 
 - 模型变更必须增加 Alembic 迁移，并执行 upgrade、downgrade、re-upgrade 与 `alembic check`。
 - 快照表 append-only，禁止更新历史行。
-- 时间写入 UTC；从 SQLite 或外部 Provider 读取的无时区时间必须在边界归一化。
+- 时间写入 UTC；从外部 Provider 读取的无时区时间必须在边界归一化。
 - 高频公共字段结构化，平台低频字段进入 `metadata`。
 
 ## 新接入边界

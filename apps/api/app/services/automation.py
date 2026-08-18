@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import case, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,10 +23,11 @@ from app.models.automation import (
     AutomationRuntimeState,
     NotificationChannel,
     NotificationDelivery,
+    NotificationDeliveryAttempt,
 )
 from app.models.monitoring import Account, ContentItem
 from app.models.news import Article, TopicEvent
-from app.models.operations import AuditEntry
+from app.models.notification_template import NotificationTemplateVersion
 from app.models.topics import SavedTopic
 from app.providers.llm.base import LLMProvider
 from app.providers.notifications.base import (
@@ -43,6 +44,8 @@ from app.schemas.automation import (
     AutomationEvaluateRequest,
     AutomationEvaluationPage,
     AutomationEvaluationRead,
+    AutomationReplayRequest,
+    AutomationReplayResult,
     AutomationRuleCreate,
     AutomationRuleDetail,
     AutomationRulePage,
@@ -51,14 +54,19 @@ from app.schemas.automation import (
     ConditionValidateRequest,
     ConditionValidateResult,
     NotificationChannelCreate,
+    NotificationChannelHealthRead,
     NotificationChannelRead,
     NotificationChannelUpdate,
+    NotificationChannelValidationRead,
     NotificationDeliveryPage,
     NotificationDeliveryRead,
+    NotificationHealthSummaryRead,
     NotificationTestRequest,
 )
 from app.schemas.generation import GenerationCreate
+from app.services.audit import build_audit_entry, build_external_call_attempt
 from app.services.generation import GenerationError, GenerationService
+from app.services.notification_template import NotificationTemplateService
 
 
 class AutomationError(RuntimeError):
@@ -163,6 +171,10 @@ class AutomationService:
         ]
         for action in rule.actions:
             self._validate_action(action.action_type, action.config, enabled=rule.enabled)
+            if rule.enabled and action.enabled:
+                await self._validate_action_references(
+                    workspace_id, action.action_type, action.config
+                )
         self.session.add(rule)
         self._audit(workspace_id, actor_id, "automation_rule.created", "automation_rule", rule.id)
         await self.session.commit()
@@ -189,6 +201,9 @@ class AutomationService:
                 )
             for action in enabled_actions:
                 self._validate_action(action.action_type, action.config, enabled=True)
+                await self._validate_action_references(
+                    workspace_id, action.action_type, action.config
+                )
         self._audit(
             workspace_id,
             actor_id,
@@ -217,6 +232,10 @@ class AutomationService:
         self._validate_action(
             payload.action_type, payload.config, enabled=payload.enabled and rule.enabled
         )
+        if payload.enabled and rule.enabled:
+            await self._validate_action_references(
+                workspace_id, payload.action_type, payload.config
+            )
         if any(action.sort_order == payload.sort_order for action in rule.actions):
             raise AutomationConflict("动作顺序已被占用", "automation_action_order_conflict")
         action = AutomationAction(
@@ -286,6 +305,63 @@ class AutomationService:
             evaluations.append(AutomationEvaluationRead.model_validate(evaluation))
         return evaluations
 
+    async def replay(
+        self, workspace_id: UUID, payload: AutomationReplayRequest
+    ) -> list[AutomationReplayResult]:
+        """Run a no-write rule simulation with an explanation tree.
+
+        The replay deliberately bypasses runtime state, deduplication, action
+        creation and external providers. It is an operator aid, not evidence
+        that a real event would be delivered successfully.
+        """
+
+        if payload.rule_id is not None:
+            rule = await self.repo.rule(workspace_id, payload.rule_id)
+            if rule is None:
+                raise AutomationNotFound("自动化规则不存在")
+            rules = [rule]
+        else:
+            rules = await self.repo.matching_rules(
+                workspace_id, payload.entity_type, payload.trigger_type
+            )
+
+        results: list[AutomationReplayResult] = []
+        evaluated_at = datetime.now(UTC)
+        for rule in rules:
+            self._validate_tree(rule.condition_tree, payload.entity_type)
+            condition = evaluate_condition_tree(
+                rule.condition_tree,
+                payload.facts,
+                previous=payload.previous,
+                consecutive_count=0,
+            )
+            actions = [
+                {
+                    "action_id": str(action.id),
+                    "type": action.action_type,
+                    "enabled": action.enabled,
+                    "would_execute": condition.matched and action.enabled,
+                    "side_effect": action.action_type
+                    in {"notification", "webhook", "external_api", "create_generation"},
+                }
+                for action in sorted(rule.actions, key=lambda item: item.sort_order)
+            ]
+            results.append(
+                AutomationReplayResult(
+                    rule_id=rule.id,
+                    rule_name=rule.name,
+                    entity_type=payload.entity_type,
+                    entity_id=payload.entity_id,
+                    matched=condition.matched,
+                    condition_result=condition.explanation,
+                    actions=actions,
+                    execution_status="matched" if condition.matched else "not_matched",
+                    source_kind=payload.source_kind,
+                    evaluated_at=evaluated_at,
+                )
+            )
+        return results
+
     async def _evaluate_rule(
         self,
         workspace_id: UUID,
@@ -313,25 +389,14 @@ class AutomationService:
             )
             self.session.add(state)
 
-        mock_blocked = payload.source_kind == "mock" and not (
-            payload.test_mode or bool(rule.schedule.get("allow_mock", False))
+        condition = evaluate_condition_tree(
+            rule.condition_tree,
+            payload.facts,
+            previous=payload.previous,
+            consecutive_count=state.consecutive_count,
         )
-        if mock_blocked:
-            matched = False
-            explanation: dict[str, Any] = {
-                "result": False,
-                "reason": "mock_source_blocked",
-                "detail": "Mock 数据默认不会触发生产通知",
-            }
-        else:
-            condition = evaluate_condition_tree(
-                rule.condition_tree,
-                payload.facts,
-                previous=payload.previous,
-                consecutive_count=state.consecutive_count,
-            )
-            matched = condition.matched
-            explanation = condition.explanation
+        matched = condition.matched
+        explanation = condition.explanation
 
         pending_consecutive = self._has_pending_consecutive(explanation)
         state.consecutive_count = (
@@ -368,11 +433,7 @@ class AutomationService:
             deduplication_key=deduplication_key,
             event_key=event_key,
             execution_status=(
-                "suppressed"
-                if suppression or mock_blocked
-                else "queued"
-                if matched
-                else "not_matched"
+                "suppressed" if suppression else "queued" if matched else "not_matched"
             ),
             evaluation_metadata={
                 "source_kind": payload.source_kind,
@@ -500,8 +561,8 @@ class AutomationService:
                 ),
                 "rule_set_version_id": config.get("rule_set_version_id"),
                 "prompt_version_id": config.get("prompt_version_id"),
-                "provider": config.get("provider", "mock_llm"),
-                "model": config.get("model", "mock-sports-writer-v1"),
+                "provider": config.get("provider", "openai_compatible"),
+                "model": config.get("model", "gpt-4o-mini"),
                 "model_config": config.get("model_config", {}),
             }
         )
@@ -541,8 +602,6 @@ class AutomationService:
         existing = await self.repo.delivery_by_key(workspace_id, key)
         if existing is not None:
             return existing
-        title_template = str(action.config.get("title", "{rule_name} 已触发"))
-        body_template = str(action.config.get("body", "实体 {entity_id} 满足监控条件。"))
         reserved_template_keys = {
             "rule_name",
             "entity_id",
@@ -563,9 +622,32 @@ class AutomationService:
             generation_error=(generation_context.get("generation_error") or {}).get("detail", ""),
             **fact_values,
         )
+        template_id = action.config.get("template_id")
+        template_version: NotificationTemplateVersion | None = None
+        if template_id:
+            template_version = await self.session.scalar(
+                select(NotificationTemplateVersion)
+                .where(
+                    NotificationTemplateVersion.template_id == UUID(str(template_id)),
+                    NotificationTemplateVersion.workspace_id == workspace_id,
+                    NotificationTemplateVersion.status == "published",
+                )
+                .order_by(NotificationTemplateVersion.version.desc())
+                .limit(1)
+            )
+            if template_version is None:
+                raise ValueError("notification template is missing or has no published version")
+            rendered = NotificationTemplateService.render_template(template_version, values)
+        else:
+            rendered = {
+                "subject": str(action.config.get("title", "{rule_name} 已触发")).format_map(values),
+                "body": str(
+                    action.config.get("body", "实体 {entity_id} 满足监控条件。")
+                ).format_map(values),
+            }
         notification_payload = {
-            "title": title_template.format_map(values)[:255],
-            "body": body_template.format_map(values)[:10_000],
+            "title": rendered["subject"][:255],
+            "body": rendered["body"][:10_000],
             "url": action.config.get("url"),
             "data": {
                 "rule_id": str(rule.id),
@@ -573,6 +655,15 @@ class AutomationService:
                 "entity_type": payload.entity_type,
                 "entity_id": str(payload.entity_id),
                 "source_kind": payload.source_kind,
+                "notification_template_id": (
+                    str(template_version.template_id) if template_version else None
+                ),
+                "notification_template_version_id": (
+                    str(template_version.id) if template_version else None
+                ),
+                "notification_template_version": (
+                    template_version.version if template_version else None
+                ),
                 **generation_context,
             },
         }
@@ -720,6 +811,187 @@ class AutomationService:
             NotificationChannelRead.model_validate(item)
             for item in await self.repo.list_channels(workspace_id)
         ]
+
+    async def validate_channel_configuration(
+        self, workspace_id: UUID, channel_id: UUID
+    ) -> NotificationChannelValidationRead:
+        """Validate one channel locally without contacting its destination."""
+
+        channel = await self._channel(workspace_id, channel_id)
+        checked_at = datetime.now(UTC)
+        provider = self._notification_provider(channel.provider_key)
+        if not channel.enabled:
+            return NotificationChannelValidationRead(
+                channel_id=channel.id,
+                provider_key=channel.provider_key,
+                status="disabled",
+                is_mock=provider.is_mock,
+                checked_at=checked_at,
+                detail="Channel is disabled; no external request was made.",
+            )
+        try:
+            await provider.validate_config(self.cipher.decrypt(channel.config_encrypted))
+        except (NotificationProviderError, ValueError) as exc:
+            return NotificationChannelValidationRead(
+                channel_id=channel.id,
+                provider_key=channel.provider_key,
+                status="invalid",
+                is_mock=provider.is_mock,
+                checked_at=checked_at,
+                detail=str(exc)[:500],
+            )
+        return NotificationChannelValidationRead(
+            channel_id=channel.id,
+            provider_key=channel.provider_key,
+            status="configured",
+            is_mock=provider.is_mock,
+            checked_at=checked_at,
+            detail="Provider configuration is locally valid; no external request was made.",
+        )
+
+    async def notification_health(
+        self, workspace_id: UUID, *, window_minutes: int
+    ) -> NotificationHealthSummaryRead:
+        """Return a bounded notification SLO snapshot for the workspace."""
+
+        channels = await self.repo.list_channels(workspace_id)
+        cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+        delivery_rows = list(
+            (
+                await self.session.execute(
+                    select(
+                        NotificationDelivery.channel_id,
+                        NotificationDelivery.status,
+                        func.count().label("count"),
+                    )
+                    .where(
+                        NotificationDelivery.workspace_id == workspace_id,
+                        NotificationDelivery.created_at >= cutoff,
+                    )
+                    .group_by(NotificationDelivery.channel_id, NotificationDelivery.status)
+                )
+            ).all()
+        )
+        attempt_rows = list(
+            (
+                await self.session.execute(
+                    select(
+                        NotificationDeliveryAttempt.channel_id,
+                        func.count().label("attempts"),
+                        func.sum(
+                            case((NotificationDeliveryAttempt.status == "success", 1), else_=0)
+                        ).label("successful_attempts"),
+                        func.sum(
+                            case(
+                                (NotificationDeliveryAttempt.status.in_(("failed", "timeout")), 1),
+                                else_=0,
+                            )
+                        ).label("failed_attempts"),
+                        func.avg(NotificationDeliveryAttempt.duration_ms).label("average_latency"),
+                    )
+                    .where(
+                        NotificationDeliveryAttempt.workspace_id == workspace_id,
+                        NotificationDeliveryAttempt.started_at >= cutoff,
+                    )
+                    .group_by(NotificationDeliveryAttempt.channel_id)
+                )
+            ).all()
+        )
+        latest_attempts = list(
+            (
+                await self.session.scalars(
+                    select(NotificationDeliveryAttempt)
+                    .where(
+                        NotificationDeliveryAttempt.workspace_id == workspace_id,
+                        NotificationDeliveryAttempt.started_at >= cutoff,
+                    )
+                    .order_by(NotificationDeliveryAttempt.started_at.desc())
+                    .limit(1000)
+                )
+            ).all()
+        )
+        latest_by_channel: dict[UUID, NotificationDeliveryAttempt] = {}
+        for attempt in latest_attempts:
+            if attempt.channel_id is not None:
+                latest_by_channel.setdefault(attempt.channel_id, attempt)
+
+        stats: dict[UUID, dict[str, Any]] = {}
+        for channel_id, status, count in delivery_rows:
+            stats.setdefault(channel_id, {})[str(status)] = int(count or 0)
+        for row in attempt_rows:
+            channel_stats = stats.setdefault(row.channel_id, {})
+            channel_stats.update(
+                {
+                    "attempts": int(row.attempts or 0),
+                    "successful_attempts": int(row.successful_attempts or 0),
+                    "failed_attempts": int(row.failed_attempts or 0),
+                    "average_latency": (
+                        float(row.average_latency) if row.average_latency is not None else None
+                    ),
+                }
+            )
+
+        channel_reads: list[NotificationChannelHealthRead] = []
+        for channel in channels:
+            current = stats.get(channel.id, {})
+            deliveries = sum(
+                int(current.get(key, 0))
+                for key in ("delivered", "failed", "queued", "sending")
+            )
+            attempts = int(current.get("attempts", 0))
+            successful = int(current.get("successful_attempts", 0))
+            last = latest_by_channel.get(channel.id)
+            channel_reads.append(
+                NotificationChannelHealthRead(
+                    channel_id=channel.id,
+                    name=channel.name,
+                    provider_key=channel.provider_key,
+                    enabled=channel.enabled,
+                    health_status=channel.health_status,
+                    deliveries=deliveries,
+                    delivered=int(current.get("delivered", 0)),
+                    failed=int(current.get("failed", 0)),
+                    queued=int(current.get("queued", 0)),
+                    sending=int(current.get("sending", 0)),
+                    attempts=attempts,
+                    successful_attempts=successful,
+                    failed_attempts=int(current.get("failed_attempts", 0)),
+                    success_rate=round(successful / attempts, 4) if attempts else None,
+                    average_latency_ms=current.get("average_latency"),
+                    last_delivery_at=last.started_at if last else None,
+                    last_error_code=(
+                        last.error_code if last and last.status != "success" else None
+                    ),
+                )
+            )
+
+        total_deliveries = sum(item.deliveries for item in channel_reads)
+        total_delivered = sum(item.delivered for item in channel_reads)
+        total_failed = sum(item.failed for item in channel_reads)
+        total_queued = sum(item.queued for item in channel_reads)
+        total_sending = sum(item.sending for item in channel_reads)
+        total_attempts = sum(item.attempts for item in channel_reads)
+        total_successful = sum(item.successful_attempts for item in channel_reads)
+        total_failed_attempts = sum(item.failed_attempts for item in channel_reads)
+        latency_values = [
+            item.average_latency_ms for item in channel_reads if item.average_latency_ms is not None
+        ]
+        return NotificationHealthSummaryRead(
+            window_minutes=window_minutes,
+            generated_at=datetime.now(UTC),
+            channels=channel_reads,
+            deliveries=total_deliveries,
+            delivered=total_delivered,
+            failed=total_failed,
+            queued=total_queued,
+            sending=total_sending,
+            successful_attempts=total_successful,
+            failed_attempts=total_failed_attempts,
+            success_rate=round(total_successful / total_attempts, 4) if total_attempts else None,
+            average_latency_ms=(
+                round(sum(latency_values) / len(latency_values), 2) if latency_values else None
+            ),
+        )
 
     async def create_channel(
         self, workspace_id: UUID, actor_id: UUID, payload: NotificationChannelCreate
@@ -886,6 +1158,30 @@ class AutomationService:
         channel = await self._channel(delivery.workspace_id, delivery.channel_id)
         provider = self._notification_provider(channel.provider_key)
         config = self.cipher.decrypt(channel.config_encrypted)
+
+        # Create per-attempt record
+        attempt_started = datetime.now(UTC)
+        attempt_record = NotificationDeliveryAttempt(
+            id=uuid4(),
+            delivery_id=delivery.id,
+            workspace_id=delivery.workspace_id,
+            channel_id=channel.id,
+            attempt_number=delivery.attempts,
+            status="failed",
+            provider_key=channel.provider_key,
+            provider_message_id=None,
+            started_at=attempt_started,
+            finished_at=None,
+            duration_ms=None,
+            error_code=None,
+            error_detail_safe=None,
+            retryable=None,
+            request_summary={"title": str(delivery.payload.get("title", ""))[:100]},
+            response_summary=None,
+        )
+        self.session.add(attempt_record)
+        await self.session.flush()
+
         try:
             receipt = await provider.send(
                 config,
@@ -898,13 +1194,72 @@ class AutomationService:
                 idempotency_key=delivery.idempotency_key,
             )
         except NotificationProviderError as exc:
+            finished = datetime.now(UTC)
+            attempt_record.status = "failed"
+            attempt_record.finished_at = finished
+            attempt_record.duration_ms = int((finished - attempt_started).total_seconds() * 1000)
+            attempt_record.error_code = exc.code
+            attempt_record.error_detail_safe = str(exc)[:500]
+            attempt_record.retryable = exc.retryable
+            # Also log to external_call_attempts
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=delivery.workspace_id,
+                    call_type="notification",
+                    provider_key=channel.provider_key,
+                    entity_type=delivery.entity_type,
+                    entity_id=delivery.entity_id,
+                    attempt_number=delivery.attempts,
+                    status="failed",
+                    target_url=None,
+                    started_at=attempt_started,
+                    finished_at=finished,
+                    duration_ms=attempt_record.duration_ms,
+                    http_status=None,
+                    error_code=exc.code,
+                    error_detail_safe=str(exc)[:500],
+                    retryable=exc.retryable,
+                    request_summary={"title": str(delivery.payload.get("title", ""))[:100]},
+                    response_summary={"error_code": exc.code},
+                )
+            )
             delivery.status = "failed"
             delivery.error = {"code": exc.code, "detail": str(exc), "retryable": exc.retryable}
             channel.health_status = "degraded" if exc.retryable else "unhealthy"
             await self.session.commit()
             raise
+        finished = datetime.now(UTC)
+        attempt_record.status = "success"
+        attempt_record.finished_at = finished
+        attempt_record.duration_ms = int((finished - attempt_started).total_seconds() * 1000)
+        attempt_record.provider_message_id = receipt.external_id
+        attempt_record.response_summary = {"external_id": receipt.external_id}
+        # Log to external_call_attempts
+        self.session.add(
+            build_external_call_attempt(
+                id=uuid4(),
+                workspace_id=delivery.workspace_id,
+                call_type="notification",
+                provider_key=channel.provider_key,
+                entity_type=delivery.entity_type,
+                entity_id=delivery.entity_id,
+                attempt_number=delivery.attempts,
+                status="success",
+                target_url=None,
+                started_at=attempt_started,
+                finished_at=finished,
+                duration_ms=attempt_record.duration_ms,
+                http_status=None,
+                error_code=None,
+                error_detail_safe=None,
+                retryable=None,
+                request_summary={"title": str(delivery.payload.get("title", ""))[:100]},
+                response_summary={"external_id": receipt.external_id},
+            )
+        )
         delivery.status = "delivered"
-        delivery.sent_at = datetime.now(UTC)
+        delivery.sent_at = finished
         delivery.provider_message_id = receipt.external_id
         delivery.error = None
         channel.last_tested_at = (
@@ -990,6 +1345,15 @@ class AutomationService:
                     code="notification_channel_required",
                     status_code=422,
                 ) from exc
+        if action_type == "notification" and config.get("template_id"):
+            try:
+                UUID(str(config.get("template_id")))
+            except (ValueError, TypeError) as exc:
+                raise AutomationError(
+                    "通知动作必须选择已发布的 template_id",
+                    code="notification_template_required",
+                    status_code=422,
+                ) from exc
         if action_type == "create_generation":
             try:
                 UUID(str(config.get("workflow_id")))
@@ -999,6 +1363,32 @@ class AutomationService:
                     code="generation_workflow_required",
                     status_code=422,
                 ) from exc
+
+    async def _validate_action_references(
+        self, workspace_id: UUID, action_type: str, config: dict[str, Any]
+    ) -> None:
+        if action_type in {"notification", "webhook", "external_api"}:
+            channel = await self.repo.channel(workspace_id, UUID(str(config["channel_id"])))
+            if channel is None or not channel.enabled:
+                raise AutomationError(
+                    "通知渠道不存在或已停用",
+                    code="notification_channel_unavailable",
+                    status_code=422,
+                )
+        if action_type == "notification" and config.get("template_id"):
+            published = await self.session.scalar(
+                select(NotificationTemplateVersion.id).where(
+                    NotificationTemplateVersion.workspace_id == workspace_id,
+                    NotificationTemplateVersion.template_id == UUID(str(config["template_id"])),
+                    NotificationTemplateVersion.status == "published",
+                )
+            )
+            if published is None:
+                raise AutomationError(
+                    "通知模板不存在或尚未发布",
+                    code="notification_template_unavailable",
+                    status_code=422,
+                )
 
     @staticmethod
     def _has_pending_consecutive(explanation: dict[str, Any]) -> bool:
@@ -1025,9 +1415,13 @@ class AutomationService:
         resource_type: str,
         resource_id: UUID,
         changes: dict[str, Any] | None = None,
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1048,6 +1442,9 @@ class AutomationService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

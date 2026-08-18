@@ -7,7 +7,7 @@
 
 代码、迁移、测试、中文文档和单机 Docker Compose 编排已经形成完整首期交付包。后端 52 项测试、前端 25 项测试、仓库契约 35 项测试、Python/TypeScript 静态检查和 Next.js 生产构建通过。
 
-当前执行环境缺少 Docker，因此本报告不把 Compose 静态检查或 SQLite 测试冒充 PostgreSQL/Redis/Worker/Beat 实机成功。第一次部署仍需在有 Docker Compose v2 的机器上执行本文“目标环境验收”清单。
+本报告不把 Compose 静态检查或 Mock 测试冒充 PostgreSQL/Redis/Worker/Beat 实机成功。系统已于 2026-08-01 移除 SQLite，仅保留 PostgreSQL 数据链路；完整后端测试套件已在本地 Docker PostgreSQL 上执行通过。第一次部署仍需在有 Docker Compose v2 的机器上执行本文“目标环境验收”清单。
 
 ## 已完成模块
 
@@ -54,9 +54,9 @@ Mock 结果固定包含 `source_kind=mock`、Provider 标识或 `MOCK TEST OUTPU
 | 本地 HTTP 冒烟 | FastAPI `/health/live` 200；Next `/login` 200 且存在密码表单 |
 | Docker Compose 实机 | 未执行：当前机器没有 Docker/Podman/nerdctl |
 | 浏览器可视化点击 | 本地设置中心与一键内容创作通过：四类素材入口、规则预设、Mock 边界和真实后端 API 状态均正常；控制台无错误 |
-| Alembic | 0001–0010 在临时 SQLite 升级通过并核对 40 张表；PostgreSQL 实机仍待 Docker 环境验证 |
+| Alembic | 0001–0024 在本地 Docker PostgreSQL 升级通过并核对 52 张表；`alembic check` 无模型/迁移漂移 |
 
-测试没有通过删除、跳过或放宽既有断言换取成功。集成链路只使用显式 Mock、SQLite 隔离数据库和本地 `httpx.MockTransport`，没有访问外部平台。
+测试没有通过删除、跳过或放宽既有断言换取成功。集成链路只使用显式 Mock、本地 Docker PostgreSQL 隔离数据库和本地 `httpx.MockTransport`，没有访问外部平台。
 
 ## 部署方式
 

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
@@ -7,15 +9,36 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.news import Article
+from app.models.news import Article, EventArticle, Source, TopicEvent
 from app.models.workspace import Workspace
 from app.providers.news.base import NewsProvider
 from app.providers.news.feed import RSSProvider
 from app.providers.registry import ProviderRegistry
+from app.repositories.news import EventFilters, NewsRepository
 from app.services.news import NewsService
-from app.services.news_seed import seed_news_source_examples
+from app.services.news_seed import (
+    DEFAULT_SOURCE_EXAMPLES,
+    EXPANDED_SOURCE_EXAMPLES,
+    seed_news_source_examples,
+)
 
-from .conftest import TEST_PASSWORD
+from .conftest import PG_ASYNC_URL, TEST_PASSWORD
+
+
+def test_article_body_scraping_requires_explicit_public_page_approvals() -> None:
+    enabled = {
+        "article_body_scrape_enabled": True,
+        "public_access_confirmed": True,
+        "terms_or_license_confirmed": True,
+        "robots_or_permission_confirmed": True,
+        "field_necessity_confirmed": True,
+        "rate_limit_confirmed": True,
+    }
+    assert NewsService._article_body_scrape_allowed(enabled)
+    assert not NewsService._article_body_scrape_allowed(
+        {**enabled, "terms_or_license_confirmed": False}
+    )
+    assert not NewsService._article_body_scrape_allowed({})
 
 
 def authenticate(client: TestClient) -> str:
@@ -173,6 +196,20 @@ def test_manual_news_dedup_clustering_merge_split_bookmark_and_scoring(
     ideas = client.get("/api/v1/news/articles", params={"is_bookmarked": True})
     assert ideas.status_code == 200
     assert ideas.json()["items"][0]["id"] == third["id"]
+    article_bookmarked = client.patch(
+        f"/api/v1/news/articles/{first['id']}/bookmark",
+        headers={"X-CSRF-Token": csrf},
+        json={"bookmarked": True},
+    )
+    assert article_bookmarked.status_code == 200, article_bookmarked.text
+    assert article_bookmarked.json()["is_bookmarked"] is True
+    article_unbookmarked = client.patch(
+        f"/api/v1/news/articles/{first['id']}/bookmark",
+        headers={"X-CSRF-Token": csrf},
+        json={"bookmarked": False},
+    )
+    assert article_unbookmarked.status_code == 200
+    assert article_unbookmarked.json()["is_bookmarked"] is False
 
     scoring = client.get("/api/v1/news/scoring-config")
     assert scoring.status_code == 200
@@ -206,6 +243,77 @@ def test_manual_news_dedup_clustering_merge_split_bookmark_and_scoring(
     )
     assert disabled.status_code == 204
     assert client.get(f"/api/v1/news/sources/{source['id']}").json()["enabled"] is False
+    assert client.get("/api/v1/news/articles").json()["total"] == 0
+    assert client.get("/api/v1/news/events").json()["total"] == 0
+
+
+def test_news_source_enable_disable_and_sync_cancel_are_auditable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.news.enqueue_news_sync", lambda _run_id: None)
+    csrf = authenticate(client)
+    source_response = client.post(
+        "/api/v1/news/sources",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "name": "Control RSS",
+            "source_type": "rss",
+            "url": "https://feed.example/control.xml",
+            "category": "sports_media",
+            "config": {"max_pages": 1},
+        },
+    )
+    assert source_response.status_code == 201, source_response.text
+    source_id = source_response.json()["id"]
+
+    disabled = client.post(
+        f"/api/v1/news/sources/{source_id}/disable",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    blocked = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert blocked.status_code == 422
+
+    enabled = client.post(
+        f"/api/v1/news/sources/{source_id}/enable",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    queued = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert queued.status_code == 202, queued.text
+    run_id = queued.json()["id"]
+
+    cancelled = client.post(
+        f"/api/v1/news/sources/{source_id}/sync/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    source_after = client.get(f"/api/v1/news/sources/{source_id}")
+    assert source_after.status_code == 200
+    assert source_after.json()["active_sync_run_id"] is None
+
+    queued_again = client.post(
+        f"/api/v1/news/sources/{source_id}/sync",
+        headers={"X-CSRF-Token": csrf},
+        json={},
+    )
+    assert queued_again.status_code == 202, queued_again.text
+    client.post(
+        f"/api/v1/news/sources/{source_id}/sync/{queued_again.json()['id']}/cancel",
+        headers={"X-CSRF-Token": csrf},
+    )
 
 
 @pytest.mark.asyncio
@@ -254,7 +362,7 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     )
     registry: ProviderRegistry[NewsProvider] = ProviderRegistry()
     registry.register(RSSProvider(client=http_client, max_attempts=1))
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    engine = create_async_engine(PG_ASYNC_URL)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with session_factory() as session:
@@ -268,7 +376,7 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
             first_seed = await seed_news_source_examples(session, workspace_id)
             second_seed = await seed_news_source_examples(session, workspace_id)
             after = int((await session.scalar(select(func.count()).select_from(Article))) or 0)
-            assert first_seed == 4
+            assert first_seed == len(DEFAULT_SOURCE_EXAMPLES) + 1 + len(EXPANDED_SOURCE_EXAMPLES)
             assert second_seed == 0
             assert before == after == 1
     finally:
@@ -283,5 +391,109 @@ async def test_rss_sync_is_auditable_and_default_examples_store_no_articles(
     assert article_listing.json()["items"][0]["published_at"].startswith("2026-07-25T10:00:00")
     assert runs.json()["items"][0]["status"] == "success"
     assert runs.json()["items"][0]["records_created"] == 1
-    assert sources.json()["total"] == 3
-    assert all(item["config"]["example_config"] for item in sources.json()["items"])
+    disabled_expanded = sum(
+        not bool(spec.get("enabled", True)) for spec in EXPANDED_SOURCE_EXAMPLES
+    )
+    assert sources.json()["total"] == len(DEFAULT_SOURCE_EXAMPLES) + disabled_expanded
+    assert all(
+        item["config"].get("example_config") is True
+        for item in sources.json()["items"]
+        if "example_config" in item["config"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_listing_projects_duplicate_normalized_titles(
+    client: TestClient,
+    database_path: Path,
+) -> None:
+    """Keep repeated historical event rows out of the current event list."""
+    csrf = authenticate(client)
+    source = create_manual_source(client, csrf)
+    engine = create_async_engine(PG_ASYNC_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    now = datetime.now(UTC)
+    try:
+        async with sessions() as session:
+            workspace_id = await session.scalar(
+                select(Workspace.id).where(Workspace.slug == "test-workspace")
+            )
+            assert workspace_id is not None
+            source_row = await session.get(Source, UUID(str(source["id"])))
+            assert source_row is not None
+            for index, heat in enumerate((20, 80)):
+                event = TopicEvent(
+                    id=UUID(int=index + 1),
+                    workspace_id=workspace_id,
+                    title=f"Same event {index}",
+                    normalized_title="same normalized event",
+                    summary=None,
+                    sport="basketball",
+                    league="NBA",
+                    start_time=now,
+                    last_update_time=now - timedelta(hours=index),
+                    article_count=1,
+                    source_count=1,
+                    heat_score=Decimal(str(heat)),
+                    reliability_score=Decimal("80"),
+                    controversy_score=Decimal("0"),
+                    visual_score=Decimal("50"),
+                    story_score=Decimal("50"),
+                    status="active",
+                    metadata_json={"source_kind": "imported"},
+                    is_bookmarked=False,
+                    bookmarked_at=None,
+                )
+                article = Article(
+                    id=UUID(int=index + 101),
+                    workspace_id=workspace_id,
+                    source_id=source_row.id,
+                    external_id=f"same-event-{index}",
+                    canonical_url=f"https://publisher.example/same-event-{index}",
+                    title=f"Same event {index}",
+                    summary=None,
+                    content=None,
+                    author=None,
+                    published_at=now,
+                    event_time=now,
+                    fetched_at=now,
+                    language="en",
+                    sport="basketball",
+                    league="NBA",
+                    country="US",
+                    metadata_json={},
+                    content_hash=f"{index + 1:064d}",
+                    duplicate_group_id=None,
+                    is_bookmarked=False,
+                    source_kind="imported",
+                    source_provider="manual_news",
+                    source_url=f"https://publisher.example/same-event-{index}",
+                    raw_payload_ref=None,
+                )
+                session.add_all([event, article])
+                await session.flush()
+                session.add(
+                    EventArticle(
+                        id=UUID(int=index + 201),
+                        event_id=event.id,
+                        article_id=article.id,
+                        match_score=Decimal("1"),
+                        linked_by="automatic",
+                        created_at=now,
+                    )
+                )
+            await session.commit()
+
+            items, total = await NewsRepository(session).list_events(
+                workspace_id,
+                filters=EventFilters(),
+                sort="heat_score",
+                order="desc",
+                page=1,
+                page_size=20,
+            )
+            assert total == 1
+            assert len(items) == 1
+            assert float(items[0].heat_score) == 80
+    finally:
+        await engine.dispose()

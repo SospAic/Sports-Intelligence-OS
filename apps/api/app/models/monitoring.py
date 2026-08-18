@@ -13,21 +13,24 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
     event,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+from app.models.artifact import MediaArtifact
 
 if TYPE_CHECKING:
     from app.models.workspace import Workspace
 
 
-SOURCE_KINDS = ("live", "imported", "mock")
+SOURCE_KINDS = ("live", "imported")
 DERIVED_METRIC_KEYS = (
     "view_growth_1h",
     "view_growth_6h",
@@ -40,6 +43,7 @@ DERIVED_METRIC_KEYS = (
     "view_acceleration",
     "median_views_30d",
     "account_baseline_ratio",
+    "play_follower_ratio",
     "viral_score",
 )
 
@@ -64,11 +68,12 @@ class Account(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("workspace_id", "platform_id", "external_id"),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="account_source_kind",
         ),
         CheckConstraint(
-            "sync_status IN ('never', 'queued', 'syncing', 'success', 'error', 'disabled')",
+            "sync_status IN ('never', 'queued', 'syncing', 'success', "
+            "'degraded', 'error', 'disabled', 'cancelled')",
             name="account_sync_status",
         ),
         Index("ix_accounts_workspace_platform_active", "workspace_id", "platform_id", "is_active"),
@@ -99,7 +104,7 @@ class Account(TimestampMixin, Base):
     next_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
-    sync_interval_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=3600)
+    sync_interval_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=28800)
     sync_status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="never", index=True
     )
@@ -112,6 +117,13 @@ class Account(TimestampMixin, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Per-account override of the workspace-wide sync settings. ``None`` means
+    # the account inherits the workspace policy. When set, it carries the same
+    # shape as a subset of ``SyncSettingsConfig`` (currently ``{"download": {...}}``)
+    # and is deep-merged on top of the workspace config by the sync executor.
+    sync_settings_override: Mapped[dict[str, Any] | None] = mapped_column(
+        "sync_settings_override", JSON, nullable=True
+    )
 
     workspace: Mapped[Workspace] = relationship()
     platform: Mapped[Platform] = relationship(back_populates="accounts")
@@ -150,7 +162,7 @@ class AccountSnapshot(Base):
             name="account_snapshot_engagement_range",
         ),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="account_snapshot_source_kind",
         ),
         Index("ix_account_snapshots_account_captured", "account_id", "captured_at"),
@@ -184,9 +196,20 @@ class AccountSnapshot(Base):
 class ContentItem(TimestampMixin, Base):
     __tablename__ = "content_items"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "platform_id", "external_id"),
+        # A video can legitimately belong to more than one tracked account in the
+        # same workspace (e.g. @olympics and @olympicsbringsustogether both
+        # feature the same Olympic clips). Scoping the unique key by account_id
+        # lets each account own its own copy instead of one global row that the
+        # second account can never claim (the old skip_existing "hollow success").
+        UniqueConstraint(
+            "workspace_id",
+            "platform_id",
+            "account_id",
+            "external_id",
+            name="uq_content_items_account",
+        ),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="content_item_source_kind",
         ),
         CheckConstraint(
@@ -196,6 +219,7 @@ class ContentItem(TimestampMixin, Base):
         Index("ix_content_items_platform_published", "platform_id", "published_at"),
         Index("ix_content_items_account_published", "account_id", "published_at"),
         Index("ix_content_items_workspace_status", "workspace_id", "status"),
+        Index("ix_content_items_tags", "tags", postgresql_using="gin"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -232,12 +256,106 @@ class ContentItem(TimestampMixin, Base):
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Local media archived during sync (thumbnail / video / subtitles / info
+    # json). ``None`` when no download toggles are enabled. Stored as a relative
+    # reference map consumed by the API ``/media`` route and the detail page.
+    media: Mapped[dict[str, Any] | None] = mapped_column("media", JSON, nullable=True)
+    # Creator-assigned / platform-extracted topic tags (e.g. yt-dlp "tags",
+    # YouTube snippet tags). Used by the works-data multi-select filter.
+    # Stored as a native Postgres text array so overlap (&&) filtering is fast.
+    tags: Mapped[list[str]] = mapped_column("tags", ARRAY(String(64)), nullable=False, default=list)
 
     platform: Mapped[Platform] = relationship(back_populates="contents")
     account: Mapped[Account] = relationship(back_populates="contents")
     snapshots: Mapped[list[ContentSnapshot]] = relationship(
         back_populates="content_item", cascade="all, delete-orphan"
     )
+    comments: Mapped[list[Comment]] = relationship(
+        back_populates="content_item", cascade="all, delete-orphan"
+    )
+    artifacts: Mapped[list[MediaArtifact]] = relationship(
+        back_populates="content_item", cascade="all, delete-orphan"
+    )
+
+
+class Comment(Base):
+    """A single platform comment on a content item.
+
+    Collected best-effort per platform (yt-dlp comment extraction on YouTube /
+    TikTok / Douyin, browser adapters where available). Like/reply counts may
+    be ``None`` when the source does not expose them; the UI shows the required
+    acquisition condition rather than faking a number.
+    """
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        UniqueConstraint("content_item_id", "platform_comment_id"),
+        Index("ix_comments_content_item_like", "content_item_id", "like_count"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    author_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    author_avatar_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    parent_comment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_reply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    source_provider: Mapped[str] = mapped_column(String(120), nullable=False, default="yt_dlp")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    content_item: Mapped[ContentItem] = relationship(back_populates="comments")
+    snapshots: Mapped[list[CommentSnapshot]] = relationship(
+        back_populates="comment", cascade="all, delete-orphan"
+    )
+
+
+class CommentSnapshot(Base):
+    """Append-only observation of a ranked comment during a collection run."""
+
+    __tablename__ = "comment_snapshots"
+    __table_args__ = (
+        UniqueConstraint("comment_id", "captured_at"),
+        Index("ix_comment_snapshots_content_captured", "content_item_id", "captured_at"),
+        Index("ix_comment_snapshots_platform_id", "content_item_id", "platform_comment_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    content_item_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    comment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("comments.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform_comment_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    like_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reply_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="live")
+    source_provider: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON, nullable=False, default=dict
+    )
+    comment: Mapped[Comment] = relationship(back_populates="snapshots")
 
 
 class ContentSnapshot(Base):
@@ -292,7 +410,7 @@ class ContentSnapshot(Base):
             name="content_snapshot_profile_rate_range",
         ),
         CheckConstraint(
-            "source_kind IN ('live', 'imported', 'mock')",
+            "source_kind IN ('live', 'imported')",
             name="content_snapshot_source_kind",
         ),
         Index("ix_content_snapshots_content_captured", "content_item_id", "captured_at"),
@@ -352,7 +470,7 @@ class DerivedMetric(Base):
             "metric_key IN ('view_growth_1h', 'view_growth_6h', 'view_growth_24h', "
             "'follower_growth_24h', 'engagement_rate', 'share_rate', 'favorite_rate', "
             "'view_velocity', 'view_acceleration', 'median_views_30d', "
-            "'account_baseline_ratio', 'viral_score')",
+            "'account_baseline_ratio', 'play_follower_ratio', 'viral_score')",
             name="derived_metric_key",
         ),
         Index(

@@ -74,6 +74,7 @@ export function RuleEditor({
   const [tag, setTag] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [displayLimit, setDisplayLimit] = useState(120);
   const selected = rules.find((rule) => rule.id === selectedId) ?? null;
   const [draft, setDraft] = useState<EditorialRule | null>(selected);
 
@@ -83,6 +84,7 @@ export function RuleEditor({
     mandatoryOnly,
     tag,
   });
+  const visibleRules = filtered.slice(0, displayLimit);
 
   function choose(rule: EditorialRule) {
     setSelectedId(rule.id);
@@ -235,14 +237,22 @@ export function RuleEditor({
       <aside className="rounded-2xl border border-slate-800 bg-slate-950/75 p-4">
         <div className="grid gap-2">
           <input
+            aria-label="搜索规则"
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setDisplayLimit(120);
+            }}
             placeholder="搜索 key、标题或正文"
             value={query}
           />
           <select
+            aria-label="规则类型"
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-            onChange={(event) => setType(event.target.value)}
+            onChange={(event) => {
+              setType(event.target.value);
+              setDisplayLimit(120);
+            }}
             value={type}
           >
             <option value="">全部规则类型</option>
@@ -251,15 +261,22 @@ export function RuleEditor({
             ))}
           </select>
           <input
+            aria-label="按标签筛选"
             className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm"
-            onChange={(event) => setTag(event.target.value)}
+            onChange={(event) => {
+              setTag(event.target.value);
+              setDisplayLimit(120);
+            }}
             placeholder="标签过滤"
             value={tag}
           />
           <label className="flex items-center gap-2 text-xs text-slate-400">
             <input
               checked={mandatoryOnly}
-              onChange={(event) => setMandatoryOnly(event.target.checked)}
+              onChange={(event) => {
+                setMandatoryOnly(event.target.checked);
+                setDisplayLimit(120);
+              }}
               type="checkbox"
             />
             只看强制规则
@@ -283,7 +300,7 @@ export function RuleEditor({
         </div>
         <div className="mt-4 max-h-[58vh] overflow-auto">
           {sections.map(({ section, depth }) => {
-            const sectionRules = filtered.filter(
+            const sectionRules = visibleRules.filter(
               (rule) => rule.section_id === section.id,
             );
             if (sectionRules.length === 0) return null;
@@ -303,6 +320,7 @@ export function RuleEditor({
                   {sectionRules.map((rule) => (
                     <div className="flex items-start gap-2" key={rule.id}>
                       <input
+                        aria-label={`选择规则 ${rule.title}`}
                         checked={checked.has(rule.id)}
                         className="mt-2"
                         onChange={(event) => {
@@ -329,6 +347,15 @@ export function RuleEditor({
               </details>
             );
           })}
+          {visibleRules.length < filtered.length && (
+            <button
+              className="mt-3 w-full rounded-lg border border-slate-700 px-3 py-2 text-xs text-cyan-300 hover:bg-slate-900"
+              onClick={() => setDisplayLimit((value) => value + 120)}
+              type="button"
+            >
+              加载更多（已显示 {visibleRules.length}/{filtered.length}）
+            </button>
+          )}
         </div>
       </aside>
 
@@ -365,6 +392,7 @@ export function RuleEditor({
             </label>
             <div className="grid gap-3 sm:grid-cols-3">
               <select
+                aria-label="规则类型"
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs"
                 onChange={(event) =>
                   setDraft({
@@ -379,6 +407,7 @@ export function RuleEditor({
                 ))}
               </select>
               <input
+                aria-label="优先级"
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs"
                 max={100}
                 min={0}
@@ -389,6 +418,7 @@ export function RuleEditor({
                 value={draft.priority}
               />
               <select
+                aria-label="严重级别"
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-xs"
                 onChange={(event) =>
                   setDraft({
@@ -408,6 +438,7 @@ export function RuleEditor({
             <div className="flex gap-5 text-sm text-slate-300">
               <label>
                 <input
+                  aria-label="启用规则"
                   checked={draft.enabled}
                   onChange={(event) =>
                     setDraft({ ...draft, enabled: event.target.checked })
@@ -418,6 +449,7 @@ export function RuleEditor({
               </label>
               <label>
                 <input
+                  aria-label="设为强制规则"
                   checked={draft.is_mandatory}
                   onChange={(event) =>
                     setDraft({ ...draft, is_mandatory: event.target.checked })

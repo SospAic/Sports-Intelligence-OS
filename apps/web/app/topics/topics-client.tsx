@@ -113,16 +113,7 @@ export function TopicsClient() {
     {
       accessorKey: "source_type",
       header: "来源",
-      cell: ({ row }) => (
-        <Badge
-          tone={
-            row.original.metadata.source_kind === "mock" ? "warning" : "info"
-          }
-        >
-          {row.original.source_type}
-          {row.original.metadata.source_kind === "mock" ? " · Mock" : ""}
-        </Badge>
-      ),
+      cell: ({ row }) => <Badge tone="info">{row.original.source_type}</Badge>,
     },
     { accessorKey: "priority", header: "优先级" },
     {
@@ -181,7 +172,7 @@ export function TopicsClient() {
       <PageHeader
         eyebrow="Editorial Pipeline"
         title="选题库"
-        description="保存来自作品、新闻、事件或人工录入的选题；来源与 Mock 边界跟随原实体保留。"
+        description="保存来自作品、新闻、事件或人工录入的选题；来源边界跟随原实体保留。"
         actions={
           <button
             className={buttonClass}

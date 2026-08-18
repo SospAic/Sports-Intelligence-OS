@@ -45,6 +45,8 @@ import { PromptEditor } from "./prompts/[id]/prompt-editor";
 import { RuleEditor } from "./rules/[ruleSetId]/edit/rule-editor";
 import { LLMSettingsPanel } from "./settings/llm-settings-panel";
 import { RuntimeSettingsPanel } from "./settings/runtime-settings-panel";
+import { SettingsClient } from "./settings/settings-client";
+import { SyncSettingsPanel } from "./settings/sync-settings-panel";
 
 function response(body: unknown, status = 200): Response {
   return {
@@ -258,14 +260,14 @@ describe("生成和通知真实前端流程", () => {
       updated_at: "2026-07-26T00:00:00Z",
     };
     const provider: LLMProviderDescriptor = {
-      key: "mock_llm",
-      name: "Mock LLM（测试）",
+      key: "openai_compatible",
+      name: "OpenAI 兼容（测试）",
       configured: true,
-      is_mock: true,
+      is_mock: false,
       supports_streaming: false,
       detail: "Only deterministic test output",
       source: "builtin",
-      default_model: "mock-sports-writer-v1",
+      default_model: "gpt-5.6-terra",
       default_parameters: {
         temperature: 0.2,
         top_p: 1,
@@ -321,10 +323,10 @@ describe("生成和通知真实前端流程", () => {
     const payload = JSON.parse(String(call?.[1]?.body));
     expect(payload.workflow_id).toBe("workflow-1");
     expect(payload.prompt_version_id).toBeNull();
-    expect(payload.provider).toBe("mock_llm");
+    expect(payload.provider).toBe("openai_compatible");
     expect(payload.model_config).toMatchObject({
-      target_min_chars: 1200,
-      target_max_chars: 1250,
+      target_min_chars: 1180,
+      target_max_chars: 1220,
       max_rewrites: 2,
     });
   });
@@ -332,8 +334,8 @@ describe("生成和通知真实前端流程", () => {
   it("通知渠道测试先确认，再调用后端测试 API 并展示回执", async () => {
     const channel: NotificationChannelRecord = {
       id: "channel-1",
-      provider_key: "mock_notification",
-      name: "Mock Webhook（测试）",
+      provider_key: "generic_webhook",
+      name: "Generic Webhook（测试）",
       config_masked: {},
       enabled: true,
       last_tested_at: null,
@@ -345,9 +347,9 @@ describe("生成和通知真实前端流程", () => {
       if (path === "/notification-providers")
         return [
           {
-            key: "mock_notification",
-            name: "Mock Notification（测试）",
-            is_mock: true,
+            key: "generic_webhook",
+            name: "Generic Webhook（测试）",
+            is_mock: false,
             config_fields: [],
           },
         ];
@@ -362,7 +364,7 @@ describe("生成和通知真实前端流程", () => {
     const user = userEvent.setup();
     withQueryClient(<NotificationChannelsClient />);
 
-    await screen.findByText("Mock Webhook（测试）");
+    await screen.findByText("Generic Webhook（测试）");
     await user.click(screen.getByRole("button", { name: "测试" }));
 
     await waitFor(() =>
@@ -371,7 +373,9 @@ describe("生成和通知真实前端流程", () => {
         expect.objectContaining({ method: "POST", csrf: true }),
       ),
     );
-    expect(window.confirm).toHaveBeenCalledWith("发送 Mock 测试通知？");
+    expect(window.confirm).toHaveBeenCalledWith(
+      "这将向真实外部渠道发送一条测试通知，是否继续？",
+    );
     expect(notifyMock).toHaveBeenCalledWith("测试通知已投递", "success");
   });
 
@@ -440,12 +444,12 @@ describe("生成和通知真实前端流程", () => {
       base_url: "https://api.openai.com/v1",
       api_key_configured: false,
       config_masked: {},
-      default_model: "gpt-4.1-mini",
+      default_model: "gpt-5.6-terra",
       default_parameters: {
         temperature: 0.4,
         top_p: 1,
-        max_tokens: 4096,
-        timeout_seconds: 60,
+        max_tokens: 8192,
+        timeout_seconds: 90,
         max_attempts: 3,
       },
       input_cost_per_million: null,
@@ -509,8 +513,7 @@ describe("生成和通知真实前端流程", () => {
     const keyInput = await screen.findByLabelText(/^API Key/);
     await user.type(keyInput, "sk-browser-secret");
     const modelInput = screen.getByLabelText("默认模型");
-    await user.clear(modelInput);
-    await user.type(modelInput, "sports-model-v2");
+    await user.selectOptions(modelInput, "gpt-5.6-terra");
     await user.click(screen.getByRole("button", { name: "保存配置" }));
 
     await waitFor(() =>
@@ -530,10 +533,182 @@ describe("生成和通知真实前端流程", () => {
     const payload = JSON.parse(String(saveCall?.[1]?.body));
     expect(payload).toMatchObject({
       api_key: "sk-browser-secret",
-      default_model: "sports-model-v2",
+      default_model: "gpt-5.6-terra",
       temperature: 0.4,
       top_p: 1,
-      max_tokens: 4096,
+      max_tokens: 8192,
     });
+  });
+
+  it("视频解析运行时检查有可见反馈，并把检查结果提交给 API", async () => {
+    const runtime = {
+      node_configured_path: null,
+      node_resolved_path: "/usr/local/bin/node",
+      node_available: true,
+      node_version: "v22.14.0",
+      yt_dlp_version: "2026.01.01",
+      ejs_package_expected: true,
+      remote_components: [],
+      update_enabled: false,
+      update_command: "python -m pip install -U yt-dlp[default]",
+      update_note: "由镜像构建控制",
+      status: "ready" as const,
+      detail: "Node.js 与 yt-dlp[default] 已就绪",
+    };
+    apiRequestMock.mockImplementation(async (path: string) => {
+      if (path === "/downloads/runtime") return runtime;
+      if (path === "/settings/sync") {
+        return {
+          config: {
+            max_contents: null,
+            skip_existing: true,
+            yt_dlp: {
+              dateafter: "",
+              datebefore: "",
+              playlist_start: 1,
+              daterange: "",
+              playlist_items: "",
+              playlist_reverse: false,
+              playlist_random: false,
+              extra_args: {},
+            },
+            download: {},
+          },
+          sync_task_max_retries: 3,
+        };
+      }
+      throw new Error(`Unexpected API path: ${path}`);
+    });
+
+    withQueryClient(<SyncSettingsPanel />);
+    const button = await screen.findByRole("button", { name: "检查运行时" });
+    await userEvent.setup().click(button);
+
+    await waitFor(() =>
+      expect(notifyMock).toHaveBeenCalledWith(
+        "视频解析运行时检查通过",
+        "success",
+      ),
+    );
+    expect(apiRequestMock).toHaveBeenCalledWith(
+      "/downloads/runtime",
+      expect.objectContaining({ workspaceId: "workspace-1" }),
+    );
+  });
+
+  it("设置概览集中检查所有配置域并支持一键重检", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          status: "ok",
+          service: "api",
+          version: "test",
+          checks: { database: "ok", redis: "ok" },
+        }),
+      ),
+    );
+    apiRequestMock.mockImplementation(async (path: string) => {
+      if (path.startsWith("/news/sources")) {
+        return { items: [{ id: "source-1", enabled: true }], total: 1 };
+      }
+      if (path === "/settings/readiness") {
+        return {
+          generated_at: "2026-08-17T00:00:00Z",
+          platforms: [
+            {
+              key: "youtube",
+              platform_name: "YouTube",
+              adapter_key: "youtube_api",
+              status: "ready",
+              detail: "通过",
+              conditions: [],
+              next_action: "可用",
+              credential_source: "environment",
+              capabilities: {},
+              source_kinds: ["live"],
+              last_probe: null,
+            },
+          ],
+          features: [],
+        };
+      }
+      if (path === "/settings/runtime") return { environment: "test", sections: [] };
+      if (path === "/downloads/runtime") {
+        return {
+          node_configured_path: null,
+          node_resolved_path: "/usr/local/bin/node",
+          node_available: true,
+          node_version: "v22.14.0",
+          yt_dlp_version: "2026.01.01",
+          ejs_package_expected: true,
+          remote_components: [],
+          update_enabled: false,
+          update_command: "",
+          update_note: "",
+          status: "ready",
+          detail: "已就绪",
+        };
+      }
+      if (path === "/settings/llm/openai-compatible") {
+        return {
+          name: "OpenAI",
+          provider_id: "openai",
+          effective: true,
+          effective_scope: "workspace",
+          health_status: "healthy",
+          default_model: "gpt-4o-mini",
+        };
+      }
+      if (path === "/semantic-search/status") {
+        return {
+          enabled: true,
+          backend: "local",
+          model: "bge-m3",
+          embedded_items: 10,
+          pending_items: 0,
+          freshness: "fresh",
+          freshness_detail: "索引新鲜",
+        };
+      }
+      if (path === "/storage/health") {
+        return {
+          quota_percent: 20,
+          media_file_count: 10,
+          tracked_artifact_count: 10,
+          warnings: [],
+          scan_truncated: false,
+        };
+      }
+      if (path === "/notification-health") {
+        return {
+          channels: [{ enabled: true, health_status: "healthy", success_rate: 1 }],
+          deliveries: 2,
+          delivered: 2,
+          failed: 0,
+          generated_at: "2026-08-17T00:00:00Z",
+        };
+      }
+      throw new Error(`Unexpected API path: ${path}`);
+    });
+
+    withQueryClient(<SettingsClient />);
+    await screen.findByText("配置检查");
+    expect(screen.getByText("LLM Provider")).toBeInTheDocument();
+    expect(screen.getByText("视频解析运行时")).toBeInTheDocument();
+    expect(screen.getByText("语义检索索引")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "重新检查全部" }),
+      ).toBeEnabled(),
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "重新检查全部" }));
+    await waitFor(() =>
+      expect(apiRequestMock).toHaveBeenCalledWith(
+        "/settings/readiness",
+        expect.objectContaining({ workspaceId: "workspace-1" }),
+      ),
+    );
+    expect(fetch).toHaveBeenCalled();
   });
 });

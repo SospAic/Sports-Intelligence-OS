@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,12 +11,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.adapters.platforms.registry import build_platform_adapter_registry
 from app.api.router import api_router
 from app.api.routes.automation import automation_exception_handler
+from app.api.routes.editorial import editorial_exception_handler
 from app.api.routes.editorial_rules import editorial_rule_exception_handler
 from app.api.routes.generation import generation_exception_handler
 from app.api.routes.health import router as health_router
+from app.api.routes.media_rights import media_rights_exception_handler
 from app.api.routes.monitoring import monitoring_exception_handler, sync_exception_handler
 from app.api.routes.news import news_exception_handler
+from app.api.routes.reliability import (
+    notification_template_exception_handler,
+    outbox_exception_handler,
+)
 from app.api.routes.settings import settings_exception_handler
+from app.api.routes.subscriptions import subscription_exception_handler
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
@@ -25,12 +33,21 @@ from app.providers.llm.registry import build_llm_provider_registry
 from app.providers.news.registry import build_news_provider_registry
 from app.providers.notifications.registry import build_notification_provider_registry
 from app.services.automation import AutomationError
+from app.services.editorial import EditorialError
 from app.services.editorial_rules import EditorialRuleError
 from app.services.generation import GenerationError
+from app.services.media_rights import MediaRightsError
 from app.services.monitoring import MonitoringError
 from app.services.news import NewsError
+from app.services.notification_template import NotificationTemplateError
+from app.services.outbox import OutboxError
+from app.services.platform_catalog_seed import seed_platform_catalog
+from app.services.platform_credentials import PlatformCredentialError
 from app.services.settings import SettingsError
+from app.services.subscriptions import SubscriptionError
 from app.services.sync import SyncError
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -55,6 +72,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.news_providers = build_news_provider_registry(resolved_settings)
         app.state.llm_providers = build_llm_provider_registry(resolved_settings)
         app.state.notification_providers = build_notification_provider_registry(resolved_settings)
+        # Idempotently sync the platform catalog (incl. each platform's default
+        # adapter key) with the code. This is what flips YouTube / TikTok / Douyin
+        # to the yt-dlp adapter on deploy without a manual CLI step.
+        try:
+            async with session_factory() as seed_session:
+                created, updated = await seed_platform_catalog(seed_session)
+                if updated:
+                    logger.info("platform catalog synced on startup: %s updated", updated)
+        except Exception:  # noqa: BLE001 - never block boot on a catalog sync
+            logger.exception("platform catalog seed failed during startup")
         try:
             yield
         finally:
@@ -102,12 +129,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(StarletteHTTPException, http_exception_handler)
     application.add_exception_handler(RequestValidationError, validation_exception_handler)
     application.add_exception_handler(MonitoringError, monitoring_exception_handler)
+    application.add_exception_handler(MediaRightsError, media_rights_exception_handler)
     application.add_exception_handler(SyncError, sync_exception_handler)
     application.add_exception_handler(NewsError, news_exception_handler)
     application.add_exception_handler(EditorialRuleError, editorial_rule_exception_handler)
+    application.add_exception_handler(EditorialError, editorial_exception_handler)
     application.add_exception_handler(GenerationError, generation_exception_handler)
     application.add_exception_handler(AutomationError, automation_exception_handler)
     application.add_exception_handler(SettingsError, settings_exception_handler)
+    application.add_exception_handler(OutboxError, outbox_exception_handler)
+    application.add_exception_handler(PlatformCredentialError, settings_exception_handler)
+    application.add_exception_handler(SubscriptionError, subscription_exception_handler)
+    application.add_exception_handler(
+        NotificationTemplateError, notification_template_exception_handler
+    )
     application.include_router(health_router)
     application.include_router(api_router)
     return application

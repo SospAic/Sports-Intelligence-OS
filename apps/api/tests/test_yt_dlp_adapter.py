@@ -1,0 +1,1406 @@
+"""Offline tests for the yt-dlp universal adapter.
+
+These tests never touch the network: yt-dlp's subprocess call is replaced with
+canned JSON, exactly mirroring the structure yt-dlp emits for each platform.
+They verify (a) field mapping into the platform contract and (b) that yt-dlp is
+the *primary* source — the browser-simulation adapter is only ever used as a
+fallback when yt-dlp yields *nothing* (empty first page) or hard-fails. A
+partial window (fewer items than requested but non-empty) is treated as the
+end of the catalogue and does NOT trigger a browser switch.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import pytest
+
+from app.adapters.platforms.base import (
+    AdapterPage,
+    PlatformAccountData,
+    PlatformContentData,
+    PlatformMetricsData,
+    TransientAdapterError,
+)
+from app.adapters.platforms.yt_dlp import (
+    DouyinYtDlpAdapter,
+    TikTokYtDlpAdapter,
+    YouTubeYtDlpAdapter,
+    YtDlpAdapter,
+    _FastListUnavailable,
+)
+from app.services import ytdlp_runtime
+
+YOUTUBE_VIDEO = {
+    "id": "dQw4w9WgXcQ",
+    "title": "Rocket League Greatest Goals",
+    "description": "A long description of the video.",
+    "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    "duration": 212.0,
+    "view_count": 1234567,
+    "like_count": 45000,
+    "comment_count": 1200,
+    "repost_count": 300,
+    "timestamp": 1700000000,
+    "channel": "Olympics",
+    "channel_id": "UC_zsYzIVBwSBj880Fs8z2Tg",
+    "channel_follower_count": 12300000,
+    "uploader": "Olympics",
+    "uploader_id": "@olympics",
+    "tags": ["sport", "olympics"],
+}
+
+YOUTUBE_CHANNEL = {
+    "id": "UC_zsYzIVBwSJj880Fs8z2Tg",
+    "title": "Olympics",
+    "channel": "Olympics",
+    "uploader": "Olympics",
+    "channel_id": "UC_zsYzIVBwSJj880Fs8z2Tg",
+    "channel_follower_count": 12300000,
+    "description": "The Olympic Channel.",
+    "thumbnail": "https://yt3.ggpht.com/avatar.jpg",
+}
+
+TIKTOK_VIDEO = {
+    "id": "7372846510293",
+    "title": "Day 3 of learning guitar",
+    "description": "caption text",
+    "webpage_url": "https://www.tiktok.com/@guitar_daily/video/7372846510293",
+    "thumbnail": "https://p16-sign.tiktokcdn.com/cover.jpg",
+    "duration": 45.0,
+    "view_count": 1234567,
+    "like_count": 98765,
+    "comment_count": 432,
+    "repost_count": 1234,
+    "timestamp": 1716000000,
+    "uploader": "guitar_daily",
+    "uploader_id": "guitar_daily",
+}
+
+
+def make_ctx() -> SimpleNamespace:
+    return SimpleNamespace(observed_at=datetime(2026, 1, 1, tzinfo=UTC), config={}, request_id="r1")
+
+
+@pytest.mark.asyncio
+async def test_extract_comments_fetches_with_supported_flag_and_ranks_top_twenty(monkeypatch):
+    captured: list[object] = []
+
+    class FakeProcess:
+        stdout = None
+        stderr = None
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                json.dumps(
+                    [
+                        {
+                            "id": "low",
+                            "text": "second",
+                            "author": "user-2",
+                            "like_count": "5",
+                            "reply_count": "1",
+                            "timestamp": 1_700_000_001,
+                        },
+                        {
+                            "id": "top",
+                            "text": "top",
+                            "author": "user-1",
+                            "like_count": "10",
+                            "reply_count": "4",
+                            "timestamp": 1_700_000_002,
+                        },
+                    ]
+                ).encode(),
+                b"",
+            )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.extend(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    comments = await YtDlpAdapter.extract_comments(
+        "https://www.youtube.com/watch?v=comment-test", limit=20
+    )
+
+    assert "--write-comments" in captured
+    assert "--max-comments" not in captured
+    assert [item["platform_comment_id"] for item in comments] == ["top", "low"]
+    assert comments[0]["like_count"] == 10
+    assert comments[0]["reply_count"] == 4
+
+
+def test_tiktok_fallback_progress_filters_expected_secondary_id_noise():
+    messages: list[str] = []
+    ctx = SimpleNamespace(progress_sink=messages.append)
+    sink = TikTokYtDlpAdapter()._progress_sink(ctx)
+
+    assert sink is not None
+    sink("ERROR: [tiktok:user] Unable to extract secondary user ID")
+    sink("[tiktok_browser] 页面已加载，开始解析")
+
+    assert messages == ["[tiktok_browser] 页面已加载，开始解析"]
+
+
+def _bind(adapter: YtDlpAdapter, video_entries, channel_entries):
+    async def _fake(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+        **kwargs,
+    ):
+        if "videos" in url:
+            return list(video_entries), ""
+        return list(channel_entries), ""
+
+    adapter._run_yt_dlp = _fake  # type: ignore[assignment]
+
+    # Account-level methods use --dump-single-json; the channel metadata lives
+    # at the top level of that object (not in the per-video entries).
+    single = dict(channel_entries[0]) if channel_entries else {}
+    single.setdefault("playlist_count", 500)
+
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
+        return single, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+
+def test_extract_thumbnail_variants():
+    adapter = YouTubeYtDlpAdapter()
+    assert adapter._extract_thumbnail({"thumbnail": "http://x/a.jpg"}) == "http://x/a.jpg"
+    assert adapter._extract_thumbnail({"thumbnail": {"url": "http://x/b.jpg"}}) == "http://x/b.jpg"
+    assert (
+        adapter._extract_thumbnail(
+            {
+                "thumbnails": [
+                    {"url": "http://x/s.jpg", "width": 120},
+                    {"url": "http://x/l.jpg", "width": 640},
+                ]
+            }
+        )
+        == "http://x/l.jpg"
+    )
+    assert adapter._extract_thumbnail({}) is None
+
+
+def test_parse_timestamp_prefers_epoch():
+    adapter = YouTubeYtDlpAdapter()
+    assert adapter._parse_timestamp({"timestamp": 1700000000}) == datetime(
+        2023, 11, 14, 22, 13, 20, tzinfo=UTC
+    )
+    assert adapter._parse_timestamp({"upload_date": "20231114"}) == datetime(
+        2023, 11, 14, tzinfo=UTC
+    )
+    assert adapter._parse_timestamp({}) is None
+
+
+def test_metrics_from_entry_maps_share_to_repost():
+    adapter = YouTubeYtDlpAdapter()
+    metrics = adapter._metrics_from_entry(YOUTUBE_VIDEO)
+    assert metrics == {
+        "view_count": 1234567,
+        "like_count": 45000,
+        "comment_count": 1200,
+        "share_count": 300,
+    }
+
+
+@pytest.mark.asyncio
+async def test_youtube_resolve_and_analytics():
+    adapter = YouTubeYtDlpAdapter()
+    _bind(adapter, [YOUTUBE_VIDEO], [YOUTUBE_CHANNEL])
+    ctx = make_ctx()
+    acc = await adapter.resolve_account(ctx, "@olympics")
+    assert acc.external_id == "olympics"
+    assert acc.display_name == "Olympics"
+    assert acc.avatar_url == "https://yt3.ggpht.com/avatar.jpg"
+    assert acc.metadata["channel_id"] == "UC_zsYzIVBwSJj880Fs8z2Tg"
+
+    analytics = await adapter.fetch_account_analytics(ctx, "olympics")
+    assert analytics.metrics["follower_count"] == 12300000
+    # playlist_count is present in the single-json object → video_count is real.
+    assert analytics.metrics["video_count"] == 500
+    assert "video_count" not in analytics.unavailable_metrics
+
+
+@pytest.mark.asyncio
+async def test_account_stage_reuses_single_yt_dlp_run():
+    """``resolve_account`` and ``fetch_account_analytics`` both query the same
+    channel URL during one sync run. The per-instance memo must collapse them
+    into a single yt-dlp invocation — a redundant second subprocess per account
+    is exactly the extra latency we removed (an account sync should run at
+    yt-dlp's native speed, not pay for the channel object twice)."""
+
+    from unittest.mock import AsyncMock
+
+    adapter = YouTubeYtDlpAdapter()
+    single = dict(YOUTUBE_CHANNEL)
+    single.setdefault("playlist_count", 500)
+    fake = AsyncMock(return_value=(single, ""))
+    adapter._run_yt_dlp_single = fake  # type: ignore[assignment]
+    ctx = make_ctx()
+
+    await adapter.resolve_account(ctx, "@olympics")
+    await adapter.fetch_account_analytics(ctx, "olympics")
+
+    assert fake.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_tiktok_playlist_profile_stays_on_fast_ytdlp_path():
+    """TikTok user extraction is playlist-shaped and must not trigger a browser."""
+
+    adapter = TikTokYtDlpAdapter()
+    playlist = {
+        "id": "tiktok-channel-id",
+        "_type": "playlist",
+        "entries": [TIKTOK_VIDEO],
+    }
+
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
+        return playlist, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _FailingFallback:
+        async def resolve_account(self, ctx, locator):
+            raise AssertionError("playlist-shaped TikTok profile must not use browser")
+
+        async def fetch_account_analytics(self, ctx, external_id):
+            raise AssertionError("successful TikTok yt-dlp profile must not use browser analytics")
+
+    adapter._fb = _FailingFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+
+    account = await adapter.resolve_account(ctx, "@guitar_daily")
+    assert account.display_name == "guitar_daily"
+    assert account.provider == "tiktok_ytdlp"
+    assert account.metadata["profile_from_playlist_entry"] is True
+
+    analytics = await adapter.fetch_account_analytics(ctx, "guitar_daily")
+    assert analytics.metadata["analytics_source"] == "yt_dlp_playlist"
+    assert analytics.metadata["analytics_fetched"] is True
+    assert {"follower_count", "video_count", "total_view_count"}.issubset(
+        set(analytics.unavailable_metrics)
+    )
+
+
+@pytest.mark.asyncio
+async def test_browser_profile_cache_is_reused_with_normalized_handle():
+    """Browser fallback identity and analytics must share one profile fetch."""
+    adapter = TikTokYtDlpAdapter()
+
+    profile = PlatformAccountData(
+        external_id="guitar_daily",
+        username="guitar_daily",
+        display_name="Guitar Daily",
+        profile_url="https://www.tiktok.com/@guitar_daily",
+        avatar_url=None,
+        description=None,
+        country=None,
+        language="en",
+        is_verified=None,
+        source_kind="live",
+        provider="tiktok_browser",
+        fetched_at=datetime(2026, 1, 1, tzinfo=UTC),
+        metadata={"follower_count": 12345},
+    )
+
+    class _Fallback:
+        async def resolve_account(self, ctx, locator):
+            return profile
+
+    adapter._fb = _Fallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    async def _empty_profile(*args, **kwargs):
+        return {}, ""
+
+    adapter._run_yt_dlp_single = _empty_profile  # type: ignore[assignment]
+    resolved = await adapter.resolve_account(ctx, "@guitar_daily")
+    assert resolved.provider == "tiktok_browser"
+    assert adapter._browser_account_cache.get("guitar_daily") is profile
+
+    async def _must_not_run(*args, **kwargs):
+        raise AssertionError("cached browser profile must avoid a second yt-dlp request")
+
+    adapter._run_yt_dlp_single = _must_not_run  # type: ignore[assignment]
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata["method"] == "browser_profile_cache"
+    assert analytics.metrics["follower_count"] == 12345
+
+
+def test_tiktok_listing_uses_cached_channel_id_for_real_sync_calls():
+    adapter = TikTokYtDlpAdapter()
+    adapter._single_json_cache[adapter._account_url("guitar_daily")] = (
+        {"entries": [{"id": "video-1", "channel_id": "MS4wLjABAAAAchannel"}]},
+        "",
+    )
+    ctx = SimpleNamespace(timeout_seconds=30)
+    assert adapter._listing_url("guitar_daily", ctx) == "tiktokuser:MS4wLjABAAAAchannel"
+
+
+@pytest.mark.asyncio
+async def test_youtube_list_and_content_analytics_cache():
+    adapter = YouTubeYtDlpAdapter()
+    _bind(adapter, [YOUTUBE_VIDEO], [YOUTUBE_CHANNEL])
+    ctx = make_ctx()
+    page = await adapter.list_contents(
+        ctx, "olympics", published_after=None, cursor=None, page_size=10
+    )
+    assert isinstance(page, AdapterPage)
+    assert len(page.items) == 1
+    content = page.items[0]
+    assert content.external_id == "dQw4w9WgXcQ"
+    assert content.title == "Rocket League Greatest Goals"
+    assert content.duration_seconds == 212.0
+    assert content.canonical_url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert content.cover_url == "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    assert content.published_at == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+    # Exact metrics stashed in metadata for transparency.
+    assert content.metadata["yt_view_count"] == 1234567
+
+    analytics = await adapter.fetch_content_analytics(ctx, [content.external_id])
+    assert analytics[0].metrics["view_count"] == 1234567
+    assert analytics[0].metrics["like_count"] == 45000
+    assert analytics[0].metrics["comment_count"] == 1200
+    assert analytics[0].metrics["share_count"] == 300
+    assert analytics[0].unavailable_metrics == ()
+
+
+@pytest.mark.asyncio
+async def test_youtube_shorts_channel_retries_root_after_missing_videos_tab():
+    """A Shorts-only channel must not fall through as an empty catalogue."""
+    adapter = YouTubeYtDlpAdapter()
+    calls: list[str] = []
+
+    async def _flat(url, **kwargs):
+        calls.append(url)
+        if len(calls) == 1:
+            raise _FastListUnavailable(
+                "ERROR: This channel does not have a videos tab"
+            )
+        return [
+            {
+                "id": "short-1",
+                "title": "A real short",
+                "webpage_url": "https://www.youtube.com/shorts/short-1",
+            }
+        ]
+
+    async def _details(*args, **kwargs):
+        return {}
+
+    adapter._flat_enumerate = _flat  # type: ignore[assignment]
+    adapter._extract_details = _details  # type: ignore[assignment]
+    ctx = SimpleNamespace(
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        known_external_ids=frozenset(),
+        skip_known=False,
+        timeout_seconds=30,
+        fetch_concurrency=1,
+        progress_sink=None,
+    )
+
+    entries = await adapter._fast_list_entries(
+        ctx,
+        "OlympicMotion",
+        playlist_start=1,
+        playlist_end=50,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+        concurrency=1,
+        deep_backfill=False,
+    )
+
+    assert calls == [
+        "https://www.youtube.com/@OlympicMotion/videos",
+        "https://www.youtube.com/@OlympicMotion",
+    ]
+    assert entries is not None
+    assert entries[0]["id"] == "short-1"
+
+
+@pytest.mark.asyncio
+async def test_tiktok_canonical_url_and_metrics():
+    adapter = TikTokYtDlpAdapter()
+    _bind(adapter, [TIKTOK_VIDEO], [TIKTOK_VIDEO])
+    ctx = make_ctx()
+    # page_size == returned count → full window, so the yt-dlp result is used
+    # directly (the tiktok/douyin partial-window browser fallback stays idle).
+    page = await adapter.list_contents(
+        ctx, "guitar_daily", published_after=None, cursor=None, page_size=1
+    )
+    content = page.items[0]
+    assert content.external_id == "7372846510293"
+    assert content.canonical_url == "https://www.tiktok.com/@guitar_daily/video/7372846510293"
+    analytics = await adapter.fetch_content_analytics(ctx, [content.external_id])
+    assert analytics[0].metrics["like_count"] == 98765
+    assert analytics[0].metrics["share_count"] == 1234
+
+
+@pytest.mark.asyncio
+async def test_tiktok_analytics_partial_fetch_is_not_degraded():
+    # TikTok/Douyin user pages via yt-dlp rarely expose follower/video counts,
+    # but the fetch still returns a real account object. The adapter must report
+    # ``analytics_fetched=True`` and surface the missing fields via
+    # ``unavailable_metrics`` rather than signalling a failed extraction. The
+    # browser fallback (used to recover the metrics) is stubbed so the test
+    # stays offline and the yt-dlp-only result is asserted.
+    adapter = TikTokYtDlpAdapter()
+    profile = {
+        "id": "MS4wLjABAAAAexample",
+        "title": "guitar_daily",
+        "uploader": "guitar_daily",
+        "webpage_url": "https://www.tiktok.com/@guitar_daily",
+    }
+
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
+        return profile, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            # Browser also comes up empty (offline); yt-dlp's channel object is
+            # still treated as a successful fetch.
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={},
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is True
+    assert analytics.metrics["follower_count"] is None
+    assert analytics.metrics["video_count"] is None
+    assert analytics.metrics["total_view_count"] is None
+    assert {"follower_count", "video_count", "total_view_count"}.issubset(
+        set(analytics.unavailable_metrics)
+    )
+
+
+@pytest.mark.asyncio
+async def test_tiktok_analytics_browser_fallback_captures_metrics():
+    # When yt-dlp fetches the TikTok channel but exposes no account metrics,
+    # the adapter must delegate to the browser adapter and *merge* the scraped
+    # follower / like / video counts back into the result (instead of leaving
+    # them permanently unavailable). The merged metrics must keep
+    # ``analytics_fetched=True`` so the sync is not misreported as degraded.
+    adapter = TikTokYtDlpAdapter()
+    profile = {
+        "id": "MS4wLjABAAAAexample",
+        "title": "guitar_daily",
+        "uploader": "guitar_daily",
+        "webpage_url": "https://www.tiktok.com/@guitar_daily",
+    }
+
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
+        return profile, ""
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={
+                    "follower_count": 61600,
+                    "total_like_count": 1300000,
+                    "video_count": 201,
+                },
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is True
+    assert analytics.metadata.get("analytics_source") == "browser"
+    assert analytics.metrics["follower_count"] == 61600
+    assert analytics.metrics["total_like_count"] == 1300000
+    assert analytics.metrics["video_count"] == 201
+    # TikTok exposes no total view count even via the browser, so it stays
+    # unavailable rather than fabricated.
+    assert analytics.metrics["total_view_count"] is None
+    assert "total_view_count" in analytics.unavailable_metrics
+
+
+@pytest.mark.asyncio
+async def test_tiktok_analytics_transient_failure_reports_not_fetched():
+    # A genuinely empty yt-dlp result (transient failure) must be reported as
+    # ``analytics_fetched=False`` so the sync engine can still flag it degraded.
+    # The browser fallback is stubbed to also fail (offline) so the test stays
+    # hermetic and the degraded signal is preserved.
+    adapter = TikTokYtDlpAdapter()
+
+    async def _fake_single(url, *, playlist_end=1, **kwargs):
+        raise TransientAdapterError("yt-dlp timed out")
+
+    adapter._run_yt_dlp_single = _fake_single  # type: ignore[assignment]
+
+    class _StubFallback:
+        async def fetch_account_analytics(self, ctx, external_id):
+            return PlatformMetricsData(
+                external_id=external_id,
+                captured_at=ctx.observed_at,
+                metrics={},
+                source_kind="live",
+                provider="tiktok_browser",
+                fetched_at=ctx.observed_at,
+                unavailable_metrics=(),
+                metadata={"method": "browser_scrape"},
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    analytics = await adapter.fetch_account_analytics(ctx, "@guitar_daily")
+    assert analytics.metadata.get("analytics_fetched") is False
+    assert analytics.metrics["follower_count"] is None
+    assert analytics.metrics["video_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_tiktok_partial_window_does_not_fallback():
+    adapter = TikTokYtDlpAdapter()
+    # yt-dlp returns only one of the requested 5 on the FIRST page. Under the
+    # yt-dlp-primary policy a partial (non-empty) window is treated as the end
+    # of the catalogue — NOT a trigger for the browser fallback — so the single
+    # yt-dlp item is returned directly and pagination stops.
+    _bind(adapter, [TIKTOK_VIDEO], [TIKTOK_VIDEO])
+    ctx = make_ctx()
+    fallback_calls = {"n": 0}
+
+    class _CountingFallback:
+        async def list_contents(
+            self, ctx, external_account_id, *, published_after, cursor, page_size
+        ):
+            fallback_calls["n"] += 1
+            raise AssertionError("browser fallback must not fire on a partial window")
+
+    adapter._fb = _CountingFallback()  # type: ignore[assignment]
+    page = await adapter.list_contents(
+        ctx, "guitar_daily", published_after=None, cursor=None, page_size=5
+    )
+    assert len(page.items) == 1
+    assert page.items[0].external_id == "7372846510293"
+    assert page.next_cursor is None
+    assert fallback_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_yt_dlp_single_null_payload_is_safe():
+    """yt-dlp emits a literal ``null`` for profiles it cannot resolve (e.g.
+    Douyin). The single-json runner must return an empty dict — never crash
+    with ``None.get(...)`` downstream (the root cause of the prior
+    ``unexpected_sync_error`` on Douyin accounts)."""
+    adapter = TikTokYtDlpAdapter()
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"null\n", b""
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    real = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    try:
+        obj, err = await adapter._run_yt_dlp_single("https://example.com/x")
+    finally:
+        asyncio.create_subprocess_exec = real
+    assert obj == {}
+    assert err == ""
+
+
+@pytest.mark.asyncio
+async def test_resolve_account_null_profile_falls_back_gracefully():
+    """When yt-dlp cannot resolve a profile (yields ``null`` → ``{}`` after the
+    safe guard) the adapter must fall back to the browser adapter rather than
+    raise. This is the exact path that previously crashed with
+    ``'NoneType' object has no attribute 'get'`` on Douyin accounts."""
+    adapter = DouyinYtDlpAdapter()
+
+    async def _empty_single(url, *, playlist_end=1, **kwargs):  # type: ignore[assignment]
+        return {}, ""
+
+    adapter._run_yt_dlp_single = _empty_single  # type: ignore[assignment]
+
+    resolved = SimpleNamespace(captured=False)
+
+    class _StubFallback:
+        async def resolve_account(self, ctx, locator):
+            resolved.captured = True
+            return PlatformAccountData(
+                external_id=locator,
+                username=locator,
+                display_name="From Browser",
+                profile_url="https://example.com/" + locator,
+                avatar_url=None,
+                description=None,
+                country=None,
+                language="zh",
+                is_verified=None,
+                source_kind="live",
+                provider="stub",
+                fetched_at=ctx.observed_at,
+            )
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    acc = await adapter.resolve_account(ctx, "theolympics")
+    assert resolved.captured is True
+    assert acc.display_name == "From Browser"
+
+
+class _StubFallback:
+    """Minimal browser adapter stub used to prove fallback wiring."""
+
+    async def list_contents(self, ctx, external_account_id, *, published_after, cursor, page_size):
+        return AdapterPage(
+            items=(
+                PlatformContentData(
+                    external_id="fallback1",
+                    account_external_id=external_account_id,
+                    content_type="video",
+                    title="Fallback item",
+                    description=None,
+                    published_at=None,
+                    duration_seconds=None,
+                    canonical_url="https://example.com/fallback1",
+                    cover_url=None,
+                    language=None,
+                    status="public",
+                    source_kind="live",
+                    provider="stub",
+                    fetched_at=ctx.observed_at,
+                ),
+            ),
+            next_cursor=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_fallback_used_when_yt_dlp_empty():
+    adapter = DouyinYtDlpAdapter()
+
+    # yt-dlp yields nothing → must delegate to the browser adapter.
+    async def _empty(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+        **kwargs,
+    ):  # type: ignore[assignment]
+        return [], "ERROR: unsupported"
+
+    adapter._run_yt_dlp = _empty
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    ctx = make_ctx()
+    page = await adapter.list_contents(
+        ctx, "some_douyin", published_after=None, cursor=None, page_size=10
+    )
+    assert page.items[0].external_id == "fallback1"
+
+
+@pytest.mark.asyncio
+async def test_empty_trailing_page_does_not_fallback():
+    adapter = DouyinYtDlpAdapter()
+    fallback_calls = {"n": 0}
+
+    class _StubFallback:
+        async def list_contents(
+            self, ctx, external_account_id, *, published_after, cursor, page_size
+        ):
+            fallback_calls["n"] += 1
+            return AdapterPage(items=(), next_cursor=None)
+
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+
+    async def _empty(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+        **kwargs,
+    ):
+        return [], ""
+
+    adapter._run_yt_dlp = _empty  # type: ignore[assignment]
+    ctx = make_ctx()
+    # A cursor is set → this is a trailing page, not the first request.
+    page = await adapter.list_contents(
+        ctx, "some_douyin", published_after=None, cursor="50", page_size=50
+    )
+    assert page.items == ()
+    assert page.next_cursor is None
+    assert fallback_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_fast_empty_trailing_page_does_not_repeat_legacy_extraction():
+    """A successful flat probe must terminate pagination immediately."""
+    adapter = TikTokYtDlpAdapter()
+
+    async def _empty_flat(*args, **kwargs):
+        return []
+
+    async def _legacy_must_not_run(*args, **kwargs):
+        raise AssertionError("legacy playlist extraction must not repeat after an empty flat page")
+
+    adapter._fast_list_entries = _empty_flat  # type: ignore[assignment]
+    adapter._run_yt_dlp = _legacy_must_not_run  # type: ignore[assignment]
+    ctx = SimpleNamespace(
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        config={},
+        request_id="r1",
+        skip_known=True,
+        fetch_concurrency=1,
+        timeout_seconds=30,
+    )
+
+    with pytest.raises(TransientAdapterError, match="cursor retained"):
+        await adapter.list_contents(
+            ctx, "guitar_daily", published_after=None, cursor="50", page_size=50
+        )
+
+
+@pytest.mark.asyncio
+async def test_detail_batch_timeout_keeps_flat_catalogue_available():
+    """Slow per-video detail requests cannot discard a valid page listing."""
+    adapter = TikTokYtDlpAdapter()
+
+    async def _slow_detail(*args, **kwargs):
+        await asyncio.sleep(1)
+        return None
+
+    adapter._extract_one_video = _slow_detail  # type: ignore[assignment]
+    details = await adapter._extract_details(
+        {"video-1": "https://example.com/video-1"},
+        concurrency=1,
+        dateafter=None,
+        datebefore=None,
+        structured={},
+        download=None,
+        media_dir=None,
+        extra_args=None,
+        timeout_seconds=0.5,
+    )
+    assert details == {}
+
+
+@pytest.mark.asyncio
+async def test_tiktok_deep_backfill_skips_detail_burst_but_keeps_catalogue_rows():
+    """Deep TikTok backfill pages must not turn 50 flat rows into 50 requests."""
+    adapter = TikTokYtDlpAdapter()
+    flat_entries = [
+        {**TIKTOK_VIDEO, "id": "deep-1", "title": "Older 1"},
+        {**TIKTOK_VIDEO, "id": "deep-2", "title": "Older 2"},
+        {**TIKTOK_VIDEO, "id": "deep-3", "title": "Older 3"},
+        {**TIKTOK_VIDEO, "id": "deep-4", "title": "Older 4"},
+    ]
+    detail_called = False
+    flat_calls = 0
+
+    async def _flat(*args, **kwargs):
+        nonlocal flat_calls
+        flat_calls += 1
+        return flat_entries
+
+    async def _details(*args, **kwargs):
+        nonlocal detail_called
+        detail_called = True
+        raise AssertionError("deep backfill must not burst per-video detail requests")
+
+    adapter._flat_enumerate = _flat  # type: ignore[assignment]
+    adapter._extract_details = _details  # type: ignore[assignment]
+    ctx = SimpleNamespace(
+        observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        config={},
+        request_id="r1",
+        skip_known=False,
+        known_external_ids=frozenset(),
+        fetch_concurrency=2,
+        timeout_seconds=30,
+        sync_backfill=True,
+        catalogue_cache={},
+    )
+
+    page = await adapter.list_contents(
+        ctx, "guitar_daily", published_after=None, cursor="50", page_size=2
+    )
+    next_page = await adapter.list_contents(
+        ctx, "guitar_daily", published_after=None, cursor=page.next_cursor, page_size=2
+    )
+
+    assert detail_called is False
+    assert [item.external_id for item in page.items] == ["deep-1", "deep-2"]
+    assert [item.external_id for item in next_page.items] == ["deep-3", "deep-4"]
+    assert all(item.metadata.get("detail_level") == "flat_only" for item in page.items)
+    assert all(item.metadata.get("detail_level") == "flat_only" for item in next_page.items)
+    assert flat_calls == 1
+    assert page.next_cursor == "52"
+    # The cached window was full, so the adapter must ask the platform whether
+    # more catalogue entries exist on the next call; it cannot infer the end
+    # of the whole account from the cache boundary.
+    assert next_page.next_cursor == "54"
+
+
+def _make_windowed_adapter(adapter: YtDlpAdapter, all_entries, captured=None):
+    """Replace yt-dlp with a stub that honours playlist_start/end windowing so
+    we can exercise cursor pagination without the subprocess."""
+    captured = captured if captured is not None else {}
+
+    async def _windowed(
+        url,
+        *,
+        playlist_start=None,
+        playlist_end=None,
+        dateafter=None,
+        datebefore=None,
+        extra_args=None,
+        structured=None,
+        download=None,
+        media_dir=None,
+        **kwargs,
+    ):
+        captured["dateafter"] = dateafter
+        captured["datebefore"] = datebefore
+        captured["extra_args"] = extra_args
+        captured["playlist_start"] = playlist_start
+        captured["playlist_end"] = playlist_end
+        captured["structured"] = structured
+        captured["download"] = download
+        captured["media_dir"] = media_dir
+        start = (playlist_start or 1) - 1
+        end = playlist_end if playlist_end is not None else len(all_entries)
+        return all_entries[start:end], ""
+
+    adapter._run_yt_dlp = _windowed  # type: ignore[assignment]
+    # Stub the browser fallback so param-passthrough tests (which feed an empty
+    # window to exercise the call args) don't attempt to launch a real browser.
+    adapter._fb = _StubFallback()  # type: ignore[assignment]
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_list_contents_paginates_past_default_ceiling():
+    adapter = YouTubeYtDlpAdapter()
+    # 120-video playlist; previously capped at ~50 in a single call.
+    all_entries = [{**YOUTUBE_VIDEO, "id": f"vid{i}", "title": f"Video {i}"} for i in range(120)]
+    _make_windowed_adapter(adapter, all_entries)
+
+    ctx = make_ctx()
+    seen: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    while pages < 10:
+        page = await adapter.list_contents(
+            ctx, "olympics", published_after=None, cursor=cursor, page_size=50
+        )
+        seen.extend(item.external_id for item in page.items)
+        pages += 1
+        cursor = page.next_cursor
+        if not cursor:
+            break
+
+    assert len(seen) == 120
+    assert len(set(seen)) == 120  # no duplicates across pages
+    assert pages == 3  # 50 + 50 + 20
+
+
+@pytest.mark.asyncio
+async def test_adapter_config_max_items_short_circuits():
+    adapter = YouTubeYtDlpAdapter()
+    all_entries = [{**YOUTUBE_VIDEO, "id": f"vid{i}"} for i in range(200)]
+    captured = _make_windowed_adapter(adapter, all_entries)
+
+    ctx = make_ctx()
+    ctx.config = {"yt_dlp": {"max_items": 30, "dateafter": "20240101"}}
+    page = await adapter.list_contents(
+        ctx, "olympics", published_after=None, cursor=None, page_size=50
+    )
+    assert len(page.items) == 30
+    # Short-circuited: no further pages even though the playlist is larger.
+    assert page.next_cursor is None
+    assert captured["dateafter"] == "20240101"
+
+
+@pytest.mark.asyncio
+async def test_published_after_becomes_dateafter():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    await adapter.list_contents(
+        ctx,
+        "olympics",
+        published_after=datetime(2024, 5, 1, tzinfo=UTC),
+        cursor=None,
+        page_size=10,
+    )
+    assert captured["dateafter"] == "20240501"
+
+
+@pytest.mark.asyncio
+async def test_extra_args_passthrough_to_yt_dlp():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    ctx.config = {"yt_dlp": {"extra_args": {"match_filter": "test", "geo_bypass": True}}}
+    await adapter.list_contents(ctx, "olympics", published_after=None, cursor=None, page_size=10)
+    assert captured["extra_args"] == {"match_filter": "test", "geo_bypass": True}
+
+
+@pytest.mark.asyncio
+async def test_structured_yt_dlp_params_reach_adapter():
+    adapter = YouTubeYtDlpAdapter()
+    captured = _make_windowed_adapter(adapter, [])
+
+    ctx = make_ctx()
+    ctx.config = {
+        "yt_dlp": {
+            "proxy": "http://proxy:8080",
+            "sort": "view_count",
+            "geo_bypass": True,
+            "age_limit": 18,
+            "ignore_errors": True,
+            "no_warnings": True,
+            "playlist_reverse": False,  # falsy bool → must NOT emit a flag
+        }
+    }
+    await adapter.list_contents(ctx, "olympics", published_after=None, cursor=None, page_size=10)
+    # The structured policy is forwarded wholesale to the command builder.
+    assert captured["structured"] == {
+        "proxy": "http://proxy:8080",
+        "sort": "view_count",
+        "geo_bypass": True,
+        "age_limit": 18,
+        "ignore_errors": True,
+        "no_warnings": True,
+        "playlist_reverse": False,
+    }
+
+
+def test_render_structured_translates_fields_to_flags():
+    args = YtDlpAdapter._render_structured(
+        {
+            "proxy": "http://proxy:8080",
+            "sort": "view_count",
+            "geo_bypass": True,
+            "age_limit": 18,
+            "playlist_reverse": False,
+            "ignore_errors": False,
+            "no_warnings": True,
+        }
+    )
+    assert "--proxy" in args and args[args.index("--proxy") + 1] == "http://proxy:8080"
+    assert "--sort" in args and args[args.index("--sort") + 1] == "view_count"
+    assert "--age-limit" in args and args[args.index("--age-limit") + 1] == "18"
+    # bool True → flag present; bool False → flag absent
+    assert "--geo-bypass" in args
+    assert "--no-warnings" in args
+    assert "--ignore-errors" not in args
+    assert "--playlist-reverse" not in args
+
+
+def test_render_structured_supports_browser_cookie_auth_without_persisting_cookie_data():
+    args = YtDlpAdapter._render_structured({"cookies_from_browser": "chrome"})
+    assert args == ["--cookies-from-browser", "chrome"]
+
+
+def test_render_structured_skips_empty_and_none():
+    args = YtDlpAdapter._render_structured(
+        {
+            "proxy": "",
+            "age_limit": None,
+            "geo_bypass": False,
+            "cookies_from_browser": "",
+        }
+    )
+    assert args == []
+
+
+def test_any_download_enabled():
+    assert YouTubeYtDlpAdapter._any_download_enabled(None) is False
+    assert YouTubeYtDlpAdapter._any_download_enabled({}) is False
+    assert YouTubeYtDlpAdapter._any_download_enabled({"write_thumbnail": True}) is True
+    assert (
+        YouTubeYtDlpAdapter._any_download_enabled(
+            {"download_video": False, "write_subtitles": False}
+        )
+        is False
+    )
+    assert YouTubeYtDlpAdapter._any_download_enabled({"download_video": True}) is True
+
+
+@pytest.mark.asyncio
+async def test_file_download_command_disables_dump_json_simulation(monkeypatch, tmp_path):
+    """A file-producing request must make yt-dlp write artifacts, not only emit JSON."""
+
+    adapter = YouTubeYtDlpAdapter()
+    captured: dict[str, list[str]] = {}
+
+    class _Proc:
+        returncode = 0
+
+    async def fake_exec(*args, **_kwargs):
+        captured["cmd"] = list(args)
+        return _Proc()
+
+    async def fake_communicate(_proc, _timeout, **_kwargs):
+        return b'{"id":"video-1"}\n', b""
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(adapter, "_communicate_with_timeout", fake_communicate)
+
+    await adapter._run_yt_dlp(
+        "https://www.youtube.com/watch?v=video-1",
+        download={
+            "download_video": True,
+            "write_subtitles": True,
+            "write_auto_subtitles": True,
+            "subtitle_langs": "en.*",
+        },
+        media_dir=str(tmp_path),
+    )
+
+    command = captured["cmd"]
+    assert "--dump-json" in command
+    assert "--no-simulate" in command
+    assert "--skip-download" not in command
+
+
+def test_collect_media_classifies_files(tmp_path):
+    video_id = "abc123"
+    media_root = tmp_path
+    media_dir = tmp_path / "handle"
+    d = media_dir / video_id
+    d.mkdir(parents=True)
+    (d / f"{video_id}.webp").write_bytes(b"x")
+    (d / f"{video_id}.zh-Hans.vtt").write_text("x")
+    (d / f"{video_id}.en.vtt").write_text("x")
+    (d / f"{video_id}.info.json").write_text("{}")
+    (d / f"{video_id}.mp4").write_bytes(b"x")
+
+    result = YouTubeYtDlpAdapter._collect_media(str(media_root), str(media_dir), video_id)
+    assert result is not None
+    assert result["base"] == os.path.join("handle", video_id)
+    assert result["thumbnail"] == f"{video_id}.webp"
+    assert result["video"] == f"{video_id}.mp4"
+    assert result["info_json"] == f"{video_id}.info.json"
+    assert {s["lang"] for s in result["subtitles"]} == {"zh-Hans", "en"}
+
+
+def test_collect_media_none_when_absent(tmp_path):
+    assert YouTubeYtDlpAdapter._collect_media(str(tmp_path), str(tmp_path / "h"), "nope") is None
+
+
+def test_media_route_blocks_path_traversal(tmp_path):
+    import app.api.routes.media as media_mod
+
+    original = media_mod.MEDIA_ROOT
+    media_mod.MEDIA_ROOT = str(tmp_path)
+    try:
+        # Enough ".." to climb above MEDIA_ROOT entirely → must be rejected.
+        assert media_mod._safe_media_path("ws/h/abc", "../../../../../../../etc/passwd") is None
+        ok = media_mod._safe_media_path("ws/h/abc", "abc.mp4")
+        assert ok == str(tmp_path / "ws" / "h" / "abc" / "abc.mp4")
+    finally:
+        media_mod.MEDIA_ROOT = original
+
+
+def _capture_cmd(adapter, *, single=True, retries=None, structured=None):
+    """Run a yt-dlp command builder with a stubbed subprocess and return the
+    exact argv without executing anything on the network."""
+    import asyncio
+
+    captured: dict[str, list[str]] = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"{}" if single else b"", b""
+
+    async def _fake_exec(*args, **kwargs):
+        captured["cmd"] = list(args)
+        return _FakeProc()
+
+    real = asyncio.create_subprocess_exec
+    asyncio.create_subprocess_exec = _fake_exec  # type: ignore[assignment]
+    loop = asyncio.new_event_loop()
+    try:
+        if single:
+            if retries is None:
+                coro = adapter._run_yt_dlp_single("https://example.com/x", structured=structured)
+            else:
+                coro = adapter._run_yt_dlp_single(
+                    "https://example.com/x", retries=retries, structured=structured
+                )
+            loop.run_until_complete(coro)
+        else:
+            if retries is None:
+                loop.run_until_complete(adapter._run_yt_dlp("https://example.com/x"))
+            else:
+                loop.run_until_complete(
+                    adapter._run_yt_dlp("https://example.com/x", structured={"retries": retries})
+                )
+    finally:
+        asyncio.create_subprocess_exec = real
+        loop.close()
+    return captured["cmd"]
+
+
+def test_single_json_defaults_to_bounded_retries():
+    """yt-dlp's built-in ``--retries`` must be pinned to the bounded default (3) on the
+    account-data / analytics single-json invocation when no override is set."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=True)
+    idx = cmd.index("--retries")
+    assert cmd[idx + 1] == "3"
+    socket_idx = cmd.index("--socket-timeout")
+    assert cmd[socket_idx + 1] == "15"
+
+
+def test_none_network_settings_are_replaced_by_safe_defaults():
+    cmd = _capture_cmd(
+        YouTubeYtDlpAdapter(),
+        single=True,
+        structured={"retries": None, "socket_timeout": None},
+    )
+    assert cmd[cmd.index("--retries") + 1] == "3"
+    assert cmd[cmd.index("--socket-timeout") + 1] == "15"
+
+
+@pytest.mark.asyncio
+async def test_flat_probe_keeps_its_short_timeout_cap(monkeypatch):
+    adapter = YouTubeYtDlpAdapter()
+    seen: dict[str, float] = {}
+
+    class _Proc:
+        returncode = 0
+
+    async def _fake_exec(*_args, **_kwargs):
+        return _Proc()
+
+    async def _fake_communicate(_proc, call_timeout, **_kwargs):
+        seen["timeout"] = call_timeout
+        return b'{"id":"v1"}\n', b""
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(adapter, "_communicate_with_timeout", _fake_communicate)
+
+    await adapter._flat_enumerate(
+        "https://www.youtube.com/@example/videos",
+        playlist_start=1,
+        playlist_end=1,
+        dateafter=None,
+        datebefore=None,
+        structured=None,
+        timeout_seconds=0.5,
+    )
+    assert seen["timeout"] == 0.5
+
+    entries = await adapter._flat_enumerate(
+        "https://www.youtube.com/@example/videos",
+        playlist_start=1,
+        playlist_end=1,
+        dateafter=None,
+        datebefore=None,
+        structured=None,
+        timeout_seconds=60,
+    )
+
+    assert entries[0]["id"] == "v1"
+    assert seen["timeout"] == 30
+
+    await adapter._flat_enumerate(
+        "https://www.youtube.com/@example/videos",
+        playlist_start=1,
+        playlist_end=250,
+        dateafter=None,
+        datebefore=None,
+        structured=None,
+        timeout_seconds=60,
+        timeout_cap_seconds=60,
+    )
+    assert seen["timeout"] == 60
+
+
+@pytest.mark.asyncio
+async def test_tiktok_flat_probe_rotates_app_info_after_rate_limit(monkeypatch):
+    adapter = TikTokYtDlpAdapter()
+    calls: list[tuple[str, ...]] = []
+
+    class _Proc:
+        def __init__(self, returncode: int):
+            self.returncode = returncode
+
+    async def _fake_exec(*args, **_kwargs):
+        calls.append(tuple(str(arg) for arg in args))
+        return _Proc(1 if len(calls) == 1 else 0)
+
+    async def _fake_communicate(proc, _call_timeout, **_kwargs):
+        if proc.returncode:
+            return b"", b"ERROR: HTTP Error 429: Too Many Requests"
+        return b'{"id":"v1"}\n', b""
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(adapter, "_communicate_with_timeout", _fake_communicate)
+
+    entries = await adapter._flat_enumerate(
+        "tiktokuser:MS4wLjABAAAAchannel",
+        playlist_start=651,
+        playlist_end=700,
+        dateafter=None,
+        datebefore=None,
+        structured=None,
+        timeout_seconds=30,
+        timeout_cap_seconds=30,
+        recovery=True,
+    )
+
+    assert entries[0]["id"] == "v1"
+    assert len(calls) == 2
+    assert "--extractor-args" in calls[1]
+    assert "tiktok:app_info=7355728856979392262" in calls[1]
+
+
+def test_single_json_forwards_browser_cookie_setting():
+    cmd = _capture_cmd(
+        YouTubeYtDlpAdapter(),
+        single=True,
+        structured={"cookies_from_browser": "chrome"},
+    )
+    idx = cmd.index("--cookies-from-browser")
+    assert cmd[idx + 1] == "chrome"
+
+
+def test_single_json_materializes_captured_cookie_file_and_cleans_it_up():
+    cmd = _capture_cmd(
+        YouTubeYtDlpAdapter(),
+        single=True,
+        structured={
+            "cookies_netscape": (
+                "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tLOGIN_INFO\tprivate\n"
+            ),
+            "cookies_from_browser": "chrome",
+        },
+    )
+    idx = cmd.index("--cookies")
+    cookie_path = cmd[idx + 1]
+    assert os.path.exists(cookie_path) is False
+    assert "private" not in cmd
+    assert "--cookies-from-browser" not in cmd
+
+
+def test_single_json_honours_retry_override():
+    """An explicit ``retries`` argument must flow through to ``--retries``."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=True, retries=3)
+    idx = cmd.index("--retries")
+    assert cmd[idx + 1] == "3"
+
+
+def test_list_contents_defaults_to_bounded_retries():
+    """The content-list (per-page) invocation must also pin bounded retries by
+    default, injected into the structured field rendering."""
+    adapter = YouTubeYtDlpAdapter()
+    cmd = _capture_cmd(adapter, single=False)
+    assert "--retries" in cmd
+    assert cmd[cmd.index("--retries") + 1] == "3"
+    assert cmd[cmd.index("--socket-timeout") + 1] == "15"
+
+
+def test_resolve_retries_reads_sync_settings_override():
+    """``_resolve_retries`` honours ``sync_settings.yt_dlp.retries`` and falls
+    back to the module default on missing / invalid values."""
+    adapter = YouTubeYtDlpAdapter()
+
+    class _Ctx:
+        config = {"yt_dlp": {"retries": 5}}
+
+    assert adapter._resolve_retries(_Ctx()) == 5
+
+    class _CtxDefault:
+        config = {}
+
+    assert adapter._resolve_retries(_CtxDefault()) == 3
+
+    class _CtxBad:
+        config = {"yt_dlp": {"retries": "not-a-number"}}
+
+    assert adapter._resolve_retries(_CtxBad()) == 3
+
+
+def test_extraction_commands_enable_node_when_runtime_is_available(monkeypatch):
+    """Every yt-dlp command builder should emit the current Node runtime flag."""
+
+    monkeypatch.setattr(ytdlp_runtime, "resolve_node_path", lambda configured=None: "node")
+    monkeypatch.setattr(ytdlp_runtime, "configured_remote_components", lambda: [])
+    cmd = _capture_cmd(YouTubeYtDlpAdapter(), single=False)
+    assert cmd[cmd.index("--js-runtimes") + 1] == "node:node"
+
+
+def test_runtime_remote_components_are_allowlisted(monkeypatch):
+    """Free-form environment values must not become arbitrary yt-dlp flags."""
+
+    monkeypatch.setattr(ytdlp_runtime, "resolve_node_path", lambda configured=None: None)
+    monkeypatch.setattr(
+        ytdlp_runtime,
+        "configured_remote_components",
+        lambda: ["ejs:github", "--exec", "ejs:npm"],
+    )
+    assert ytdlp_runtime.runtime_args() == [
+        "--remote-components",
+        "ejs:github",
+        "--remote-components",
+        "ejs:npm",
+    ]

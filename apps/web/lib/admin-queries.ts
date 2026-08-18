@@ -8,6 +8,7 @@ export function buildAccountListPath(input: {
   page: number;
   query?: string;
   platform?: string;
+  activeState?: "active" | "inactive" | "all";
 }): string {
   const params = new URLSearchParams({
     page: String(input.page),
@@ -17,16 +18,53 @@ export function buildAccountListPath(input: {
   });
   if (input.query) params.set("query", input.query);
   if (input.platform) params.set("platform", input.platform);
+  if (input.activeState !== "all") {
+    params.set("is_active", String(input.activeState !== "inactive"));
+  }
   return withQuery("/accounts", params);
 }
 
-export function buildAccountDetailPaths(accountId: string) {
+export function buildAccountExportPath(input: {
+  query?: string;
+  platform?: string;
+  activeState?: "active" | "inactive" | "all";
+}): string {
+  const params = new URLSearchParams();
+  if (input.query) params.set("query", input.query);
+  if (input.platform) params.set("platform", input.platform);
+  if (input.activeState !== "all") {
+    params.set("is_active", String(input.activeState !== "inactive"));
+  }
+  return withQuery("/accounts/export.csv", params);
+}
+
+export function buildAccountDetailPaths(
+  accountId: string,
+  options: {
+    sort?: string;
+    order?: SortOrder;
+    publishedFrom?: string | null;
+    page?: number;
+    pageSize?: number;
+  } = {},
+) {
   const encoded = encodeURIComponent(accountId);
+  const contentsParams = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 20),
+    sort: options.sort ?? "published_at",
+    order: options.order ?? "desc",
+  });
+  if (options.publishedFrom) {
+    contentsParams.set("published_from", options.publishedFrom);
+  }
   return {
     account: `/accounts/${encoded}`,
     snapshots: `/accounts/${encoded}/snapshots?page=1&page_size=100`,
-    contents: `/accounts/${encoded}/contents?page=1&page_size=20`,
-    syncRuns: `/accounts/${encoded}/sync-runs?page=1&page_size=50`,
+    contents: `/accounts/${encoded}/contents?${contentsParams.toString()}`,
+    syncRuns: `/accounts/${encoded}/sync-runs?page=1&page_size=20`,
+    syncRunDetail: (runId: string) =>
+      `/accounts/${encoded}/sync-runs/${encodeURIComponent(runId)}`,
     automations: "/automations?page=1&page_size=100&entity_type=account",
   } as const;
 }
@@ -39,6 +77,7 @@ export function buildContentListPath(input: {
   publishedFrom?: string;
   sort?: string;
   order?: SortOrder;
+  tags?: string[];
 }): string {
   const params = new URLSearchParams({
     page: String(input.page),
@@ -55,6 +94,9 @@ export function buildContentListPath(input: {
       new Date(`${input.publishedFrom}T00:00:00Z`).toISOString(),
     );
   }
+  if (input.tags && input.tags.length > 0) {
+    for (const tag of input.tags) params.append("tags", tag);
+  }
   return withQuery("/contents", params);
 }
 
@@ -64,6 +106,12 @@ export function buildNewsListPath(input: {
   sport?: string;
   language?: string;
   bookmarked?: boolean;
+  source?: string;
+  league?: string;
+  country?: string;
+  publishedFrom?: string;
+  publishedTo?: string;
+  minHeat?: string;
 }): string {
   const params = new URLSearchParams({
     page: String(input.page),
@@ -75,5 +123,21 @@ export function buildNewsListPath(input: {
   if (input.sport) params.set("sport", input.sport);
   if (input.language) params.set("language", input.language);
   if (input.bookmarked) params.set("is_bookmarked", "true");
+  if (input.source) params.set("source", input.source);
+  if (input.league) params.set("league", input.league);
+  if (input.country) params.set("country", input.country);
+  if (input.publishedFrom) {
+    params.set(
+      "published_from",
+      new Date(`${input.publishedFrom}T00:00:00Z`).toISOString(),
+    );
+  }
+  if (input.publishedTo) {
+    params.set(
+      "published_to",
+      new Date(`${input.publishedTo}T23:59:59Z`).toISOString(),
+    );
+  }
+  if (input.minHeat) params.set("min_heat", input.minHeat);
   return withQuery("/news/articles", params);
 }

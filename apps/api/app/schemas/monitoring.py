@@ -4,8 +4,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
-SourceKind = Literal["live", "imported", "mock"]
-AccountSyncStatus = Literal["never", "queued", "syncing", "success", "error", "disabled"]
+from app.schemas.settings import YtDlpDownloadSettings
+
+SourceKind = Literal["live", "imported"]
+AccountSyncStatus = Literal[
+    "never", "queued", "syncing", "success", "degraded", "error", "disabled", "cancelled"
+]
 SortOrder = Literal["asc", "desc"]
 AccountSort = Literal[
     "created_at",
@@ -23,6 +27,11 @@ ContentSort = Literal[
     "title",
     "view_count",
     "view_growth_24h",
+    "like_count",
+    "comment_count",
+    "share_count",
+    "completion_rate",
+    "engagement_rate",
 ]
 
 
@@ -45,17 +54,22 @@ class PlatformRead(BaseModel):
 
 
 class AccountCreate(StrictModel):
-    platform_id: UUID
+    # Platform is optional on first registration: when omitted, the system
+    # infers it from the profile URL (see platform_detect). This lets the
+    # operator paste a single URL without choosing a platform manually.
+    platform_id: UUID | None = None
     external_id: str = Field(min_length=1, max_length=255)
     username: str | None = Field(default=None, max_length=255)
-    display_name: str = Field(min_length=1, max_length=255)
+    # display_name is optional on first registration: when omitted it is
+    # defaulted to ``external_id`` and refined after the first sync.
+    display_name: str | None = Field(default=None, max_length=255)
     profile_url: HttpUrl | None = None
     avatar_url: HttpUrl | None = None
     description: str | None = Field(default=None, max_length=10_000)
     country: str | None = Field(default=None, min_length=2, max_length=2)
     language: str | None = Field(default=None, max_length=16)
     is_verified: bool | None = None
-    sync_interval_seconds: int = Field(default=3600, ge=300, le=604_800)
+    sync_interval_seconds: int = Field(default=28800, ge=3600, le=604_800)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("external_id", "username", "display_name")
@@ -73,6 +87,15 @@ class AccountCreate(StrictModel):
     def normalize_country(cls, value: str | None) -> str | None:
         return value.upper() if value else None
 
+    @field_validator("avatar_url", "profile_url", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        # Frontends may send "" when a field is cleared; treat it as absent so
+        # the ``HttpUrl | None`` field accepts it instead of raising 422.
+        if value == "":
+            return None
+        return value
+
 
 class AccountUpdate(StrictModel):
     username: str | None = Field(default=None, max_length=255)
@@ -83,7 +106,7 @@ class AccountUpdate(StrictModel):
     country: str | None = Field(default=None, min_length=2, max_length=2)
     language: str | None = Field(default=None, max_length=16)
     is_active: bool | None = None
-    sync_interval_seconds: int | None = Field(default=None, ge=300, le=604_800)
+    sync_interval_seconds: int | None = Field(default=None, ge=3600, le=604_800)
     metadata: dict[str, Any] | None = None
 
     @field_validator("username", "display_name")
@@ -100,6 +123,13 @@ class AccountUpdate(StrictModel):
     @classmethod
     def normalize_country(cls, value: str | None) -> str | None:
         return value.upper() if value else None
+
+    @field_validator("avatar_url", "profile_url", mode="before")
+    @classmethod
+    def _empty_str_to_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
 
 class AccountSnapshotRead(BaseModel):
@@ -119,6 +149,27 @@ class AccountSnapshotRead(BaseModel):
     source_provider: str
     fetched_at: datetime
     raw_payload_ref: str | None
+
+
+class AccountMetricsHistoryPoint(BaseModel):
+    """Compact time-series point for account metric charts (ascending by captured_at)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    captured_at: datetime
+    follower_count: int | None
+    following_count: int | None
+    total_like_count: int | None
+    total_view_count: int | None
+    video_count: int | None
+
+
+class AccountMetricsHistory(BaseModel):
+    """Account metric time series suitable for a front-end area/line chart."""
+
+    account_id: UUID
+    days: int
+    points: list[AccountMetricsHistoryPoint]
 
 
 class AccountRead(BaseModel):
@@ -161,6 +212,123 @@ class AccountPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class AccountSyncFetchSettings(StrictModel):
+    """Per-account catalogue fetch window, deep-merged over the workspace
+    ``sync_settings.yt_dlp`` window and works cap by the sync executor.
+
+    Every field is optional; ``None`` means "inherit the workspace default".
+    These are the controls surfaced in the per-sync "抓取数据设置" popup.
+    """
+
+    # 单次抓取数量: hard cap on how many works a single sync ingests.
+    max_contents: int | None = Field(default=None, ge=1, le=5000)
+    # 抓取范围 (YYYYMMDD). dateafter = 起始日期, datebefore = 截止日期.
+    dateafter: str | None = None
+    datebefore: str | None = None
+    # 起始位置: 1-based offset into the catalogue (skip the first N works).
+    playlist_start: int | None = Field(default=None, ge=1, le=100_000)
+
+
+class AccountSyncSettingsOverride(StrictModel):
+    """Per-account override layered on top of the workspace sync settings.
+
+    Two independent sub-objects are overridable, both deep-merged over the
+    workspace policy by the sync executor:
+
+    * ``download`` — the yt-dlp artifact download policy;
+    * ``fetch`` — the catalogue fetch window (count / date range / start).
+    """
+
+    download: YtDlpDownloadSettings
+    fetch: AccountSyncFetchSettings | None = None
+
+
+# -- Batch operations -------------------------------------------------------
+
+
+class AccountBatchSyncRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class AccountBatchUpdateRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+    is_active: bool
+
+
+class AccountBatchDeleteRequest(StrictModel):
+    account_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class AccountBatchSyncItem(BaseModel):
+    account_id: UUID
+    status: Literal["accepted", "skipped", "failed"]
+    sync_run_id: UUID | None = None
+    detail: str | None = None
+
+
+class AccountBatchSyncResult(BaseModel):
+    accepted: int
+    skipped: int
+    failed: int
+    items: list[AccountBatchSyncItem]
+
+
+class AccountBatchResult(BaseModel):
+    updated: int
+    account_ids: list[UUID]
+
+
+# -- Cross-platform comparison ---------------------------------------------
+
+
+class AccountComparisonSnapshot(BaseModel):
+    captured_at: datetime
+    follower_count: int | None
+    total_view_count: int | None
+    video_count: int | None
+    engagement_rate: float | None
+    source_kind: SourceKind
+
+
+class AccountComparisonRow(BaseModel):
+    account_id: UUID
+    platform_key: str
+    display_name: str
+    username: str | None
+    is_active: bool
+    sync_status: AccountSyncStatus
+    latest: AccountComparisonSnapshot | None = None
+    previous: AccountComparisonSnapshot | None = None
+    follower_delta: int | None = None
+    view_delta: int | None = None
+    window_hours: float | None = None
+
+
+class AccountComparisonSummary(BaseModel):
+    account_count: int
+    total_followers: int | None = None
+    total_views: int | None = None
+    total_videos: int | None = None
+    best_followers_account_id: UUID | None = None
+    best_views_account_id: UUID | None = None
+    best_engagement_account_id: UUID | None = None
+
+
+class AccountComparisonResponse(BaseModel):
+    rows: list[AccountComparisonRow]
+    summary: AccountComparisonSummary
+
+
+# -- Adaptive sync interval ------------------------------------------------
+
+
+class SyncIntervalResponse(BaseModel):
+    account_id: UUID
+    sync_interval_seconds: int
+    basis: Literal["adaptive", "default"]
+    posting_median_gap_seconds: int | None = None
 
 
 class AccountSnapshotPage(BaseModel):
@@ -222,10 +390,76 @@ class ContentRead(BaseModel):
     fetched_at: datetime
     source_url: str | None
     raw_payload_ref: str | None
+    media: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
+    tags: list[str] = Field(default_factory=list)
     latest_snapshot: ContentSnapshotRead | None = None
     view_growth_24h: float | None = None
+    artifacts: list["MediaArtifactRead"] = Field(default_factory=list)
+
+
+class MediaArtifactRead(BaseModel):
+    """Physical integrity state for one downloadable/playable resource."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    content_item_id: UUID | None = None
+    download_id: UUID | None = None
+    artifact_kind: str
+    language: str | None = None
+    format: str | None = None
+    file_name: str
+    relative_path: str
+    status: Literal["pending", "ready", "missing", "corrupt", "failed", "stale"]
+    size_bytes: int | None = None
+    sha256: str | None = None
+    mime_type: str | None = None
+    source_kind: SourceKind
+    source_provider: str
+    checked_at: datetime | None = None
+    error_detail: str | None = None
+
+
+class CommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    content_item_id: UUID
+    platform_comment_id: str
+    author_name: str
+    author_url: str | None = None
+    author_avatar_url: str | None = None
+    text: str
+    like_count: int | None = None
+    reply_count: int | None = None
+    parent_comment_id: str | None = None
+    is_reply: bool = False
+    published_at: datetime | None = None
+    fetched_at: datetime
+    source_kind: SourceKind = "live"
+    source_provider: str
+    source_url: str | None = None
+    metadata: dict[str, Any] = Field(validation_alias="metadata_json", default_factory=dict)
+
+
+class CommentSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    content_item_id: UUID
+    comment_id: UUID
+    platform_comment_id: str
+    rank: int
+    like_count: int | None = None
+    reply_count: int | None = None
+    published_at: datetime | None = None
+    captured_at: datetime
+    source_kind: SourceKind = "live"
+    source_provider: str
+    source_url: str | None = None
+    metadata: dict[str, Any] = Field(validation_alias="metadata_json", default_factory=dict)
 
 
 class ContentPage(BaseModel):
@@ -233,6 +467,114 @@ class ContentPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class ContentCalendarBucket(BaseModel):
+    """One calendar day with aggregated content metrics."""
+
+    date: str  # YYYY-MM-DD
+    count: int
+    total_views: int
+    total_likes: int
+
+
+class ContentCalendarResponse(BaseModel):
+    """Per-day aggregation of published works for a single month."""
+
+    year: int
+    month: int  # 1-12
+    platform: str | None = None
+    account: UUID | None = None
+    buckets: list[ContentCalendarBucket]
+    total_count: int
+    total_views: int
+
+
+def _default_traffic_source_split() -> dict[str, float | None]:
+    return {"recommendation": None, "search": None, "profile": None}
+
+
+class AccountContentSummary(BaseModel):
+    """Aggregated content-level metrics for an account overview.
+
+    Mirrors the acquisition baseline: every field here is derived from real
+    observations that the account's adapter actually returned. Traffic source
+    proportions are view-weighted; fields the adapter could not obtain (e.g.
+    completion rate when only a public browse path is available) simply come
+    back as ``None`` and the UI renders the required condition instead.
+    """
+
+    account_id: UUID
+    content_count: int
+    avg_completion_rate: float | None = None
+    avg_watch_time_seconds: float | None = None
+    avg_engagement_rate: float | None = None
+    # Totals across the latest snapshot of each synced work. These are kept
+    # separate so the UI never presents account lifetime likes as "total
+    # interactions" and never hides the underlying interaction breakdown.
+    total_like_count: int | None = None
+    total_comment_count: int | None = None
+    total_share_count: int | None = None
+    total_favorite_count: int | None = None
+    total_interactions: int | None = None
+    # Calculated from the above work totals / total work views. These are
+    # derived metrics, not private platform analytics.
+    calculated_engagement_rate: float | None = None
+    calculated_like_rate: float | None = None
+    calculated_comment_rate: float | None = None
+    calculated_share_rate: float | None = None
+    calculated_favorite_rate: float | None = None
+    content_total_view_count: int | None = None
+    # Account-level totals captured from the platform profile (e.g. TikTok's
+    # lifetime "likes"), when the adapter obtained them. These are the
+    # authoritative account-wide figures; ``total_interactions`` is the sum of
+    # synced-content interactions and is only a partial subset for accounts
+    # with more videos than were synced. The UI labels these separately from
+    # the work-level interaction breakdown.
+    account_total_likes: int | None = None
+    account_total_views: int | None = None
+    traffic_source_split: dict[str, float | None] = Field(
+        default_factory=_default_traffic_source_split
+    )
+    recent_24h_view_growth: int | None = None
+    recent_24h_view_growth_estimated: bool = False
+    recent_24h_view_growth_sample_size: int | None = None
+    recent_24h_view_growth_actual_window_hours: float | None = None
+    top_content_id: UUID | None = None
+    top_content_title: str | None = None
+    top_content_views: int | None = None
+
+
+class ContentCreate(BaseModel):
+    """Manual content creation — fields mirror the ContentItem model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: UUID
+    external_id: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(default="video", min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=50_000)
+    published_at: datetime | None = None
+    duration_seconds: float | None = Field(default=None, ge=0)
+    canonical_url: str = Field(max_length=2048)
+    cover_url: str | None = Field(default=None, max_length=2048)
+    language: str | None = Field(default=None, max_length=16)
+    status: str = Field(default="public", max_length=64)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContentUpdate(BaseModel):
+    """Partial update for an existing content item."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = None
+    canonical_url: str | None = Field(default=None, max_length=2048)
+    cover_url: str | None = Field(default=None, max_length=2048)
+    language: str | None = Field(default=None, max_length=16)
+    status: str | None = Field(default=None, max_length=64)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    metadata: dict[str, Any] | None = None
 
 
 class ContentSnapshotPage(BaseModel):
@@ -279,11 +621,18 @@ class SyncRunRead(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    status: Literal["queued", "running", "success", "error", "skipped"]
+    status: Literal["queued", "running", "success", "degraded", "error", "skipped", "cancelled"]
     records_created: int
     records_updated: int
+    progress_percent: int
+    progress_stage: str
+    progress_message: str | None
+    items_processed: int
+    items_total: int | None
     error_code: str | None
     error_message: str | None
+    error_detail: str | None
+    error_hint: str | None
     metadata: dict[str, Any] = Field(validation_alias="metadata_json")
 
 
@@ -292,3 +641,27 @@ class SyncRunPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class SyncRunEventRead(BaseModel):
+    """A single append-only tracklog entry emitted during a sync run."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: UUID
+    sync_run_id: UUID
+    sequence: int
+    created_at: datetime
+    event_type: str
+    level: Literal["info", "warn", "error"]
+    message: str
+    payload: dict[str, Any] = Field(validation_alias="payload", default_factory=dict)
+
+
+class SyncRunDetailRead(BaseModel):
+    """A sync run together with its full, ordered execution tracklog."""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    run: SyncRunRead
+    events: list[SyncRunEventRead]

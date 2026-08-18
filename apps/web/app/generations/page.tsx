@@ -77,7 +77,6 @@ export default async function GenerationsPage() {
                     <td className="px-5 py-4">
                       <span className="rounded-full border border-slate-700 px-2.5 py-1 text-xs">
                         {generationStatusLabel(run.status)}
-                        {run.metadata.provider_is_mock ? "（Mock）" : ""}
                       </span>
                     </td>
                     <td className="px-5 py-4 text-xs text-slate-400">

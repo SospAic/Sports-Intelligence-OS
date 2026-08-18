@@ -9,7 +9,6 @@ from app.providers.notifications.http import (
     TelegramProvider,
     WeComProvider,
 )
-from app.providers.notifications.mock import MockNotificationProvider
 from app.providers.registry import ProviderRegistry
 
 
@@ -17,7 +16,6 @@ def build_notification_provider_registry(
     settings: Settings,
 ) -> ProviderRegistry[NotificationProvider]:
     registry: ProviderRegistry[NotificationProvider] = ProviderRegistry()
-    registry.register(MockNotificationProvider())
     registry.register(EmailNotificationProvider())
     provider_types = (
         GenericWebhookProvider,

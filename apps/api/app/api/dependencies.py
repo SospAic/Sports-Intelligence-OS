@@ -10,9 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.core.security import hash_secret, secure_compare_hash
+from app.models.monitoring import ContentItem
 from app.models.session import AuthSession
 from app.models.user import User
 from app.models.workspace import WorkspaceMembership
+from app.services.workspace_access import (
+    WorkspaceAccessError,
+    account_scope,
+    require_account_access,
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +39,12 @@ class WorkspaceContext:
 
 async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     async with request.app.state.session_factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 DatabaseSession = Annotated[AsyncSession, Depends(get_db)]
@@ -121,6 +132,127 @@ async def get_current_workspace(
 
 
 CurrentWorkspace = Annotated[WorkspaceContext, Depends(get_current_workspace)]
+
+
+async def get_account_scope(
+    workspace: CurrentWorkspace, db: DatabaseSession
+) -> set[UUID] | None:
+    return await account_scope(db, workspace.workspace_id, workspace.auth.user.id, workspace.role)
+
+
+AccountScope = Annotated[set[UUID] | None, Depends(get_account_scope)]
+
+
+async def get_account_access(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> UUID:
+    try:
+        await require_account_access(
+            db,
+            workspace.workspace_id,
+            workspace.auth.user.id,
+            workspace.role,
+            account_id,
+        )
+    except WorkspaceAccessError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "detail": str(exc)},
+        ) from exc
+    return account_id
+
+
+AccountAccess = Annotated[UUID, Depends(get_account_access)]
+
+
+async def get_account_write_access(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> UUID:
+    try:
+        await require_account_access(
+            db,
+            workspace.workspace_id,
+            workspace.auth.user.id,
+            workspace.role,
+            account_id,
+            require_editor=True,
+        )
+    except WorkspaceAccessError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "detail": str(exc)},
+        ) from exc
+    return account_id
+
+
+AccountWriteAccess = Annotated[UUID, Depends(get_account_write_access)]
+
+
+async def get_content_access(
+    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> UUID:
+    account_id = await db.scalar(
+        select(ContentItem.account_id).where(
+            ContentItem.id == content_id,
+            ContentItem.workspace_id == workspace.workspace_id,
+        )
+    )
+    if account_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "content_not_found", "detail": "作品不存在"},
+        )
+    try:
+        await require_account_access(
+            db,
+            workspace.workspace_id,
+            workspace.auth.user.id,
+            workspace.role,
+            account_id,
+        )
+    except WorkspaceAccessError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "detail": str(exc)},
+        ) from exc
+    return content_id
+
+
+ContentAccess = Annotated[UUID, Depends(get_content_access)]
+
+
+async def get_content_write_access(
+    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+) -> UUID:
+    account_id = await db.scalar(
+        select(ContentItem.account_id).where(
+            ContentItem.id == content_id,
+            ContentItem.workspace_id == workspace.workspace_id,
+        )
+    )
+    if account_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "content_not_found", "detail": "作品不存在"},
+        )
+    try:
+        await require_account_access(
+            db,
+            workspace.workspace_id,
+            workspace.auth.user.id,
+            workspace.role,
+            account_id,
+            require_editor=True,
+        )
+    except WorkspaceAccessError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "detail": str(exc)},
+        ) from exc
+    return content_id
+
+
+ContentWriteAccess = Annotated[UUID, Depends(get_content_write_access)]
 
 
 def require_workspace_role(

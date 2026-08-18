@@ -220,6 +220,77 @@ class ValidationResultRead(BaseModel):
     issues: list[ValidationIssueRead]
 
 
+class RuleSimulationContext(BaseModel):
+    """Only explicit editorial context is used; no hidden model inference."""
+
+    text: str | None = Field(default=None, max_length=100_000)
+    sport: str | None = Field(default=None, max_length=120)
+    story_type: str | None = Field(default=None, max_length=120)
+    output_type: str | None = Field(default=None, max_length=120)
+    facts: dict[str, str | int | float | bool | None] = Field(default_factory=dict, max_length=100)
+
+
+class RuleSimulationRequest(BaseModel):
+    context: RuleSimulationContext
+    historical_at: datetime | None = None
+    include_disabled: bool = False
+
+
+class RuleSimulationRuleRead(BaseModel):
+    rule_id: UUID
+    key: str
+    title: str
+    priority: int
+    enabled: bool
+    applies: bool
+    execution_state: Literal["not_executed"] = "not_executed"
+    reason: str
+    source_status: SourceStatus
+
+
+class RuleSimulationFeedbackCreate(BaseModel):
+    verdict: Literal["pass", "fail", "not_applicable", "uncertain"]
+    comment: str | None = Field(default=None, max_length=5000)
+
+
+class RuleSimulationFeedbackRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    simulation_id: UUID
+    rule_id: UUID
+    created_by: UUID
+    verdict: Literal["pass", "fail", "not_applicable", "uncertain"]
+    comment: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RuleSimulationRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    rule_set_id: UUID
+    version_id: UUID
+    version: str
+    source_hash: str
+    created_by: UUID
+    historical_at: datetime | None
+    context: RuleSimulationContext
+    rules: list[RuleSimulationRuleRead]
+    applicable_count: int
+    skipped_count: int
+    feedback: list[RuleSimulationFeedbackRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class RuleSimulationPage(BaseModel):
+    items: list[RuleSimulationRead]
+    page: int
+    page_size: int
+    total: int
+
+
 class VersionActionRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 

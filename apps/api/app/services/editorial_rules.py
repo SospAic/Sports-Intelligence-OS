@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.editorial_rules import Rule, RuleSection, RuleSet, RuleSetVersion
 from app.models.operations import AuditEntry
+from app.models.rule_simulation import RuleSimulationFeedback, RuleSimulationRun
 from app.repositories.editorial_rules import EditorialRuleRepository
 from app.rules.parser import (
     ParsedRule,
@@ -40,12 +44,55 @@ from app.schemas.editorial_rules import (
     RuleSetRead,
     RuleSetVersionRead,
     RuleSetVersionSummary,
+    RuleSimulationContext,
+    RuleSimulationFeedbackCreate,
+    RuleSimulationFeedbackRead,
+    RuleSimulationPage,
+    RuleSimulationRead,
+    RuleSimulationRequest,
+    RuleSimulationRuleRead,
     RuleTreeRead,
     RuleUpdate,
     ValidationIssueRead,
     ValidationResultRead,
     VersionCreate,
 )
+
+
+def _sort_sections_parents_first[T](
+    sections: list[T],
+    *,
+    key_of: Callable[[T], object],
+    parent_of: Callable[[T], object | None],
+) -> list[T]:
+    """Order sections so every parent row precedes its children.
+
+    ``RuleSection`` carries a self-referential ``parent_id`` foreign key.
+    PostgreSQL enforces that constraint at insert time, so a child section must
+    be persisted after its parent. SQLite did not enforce foreign keys, which
+    masked this ordering requirement. Sorting by ancestor depth guarantees
+    parents are inserted first regardless of how deeply sections are nested.
+    """
+    by_key: dict[object, T] = {key_of(item): item for item in sections}
+    depth_cache: dict[object, int] = {}
+
+    def depth(item: T) -> int:
+        key = key_of(item)
+        cached = depth_cache.get(key)
+        if cached is not None:
+            return cached
+        parent_key = parent_of(item)
+        if parent_key is None or parent_key not in by_key:
+            value = 0
+        else:
+            value = 1 + depth(by_key[parent_key])
+        depth_cache[key] = value
+        return value
+
+    return sorted(
+        sections,
+        key=lambda item: (depth(item), getattr(item, "sort_order", 0)),
+    )
 
 
 class EditorialRuleError(RuntimeError):
@@ -87,6 +134,10 @@ EDITABLE_RULE_FIELDS = {
     "tags",
     "source_status",
 }
+
+
+def _source_status(value: str) -> Literal["full", "partial", "unresolved"]:
+    return cast(Literal["full", "partial", "unresolved"], value)
 
 
 class EditorialRuleService:
@@ -357,6 +408,272 @@ class EditorialRuleService:
     ) -> ValidationResultRead:
         version = await self._version(workspace_id, rule_set_id, version_id)
         return self._validation_result(validate_rules(version.rules))
+
+    async def simulate(
+        self,
+        workspace_id: UUID,
+        rule_set_id: UUID,
+        version_id: UUID,
+        actor_id: UUID,
+        payload: RuleSimulationRequest,
+    ) -> RuleSimulationRead:
+        """Persist a deterministic applicability preview for one rule version.
+
+        Rules are editorial instructions, not executable truth predicates. The
+        simulator therefore only applies explicit sport/story/output filters
+        and records ``not_executed`` for every result. It never calls an LLM,
+        mutates a generation run, publishes content, or claims QA passed.
+        """
+
+        version = await self._version(workspace_id, rule_set_id, version_id)
+        context = payload.context
+        projections = [
+            self._simulation_projection(rule, context)
+            for rule in sorted(version.rules, key=lambda item: (-item.priority, item.key))
+            if payload.include_disabled or rule.enabled
+        ]
+        now = datetime.now(UTC)
+        run = RuleSimulationRun(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            rule_set_id=rule_set_id,
+            version_id=version_id,
+            created_by=actor_id,
+            historical_at=payload.historical_at,
+            input_json=context.model_dump(mode="json"),
+            result_json=[item.model_dump(mode="json") for item in projections],
+            applicable_count=sum(item.applies for item in projections),
+            skipped_count=sum(not item.applies for item in projections),
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(run)
+        self._audit(
+            workspace_id,
+            actor_id,
+            "editorial_rule_simulation.created",
+            "rule_simulation",
+            run.id,
+            {
+                "version_id": str(version_id),
+                "applicable_count": run.applicable_count,
+                "skipped_count": run.skipped_count,
+                "historical_at": payload.historical_at.isoformat()
+                if payload.historical_at
+                else None,
+                "execution_state": "not_executed",
+            },
+        )
+        await self.session.commit()
+        await self.session.refresh(run)
+        return self._simulation_read(run, version, feedback=[])
+
+    async def list_simulations(
+        self,
+        workspace_id: UUID,
+        rule_set_id: UUID,
+        version_id: UUID,
+        *,
+        page: int,
+        page_size: int,
+    ) -> RuleSimulationPage:
+        version = await self._version(workspace_id, rule_set_id, version_id)
+        conditions = [
+            RuleSimulationRun.workspace_id == workspace_id,
+            RuleSimulationRun.rule_set_id == rule_set_id,
+            RuleSimulationRun.version_id == version_id,
+        ]
+        total = int(
+            await self.session.scalar(
+                select(func.count()).select_from(RuleSimulationRun).where(*conditions)
+            )
+            or 0
+        )
+        runs = list(
+            (
+                await self.session.scalars(
+                    select(RuleSimulationRun)
+                    .options(selectinload(RuleSimulationRun.feedback))
+                    .where(*conditions)
+                    .order_by(RuleSimulationRun.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+            ).all()
+        )
+        return RuleSimulationPage(
+            items=[self._simulation_read(run, version) for run in runs],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    async def get_simulation(
+        self, workspace_id: UUID, rule_set_id: UUID, version_id: UUID, simulation_id: UUID
+    ) -> RuleSimulationRead:
+        version = await self._version(workspace_id, rule_set_id, version_id)
+        run = await self.session.scalar(
+            select(RuleSimulationRun)
+            .options(selectinload(RuleSimulationRun.feedback))
+            .where(
+                RuleSimulationRun.id == simulation_id,
+                RuleSimulationRun.workspace_id == workspace_id,
+                RuleSimulationRun.rule_set_id == rule_set_id,
+                RuleSimulationRun.version_id == version_id,
+            )
+        )
+        if run is None:
+            raise EditorialRuleNotFound("规则模拟记录不存在")
+        return self._simulation_read(run, version)
+
+    async def feedback(
+        self,
+        workspace_id: UUID,
+        rule_set_id: UUID,
+        version_id: UUID,
+        simulation_id: UUID,
+        rule_id: UUID,
+        actor_id: UUID,
+        payload: RuleSimulationFeedbackCreate,
+    ) -> RuleSimulationFeedbackRead:
+        version = await self._version(workspace_id, rule_set_id, version_id)
+        run = await self.session.scalar(
+            select(RuleSimulationRun).where(
+                RuleSimulationRun.id == simulation_id,
+                RuleSimulationRun.workspace_id == workspace_id,
+                RuleSimulationRun.rule_set_id == rule_set_id,
+                RuleSimulationRun.version_id == version_id,
+            )
+        )
+        if run is None:
+            raise EditorialRuleNotFound("规则模拟记录不存在")
+        result_rule_ids = {str(item.get("rule_id")) for item in run.result_json}
+        if str(rule_id) not in result_rule_ids:
+            raise EditorialRuleConflict(
+                "该规则不在模拟结果中，不能提交反馈", "simulation_rule_not_found"
+            )
+        if not any(item.id == rule_id for item in version.rules):
+            raise EditorialRuleNotFound("规则不存在")
+        feedback = await self.session.scalar(
+            select(RuleSimulationFeedback).where(
+                RuleSimulationFeedback.simulation_id == simulation_id,
+                RuleSimulationFeedback.rule_id == rule_id,
+                RuleSimulationFeedback.created_by == actor_id,
+            )
+        )
+        now = datetime.now(UTC)
+        if feedback is None:
+            feedback = RuleSimulationFeedback(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                simulation_id=simulation_id,
+                rule_id=rule_id,
+                created_by=actor_id,
+                verdict=payload.verdict,
+                comment=payload.comment,
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(feedback)
+        else:
+            feedback.verdict = payload.verdict
+            feedback.comment = payload.comment
+            feedback.updated_at = now
+        self._audit(
+            workspace_id,
+            actor_id,
+            "editorial_rule_simulation.feedback_submitted",
+            "rule_simulation",
+            simulation_id,
+            {"rule_id": str(rule_id), "verdict": payload.verdict},
+        )
+        await self.session.commit()
+        await self.session.refresh(feedback)
+        return RuleSimulationFeedbackRead.model_validate(feedback)
+
+    @staticmethod
+    def _simulation_projection(
+        rule: Rule, context: RuleSimulationContext
+    ) -> RuleSimulationRuleRead:
+        if not rule.enabled:
+            return RuleSimulationRuleRead(
+                rule_id=rule.id,
+                key=rule.key,
+                title=rule.title,
+                priority=rule.priority,
+                enabled=False,
+                applies=False,
+                reason="规则已停用",
+                source_status=_source_status(rule.source_status),
+            )
+        for label, value, allowed in (
+            ("sport", context.sport, rule.sports),
+            ("story_type", context.story_type, rule.story_types),
+            ("output_type", context.output_type, rule.output_types),
+        ):
+            if not allowed:
+                continue
+            normalized = {item.casefold() for item in allowed}
+            if value is None:
+                return RuleSimulationRuleRead(
+                    rule_id=rule.id,
+                    key=rule.key,
+                    title=rule.title,
+                    priority=rule.priority,
+                    enabled=True,
+                    applies=False,
+                    reason=f"规则限定 {label}，输入未提供该上下文",
+                    source_status=_source_status(rule.source_status),
+                )
+            if value.casefold() not in normalized:
+                return RuleSimulationRuleRead(
+                    rule_id=rule.id,
+                    key=rule.key,
+                    title=rule.title,
+                    priority=rule.priority,
+                    enabled=True,
+                    applies=False,
+                    reason=f"输入 {label}={value} 不匹配规则限定值",
+                    source_status=_source_status(rule.source_status),
+                )
+        reason = "上下文筛选匹配；未执行规则指令、模型或 QA"
+        if rule.source_status != "full":
+            reason += f"；来源状态为 {rule.source_status}，需人工核验"
+        return RuleSimulationRuleRead(
+            rule_id=rule.id,
+            key=rule.key,
+            title=rule.title,
+            priority=rule.priority,
+            enabled=True,
+            applies=True,
+            reason=reason,
+            source_status=_source_status(rule.source_status),
+        )
+
+    def _simulation_read(
+        self,
+        run: RuleSimulationRun,
+        version: RuleSetVersion,
+        feedback: list[RuleSimulationFeedback] | None = None,
+    ) -> RuleSimulationRead:
+        feedback_items = run.feedback if feedback is None else feedback
+        return RuleSimulationRead(
+            id=run.id,
+            workspace_id=run.workspace_id,
+            rule_set_id=run.rule_set_id,
+            version_id=run.version_id,
+            version=version.version,
+            source_hash=version.source_hash,
+            created_by=run.created_by,
+            historical_at=run.historical_at,
+            context=RuleSimulationContext.model_validate(run.input_json),
+            rules=[RuleSimulationRuleRead.model_validate(item) for item in run.result_json],
+            applicable_count=run.applicable_count,
+            skipped_count=run.skipped_count,
+            feedback=[RuleSimulationFeedbackRead.model_validate(item) for item in feedback_items],
+            created_at=run.created_at,
+            updated_at=run.updated_at,
+        )
 
     async def publish(
         self,
@@ -734,7 +1051,9 @@ class EditorialRuleService:
                 description=item.description,
                 sort_order=item.sort_order,
             )
-            for item in source.sections
+            for item in _sort_sections_parents_first(
+                source.sections, key_of=lambda s: s.id, parent_of=lambda s: s.parent_id
+            )
         ]
         draft.rules = [
             Rule(
@@ -807,7 +1126,9 @@ class EditorialRuleService:
                 description=item.description,
                 sort_order=item.sort_order,
             )
-            for item in document.sections
+            for item in _sort_sections_parents_first(
+                document.sections, key_of=lambda s: s.key, parent_of=lambda s: s.parent_key
+            )
         ]
         version.rules = [
             Rule(

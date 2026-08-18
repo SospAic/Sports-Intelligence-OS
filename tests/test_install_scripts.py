@@ -40,8 +40,7 @@ class InstallerContractTests(unittest.TestCase):
 
     def test_no_fixed_administrator_password_is_embedded(self) -> None:
         installers = "\n".join(
-            self.read(path)
-            for path in ("scripts/install-common.sh", "scripts/install-windows.ps1")
+            self.read(path) for path in ("scripts/install-common.sh", "scripts/install-windows.ps1")
         )
         self.assertNotRegex(
             installers,

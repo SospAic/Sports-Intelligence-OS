@@ -1,18 +1,37 @@
 "use client";
 
 import type {
+  AccountRecordPage,
   ContentRecord,
   ContentRecordPage,
   PlatformRecord,
 } from "@sio/shared-types";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { BookMarked, Download, Search, Save } from "lucide-react";
+import {
+  BookMarked,
+  Download,
+  Pencil,
+  Pin,
+  PinOff,
+  Plus,
+  Search,
+  Save,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
+import { ExternalImage } from "@/components/external-image";
+import { MultiSelect } from "@/components/multi-select";
+import { contentCoverUrl } from "@/lib/media";
+import {
+  AvailabilityValue,
+  NeedsConditionBadge,
+} from "@/components/metric-availability";
+import { TimeRangePicker } from "@/components/time-range-picker";
 import { useToast } from "@/components/toast";
 import {
   PageHeader,
@@ -23,7 +42,14 @@ import {
   secondaryButtonClass,
 } from "@/components/ui";
 import { apiRequest, downloadApiFile } from "@/lib/browser-api";
+import { ContentCalendar } from "./content-calendar";
 import { buildContentListPath } from "@/lib/admin-queries";
+import {
+  metricAvailability,
+  metricConditionText,
+} from "@/lib/metric-availability";
+import { resolvePublishedFrom } from "@/lib/time-range";
+import { useUrlState } from "@/lib/use-persisted-state";
 import {
   formatDate,
   formatNumber,
@@ -50,18 +76,39 @@ export function ContentsClient() {
   const { workspaceId, role } = useWorkspace();
   const router = useRouter();
   const { notify } = useToast();
+  const client = useQueryClient();
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState(() => readSavedView().platform);
   const [minViews, setMinViews] = useState(() => readSavedView().minViews);
-  const [publishedFrom, setPublishedFrom] = useState("");
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
+  const [range, setRange] = useUrlState("range", "all");
+  const [from, setFrom] = useUrlState("from", "");
+  const [view, setView] = useUrlState("view", "list");
+  const [virtualized, setVirtualized] = useState(false);
+  const publishedFrom = resolvePublishedFrom(range, from || null) ?? undefined;
   const [selected, setSelected] = useState<string[]>([]);
+  const [pinnedIds, setPinnedIds] = useState<string[]>([]);
+  const contentPrefsApplied = useRef(false);
+  const contentPrefs = useQuery({
+    queryKey: ["content-view-preferences", workspaceId],
+    queryFn: () =>
+      apiRequest<{ preferences?: Record<string, unknown> } | null>(
+        "/accounts/view-preferences?view=contents",
+        { workspaceId: workspaceId! },
+      ),
+    enabled: Boolean(workspaceId),
+    staleTime: Infinity,
+  });
+  const [creating, setCreating] = useState(false);
+  const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
   const contentPath = buildContentListPath({
     page,
     query,
     platform,
     minViews,
     publishedFrom,
+    tags: tagFilter,
   });
   const contents = useQuery({
     queryKey: ["contents", workspaceId, contentPath],
@@ -71,11 +118,121 @@ export function ContentsClient() {
       }),
     enabled: Boolean(workspaceId),
   });
+  useEffect(() => {
+    if (contentPrefsApplied.current || !contentPrefs.data?.preferences) return;
+    const values = contentPrefs.data.preferences.pinnedIds;
+    if (Array.isArray(values)) {
+      // The server preference arrives after the first render; this one-time
+      // hydration is the state synchronization point for the view preference.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setPinnedIds(values.filter((id): id is string => typeof id === "string"));
+    }
+    contentPrefsApplied.current = true;
+  }, [contentPrefs.data]);
+  const displayContents = useMemo(() => {
+    const rank = new Map(pinnedIds.map((id, index) => [id, index]));
+    return [...(contents.data?.items ?? [])].sort((left, right) => {
+      const leftRank = rank.get(left.id);
+      const rightRank = rank.get(right.id);
+      if (leftRank === undefined && rightRank === undefined) return 0;
+      if (leftRank === undefined) return 1;
+      if (rightRank === undefined) return -1;
+      return leftRank - rightRank;
+    });
+  }, [contents.data?.items, pinnedIds]);
+  const tagOptions = useQuery({
+    queryKey: ["content-tags", workspaceId],
+    queryFn: () =>
+      apiRequest<string[]>("/contents/tags", { workspaceId: workspaceId! }),
+    enabled: Boolean(workspaceId),
+  });
   const platforms = useQuery({
     queryKey: ["platforms"],
     queryFn: () => apiRequest<PlatformRecord[]>("/platforms?enabled=true"),
     enabled: Boolean(workspaceId),
   });
+  const accounts = useQuery({
+    queryKey: ["accounts-for-content"],
+    queryFn: () =>
+      apiRequest<AccountRecordPage>("/accounts?page_size=100", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId) && creating,
+  });
+  const [pending, setPending] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  async function createContent(form: FormData) {
+    if (!workspaceId) return;
+    setPending(true);
+    try {
+      await apiRequest<ContentRecord>("/contents", {
+        method: "POST",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({
+          account_id: form.get("account_id"),
+          external_id: form.get("external_id"),
+          title: form.get("title"),
+          canonical_url: form.get("canonical_url"),
+          content_type: form.get("content_type") || "video",
+          description: form.get("description") || null,
+          cover_url: form.get("cover_url") || null,
+          published_at: form.get("published_at") || null,
+          language: form.get("language") || null,
+        }),
+      });
+      notify("作品已添加");
+      setCreating(false);
+      await client.invalidateQueries({ queryKey: ["contents"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "添加失败", "error");
+    } finally {
+      setPending(false);
+    }
+  }
+  async function deleteContent(id: string) {
+    if (!workspaceId) return;
+    if (!window.confirm("确定删除该作品？此操作不可撤销。")) return;
+    try {
+      await apiRequest<void>(`/contents/${id}`, {
+        method: "DELETE",
+        workspaceId,
+        csrf: true,
+      });
+      notify("作品已删除");
+      await client.invalidateQueries({ queryKey: ["contents"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "删除失败", "error");
+    }
+  }
+  async function updateContent(id: string) {
+    if (!workspaceId) return;
+    setPending(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (editTitle.trim()) body.title = editTitle.trim();
+      if (editDescription.trim()) body.description = editDescription.trim();
+      if (!Object.keys(body).length) {
+        setEditingId(null);
+        return;
+      }
+      await apiRequest<ContentRecord>(`/contents/${id}`, {
+        method: "PATCH",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify(body),
+      });
+      notify("作品已更新");
+      setEditingId(null);
+      await client.invalidateQueries({ queryKey: ["contents"] });
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "更新失败", "error");
+    } finally {
+      setPending(false);
+    }
+  }
   async function createTopics() {
     if (!workspaceId || !selected.length) return;
     try {
@@ -91,12 +248,35 @@ export function ContentsClient() {
       notify(error instanceof Error ? error.message : "创建选题失败", "error");
     }
   }
-  function saveView() {
+  async function saveView() {
     window.localStorage.setItem(
       "sio-content-view",
-      JSON.stringify({ platform, minViews }),
+      JSON.stringify({ platform, minViews, pinnedIds }),
     );
+    if (workspaceId) {
+      await apiRequest("/accounts/view-preferences?view=contents", {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ preferences: { platform, minViews, pinnedIds } }),
+      });
+    }
     notify("筛选视图已保存到当前浏览器");
+  }
+  async function togglePinnedContent(contentId: string) {
+    const next = pinnedIds.includes(contentId)
+      ? pinnedIds.filter((id) => id !== contentId)
+      : [...pinnedIds, contentId];
+    setPinnedIds(next);
+    if (workspaceId) {
+      await apiRequest("/accounts/view-preferences?view=contents", {
+        method: "PUT",
+        workspaceId,
+        csrf: true,
+        body: JSON.stringify({ preferences: { platform, minViews, pinnedIds: next } }),
+      });
+    }
+    notify(next.includes(contentId) ? "作品已置顶，可继续置顶其他作品" : "作品已取消置顶");
   }
   const columns: ColumnDef<ContentRecord, unknown>[] = [
     {
@@ -123,15 +303,11 @@ export function ContentsClient() {
       header: "作品",
       cell: ({ row }) => (
         <div className="flex min-w-72 items-center gap-3">
-          {row.original.cover_url ? (
-            <div
-              aria-hidden="true"
-              className="h-12 w-20 rounded-md bg-cover bg-center"
-              style={{ backgroundImage: `url(${row.original.cover_url})` }}
-            />
-          ) : (
-            <div className="h-12 w-20 rounded-md bg-slate-800" />
-          )}
+          <ExternalImage
+            src={contentCoverUrl(row.original)}
+            alt=""
+            className="h-12 w-20 rounded-md object-cover"
+          />
           <div className="min-w-0">
             <Link
               className="line-clamp-2 font-medium text-cyan-300 hover:underline"
@@ -160,7 +336,7 @@ export function ContentsClient() {
     },
     {
       accessorKey: "view_growth_24h",
-      header: "24h 增长",
+      header: "约 24h 净增",
       cell: ({ row }) => formatNumber(row.original.view_growth_24h),
     },
     {
@@ -184,17 +360,146 @@ export function ContentsClient() {
         formatNumber(row.original.latest_snapshot?.share_count),
     },
     {
-      accessorFn: (item) =>
-        item.latest_snapshot && item.latest_snapshot.view_count
-          ? ((item.latest_snapshot.like_count ?? 0) +
-              (item.latest_snapshot.comment_count ?? 0) +
-              (item.latest_snapshot.share_count ?? 0)) /
-            item.latest_snapshot.view_count
-          : null,
+      accessorFn: (item) => {
+        const snapshot = item.latest_snapshot;
+        if (!snapshot?.view_count) return null;
+        const observed = [
+          snapshot.like_count,
+          snapshot.comment_count,
+          snapshot.share_count,
+        ].filter(
+          (value): value is number => value !== undefined && value !== null,
+        );
+        return observed.length
+          ? observed.reduce((sum, value) => sum + value, 0) /
+              snapshot.view_count
+          : null;
+      },
       id: "engagement",
       header: "互动率",
       cell: ({ getValue }) => formatPercent(getValue<number | null>()),
     },
+    {
+      accessorFn: (item) => item.latest_snapshot?.completion_rate ?? -1,
+      id: "completion_rate",
+      header: "完播率",
+      cell: ({ row }) => {
+        const value = row.original.latest_snapshot?.completion_rate;
+        const status = metricAvailability(
+          "completion_rate",
+          value !== null && value !== undefined,
+        );
+        if (status === "needs-condition")
+          return (
+            <NeedsConditionBadge
+              text={metricConditionText("completion_rate")}
+            />
+          );
+        return (
+          <AvailabilityValue
+            metricKey="completion_rate"
+            value={value}
+            format={formatPercent}
+          />
+        );
+      },
+    },
+    {
+      accessorFn: (item) => item.tags ?? [],
+      id: "tags",
+      header: "标签",
+      enableSorting: false,
+      cell: ({ row }) => {
+        const tags = row.original.tags ?? [];
+        if (tags.length === 0)
+          return <span className="text-slate-600">—</span>;
+        return (
+          <div className="flex max-w-[220px] flex-wrap gap-1">
+            {tags.slice(0, 4).map((tag: string) => (
+              <span
+                key={tag}
+                className="rounded-md bg-slate-800 px-1.5 py-0.5 text-xs text-slate-300"
+              >
+                {tag}
+              </span>
+            ))}
+            {tags.length > 4 && (
+              <span className="text-xs text-slate-500">
+                +{tags.length - 4}
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
+    ...(canEdit
+      ? [
+          {
+            id: "actions",
+            header: "操作",
+            enableSorting: false,
+            cell: ({ row }: { row: { original: ContentRecord } }) => (
+              <div className="flex items-center gap-2 whitespace-nowrap">
+                {editingId === row.original.id ? (
+                  <>
+                    <input
+                      className={`${inputClass} h-8 w-32 text-xs`}
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      placeholder="新标题"
+                    />
+                    <button
+                      className="text-cyan-300 disabled:text-slate-600"
+                      disabled={pending}
+                      onClick={() => updateContent(row.original.id)}
+                    >
+                      保存
+                    </button>
+                    <button
+                      className="text-slate-500"
+                      onClick={() => setEditingId(null)}
+                    >
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className={`inline-flex items-center gap-1 ${pinnedIds.includes(row.original.id) ? "text-amber-300" : "text-slate-400 hover:text-amber-300"}`}
+                      onClick={() => void togglePinnedContent(row.original.id)}
+                      title={pinnedIds.includes(row.original.id) ? "取消置顶作品" : "置顶作品"}
+                    >
+                      {pinnedIds.includes(row.original.id) ? <PinOff size={14} /> : <Pin size={14} />}
+                      {pinnedIds.includes(row.original.id) ? "取消置顶" : "置顶"}
+                    </button>
+                    <button
+                      className="inline-flex items-center gap-1 text-cyan-300 hover:text-cyan-200"
+                      onClick={() => {
+                        setEditingId(row.original.id);
+                        setEditTitle(row.original.title);
+                        setEditDescription(row.original.description ?? "");
+                      }}
+                    >
+                      <Pencil size={14} />
+                      编辑
+                    </button>
+                    {["owner", "admin"].includes(role ?? "") && (
+                      <button
+                        className="inline-flex items-center gap-1 text-red-400 hover:text-red-300"
+                        onClick={() => deleteContent(row.original.id)}
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            ),
+          } as ColumnDef<ContentRecord, unknown>,
+        ]
+      : []),
   ];
   return (
     <main className="mx-auto max-w-[1600px] space-y-6 px-4 py-7 lg:px-8">
@@ -204,6 +509,39 @@ export function ContentsClient() {
         description="统一排序、筛选和比较作品快照；增长量来自派生指标，不会冒充平台原始字段。"
         actions={
           <>
+            <div className="flex overflow-hidden rounded-lg border border-slate-700">
+              <button
+                className={`px-3 py-1.5 text-sm ${
+                  view === "list"
+                    ? "bg-cyan-500/20 text-cyan-200"
+                    : "text-slate-400 hover:bg-slate-800"
+                }`}
+                onClick={() => setView("list")}
+              >
+                列表
+              </button>
+              <button
+                className={`px-3 py-1.5 text-sm ${
+                  view === "calendar"
+                    ? "bg-cyan-500/20 text-cyan-200"
+                    : "text-slate-400 hover:bg-slate-800"
+                }`}
+                onClick={() => setView("calendar")}
+              >
+                日历
+              </button>
+            </div>
+            <button
+              className={`px-3 py-1.5 text-sm rounded-lg border border-slate-700 ${
+                virtualized
+                  ? "bg-cyan-500/20 text-cyan-200"
+                  : "text-slate-400 hover:bg-slate-800"
+              }`}
+              onClick={() => setVirtualized((v) => !v)}
+              title="切换为虚拟滚动（适合超长作品列表）"
+            >
+              虚拟滚动
+            </button>
             <button className={secondaryButtonClass} onClick={saveView}>
               <Save size={15} />
               保存视图
@@ -247,10 +585,27 @@ export function ContentsClient() {
             >
               批量添加监控规则
             </button>
+            {canEdit && (
+              <button
+                className={buttonClass}
+                onClick={() => setCreating((value) => !value)}
+              >
+                <Plus size={16} />
+                手动添加作品
+              </button>
+            )}
           </>
         }
       />
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <TimeRangePicker
+          value={range}
+          onChange={setRange}
+          customFrom={from}
+          onCustomFromChange={setFrom}
+        />
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         <label className="relative">
           <Search
             className="absolute top-1/2 left-3 -translate-y-1/2 text-slate-500"
@@ -289,14 +644,102 @@ export function ContentsClient() {
           onChange={(e) => setMinViews(e.target.value)}
           placeholder="最低播放量"
         />
-        <input
-          className={inputClass}
-          value={publishedFrom}
-          type="date"
-          onChange={(e) => setPublishedFrom(e.target.value)}
+        <MultiSelect
+          label="标签"
+          options={tagOptions.data ?? []}
+          value={tagFilter}
+          onChange={(next) => {
+            setTagFilter(next);
+            setPage(1);
+          }}
+          placeholder="全部标签"
         />
       </div>
-      {contents.isLoading ? (
+      {creating && (
+        <form
+          action={createContent}
+          className="grid gap-3 rounded-2xl border border-cyan-900/60 bg-slate-950/70 p-5 md:grid-cols-2 xl:grid-cols-3"
+        >
+          <select name="account_id" required className={inputClass}>
+            <option value="">选择关联账号</option>
+            {accounts.data?.items?.map((acc) => (
+              <option value={acc.id} key={acc.id}>
+                {acc.display_name} ({acc.platform.name})
+              </option>
+            ))}
+          </select>
+          <input
+            name="external_id"
+            required
+            className={inputClass}
+            placeholder="平台作品 ID"
+          />
+          <input
+            name="title"
+            required
+            className={inputClass}
+            placeholder="作品标题"
+          />
+          <input
+            name="canonical_url"
+            required
+            type="url"
+            className={inputClass}
+            placeholder="作品链接 (https://...)"
+          />
+          <input
+            name="cover_url"
+            type="url"
+            className={inputClass}
+            placeholder="缩略图链接（可选）"
+          />
+          <select
+            name="content_type"
+            className={inputClass}
+            defaultValue="video"
+          >
+            <option value="video">视频</option>
+            <option value="short">短视频</option>
+            <option value="live">直播</option>
+            <option value="article">图文</option>
+          </select>
+          <input
+            name="published_at"
+            type="datetime-local"
+            className={inputClass}
+            placeholder="发布时间（可选）"
+          />
+          <input
+            name="language"
+            className={inputClass}
+            placeholder="语言代码（可选，如 zh）"
+          />
+          <textarea
+            name="description"
+            className={`${inputClass} h-20 resize-none md:col-span-2`}
+            placeholder="作品描述（可选）"
+          />
+          <div className="flex gap-2 md:col-span-2 xl:col-span-3">
+            <button disabled={pending} className={buttonClass}>
+              {pending ? "保存中…" : "保存作品"}
+            </button>
+            <button
+              type="button"
+              className={secondaryButtonClass}
+              onClick={() => setCreating(false)}
+            >
+              取消
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 md:col-span-2 xl:col-span-3">
+            手动添加的作品会标记为 imported
+            来源；播放、点赞等数据需要账号同步后才会出现。
+          </p>
+        </form>
+      )}
+      {view === "calendar" ? (
+        <ContentCalendar platform={platform} query={query} />
+      ) : contents.isLoading ? (
         <div className="rounded-2xl border border-slate-800">
           <SkeletonRows />
         </div>
@@ -309,14 +752,15 @@ export function ContentsClient() {
         />
       ) : (
         <DataTable
-          data={contents.data?.items ?? []}
+          data={displayContents}
           columns={columns}
           total={contents.data?.total ?? 0}
           page={page}
-          pageSize={20}
+          pageSize={virtualized ? 200 : 20}
           onPageChange={setPage}
           empty="没有符合条件的作品；请先同步账号。"
           getRowId={(row) => row.id}
+          virtualized={virtualized}
         />
       )}
     </main>

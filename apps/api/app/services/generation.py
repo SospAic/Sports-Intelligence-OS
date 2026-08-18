@@ -22,20 +22,24 @@ from app.models.generation import (
 )
 from app.models.monitoring import ContentItem
 from app.models.news import Article, EventArticle, Source, TopicEvent
-from app.models.operations import AuditEntry, SystemEvent
+from app.models.operations import SystemEvent
 from app.prompts.renderer import PromptRenderError, redact_sensitive, render_prompt
 from app.providers.llm.base import (
     LLMMessage,
     LLMProvider,
+    LLMProviderAuthenticationError,
     LLMProviderError,
+    LLMProviderRateLimitError,
     LLMRequest,
     LLMResponse,
 )
+from app.providers.llm.openai_compatible import OpenAICompatibleProvider
 from app.providers.registry import ProviderRegistry
 from app.repositories.generation import GenerationRepository
 from app.schemas.generation import (
     GenerationCreate,
     GenerationDecisionUpdate,
+    GenerationEvidencePackage,
     GenerationRunPage,
     GenerationRunRead,
     PromptCollectionCreate,
@@ -50,6 +54,8 @@ from app.schemas.generation import (
     ProviderDescriptor,
     WorkflowRead,
 )
+from app.services.audit import build_audit_entry, build_external_call_attempt
+from app.services.error_detail import business_hint_for
 from app.services.settings import SettingsError, SettingsService
 from app.workflows.generation import (
     DEFAULT_MAX_CHARS,
@@ -287,20 +293,22 @@ class GenerationService:
             provider = await self._provider(workspace_id, registered.key)
             health = await provider.health_check()
             source: Literal["database", "environment", "builtin", "unconfigured"] = "builtin"
+            provider_id = "openai"
+            display_name = provider.name
             default_model: str | None = None
             default_parameters: dict[str, Any] = {}
             if provider.key == "openai_compatible" and self.settings is not None:
                 setting = await self._settings_service().llm_setting(workspace_id)
                 source = setting.source
+                provider_id = setting.provider_id
+                display_name = setting.name
                 default_model = setting.default_model
                 default_parameters = setting.default_parameters
-            elif provider.is_mock:
-                default_model = "mock-sports-writer-v1"
-                default_parameters = {"temperature": 0.2, "max_tokens": 4096}
             descriptors.append(
                 ProviderDescriptor(
                     key=provider.key,
-                    name=provider.name,
+                    provider_id=provider_id,
+                    name=display_name,
                     configured=provider.configured,
                     is_mock=provider.is_mock,
                     supports_streaming=provider.supports_streaming,
@@ -327,8 +335,6 @@ class GenerationService:
             raise GenerationError(str(exc), code="prompt_render_failed", status_code=422) from exc
         provider = await self._provider(workspace_id, payload.provider)
         warnings = ["预览中的外部输入属于不可信数据，不能覆盖系统指令"]
-        if provider.is_mock:
-            warnings.append("当前选择 Mock LLM；所有结果仅用于测试")
         if truncated:
             warnings.append("规则包按优先级编译，未将全部规则注入单个步骤")
         return PromptPreviewRead(
@@ -410,8 +416,11 @@ class GenerationService:
             token_usage={},
             estimated_cost=None,
             error=None,
+            error_code=None,
+            error_detail_safe=None,
+            error_hint=None,
             run_metadata={
-                "source_kind": "mock" if provider.is_mock else "live",
+                "source_kind": "live",
                 "provider_is_mock": provider.is_mock,
                 "workflow_key": workflow.key,
             },
@@ -463,6 +472,117 @@ class GenerationService:
     async def get_run(self, workspace_id: UUID, run_id: UUID) -> GenerationRunRead:
         return GenerationRunRead.model_validate(await self._run(workspace_id, run_id))
 
+    async def evidence_package(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> GenerationEvidencePackage:
+        """Return the persisted evidence graph for a generation run.
+
+        The package is intentionally read-only and derived only from frozen
+        run input plus step outputs.  Missing sources remain missing instead
+        of being replaced by an LLM answer or an inferred URL.
+        """
+
+        run = await self._run(workspace_id, run_id)
+        frozen = run.input_payload
+        raw_sources = frozen.get("sources", [])
+        sources = (
+            [item for item in raw_sources if isinstance(item, dict)]
+            if isinstance(raw_sources, list)
+            else []
+        )
+        source_ids = {
+            str(item.get("source_id"))
+            for item in sources
+            if item.get("source_id") is not None
+        }
+        facts = next((step for step in run.steps if step.step_key == "normalize_facts"), None)
+        timeline = next((step for step in run.steps if step.step_key == "build_timeline"), None)
+        qualification = next(
+            (step for step in run.steps if step.step_key == "story_qualification"), None
+        )
+
+        facts_output = facts.output_payload if facts else {}
+        timeline_output = timeline.output_payload if timeline else {}
+        qualification_output = qualification.output_payload if qualification else {}
+        claims = facts_output.get("facts", []) if isinstance(facts_output, dict) else []
+        timeline_items = (
+            timeline_output.get("timeline", []) if isinstance(timeline_output, dict) else []
+        )
+        qualification_data = (
+            qualification_output if isinstance(qualification_output, dict) else {}
+        )
+
+        evidence_status: Literal["available", "partial", "unavailable"]
+        if not sources:
+            evidence_status = "unavailable"
+            evidence_detail = "冻结输入中没有独立来源，核实状态保持为未完成。"
+        elif run.verification_status == "corroborated" and len(source_ids) >= 2:
+            evidence_status = "available"
+            evidence_detail = (
+                f"冻结输入中有 {len(sources)} 条来源，且至少两条来源具备不同 source_id。"
+            )
+        else:
+            evidence_status = "partial"
+            evidence_detail = f"冻结输入中有 {len(sources)} 条来源，但尚未达到交叉核实条件。"
+
+        output = run.final_output or {}
+        output_references = [
+            {
+                "field": "event_fact_summary",
+                "value": output.get("event_fact_summary"),
+                "evidence_ids": sorted(source_ids),
+            },
+            {
+                "field": "fact_sources",
+                "value": output.get("fact_sources", sources),
+                "evidence_ids": sorted(source_ids),
+            },
+            {
+                "field": "verification_status",
+                "value": output.get("verification_status", run.verification_status),
+                "evidence_ids": sorted(source_ids),
+            },
+        ]
+
+        step_statuses = [
+            {
+                "step_key": step.step_key,
+                "status": step.status,
+                "completed_at": step.completed_at,
+                "source_ids": sorted(
+                    {
+                        str(item.get("source_id"))
+                        for item in (
+                            step.output_payload.get("sources", [])
+                            if isinstance(step.output_payload, dict)
+                            else []
+                        )
+                        if isinstance(item, dict) and item.get("source_id") is not None
+                    }
+                ),
+            }
+            for step in sorted(run.steps, key=lambda item: item.sort_order)
+        ]
+
+        return GenerationEvidencePackage(
+            run_id=run.id,
+            input_hash=run.input_hash,
+            frozen_at=self._parse_frozen_at(frozen.get("frozen_at")),
+            source_kind=str(
+                frozen.get("source_kind") or run.run_metadata.get("source_kind") or "unknown"
+            ),
+            verification_status=run.verification_status,
+            evidence_status=evidence_status,
+            evidence_detail=evidence_detail,
+            source_count=len(sources),
+            sources=sources,
+            claims=claims if isinstance(claims, list) else [],
+            timeline=timeline_items if isinstance(timeline_items, list) else [],
+            qualification=qualification_data,
+            step_statuses=step_statuses,
+            output_references=output_references,
+        )
+
     async def update_decision(
         self,
         workspace_id: UUID,
@@ -480,6 +600,17 @@ class GenerationService:
         )
         await self.session.commit()
         return GenerationRunRead.model_validate(await self._run(workspace_id, run.id))
+
+    @staticmethod
+    def _parse_frozen_at(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
 
     async def clone_for_manual_rewrite(
         self,
@@ -519,6 +650,9 @@ class GenerationService:
             token_usage={},
             estimated_cost=None,
             error=None,
+            error_code=None,
+            error_detail_safe=None,
+            error_hint=None,
             run_metadata={
                 "source_kind": source.run_metadata.get("source_kind"),
                 "provider_is_mock": source.run_metadata.get("provider_is_mock", False),
@@ -562,6 +696,9 @@ class GenerationService:
         run.status = "queued"
         run.current_step = None
         run.error = None
+        run.error_code = None
+        run.error_detail_safe = None
+        run.error_hint = None
         run.completed_at = None
         self._audit(workspace_id, actor_id, "generation_run.retried", "generation_run", run.id)
         await self.session.commit()
@@ -575,6 +712,9 @@ class GenerationService:
             "code": "generation_dispatch_failed",
             "message": "Background generation worker is unavailable",
         }
+        run.error_code = "generation_dispatch_failed"
+        run.error_detail_safe = "Background generation worker is unavailable"
+        run.error_hint = business_hint_for("generation_dispatch_failed", category="generation")
         await self.session.commit()
 
     async def execute_run(self, run_id: UUID) -> None:
@@ -610,6 +750,9 @@ class GenerationService:
         run.status = "running"
         run.started_at = datetime.now(UTC)
         run.error = None
+        run.error_code = None
+        run.error_detail_safe = None
+        run.error_hint = None
         await self.session.commit()
 
         context: dict[str, Any] = {"frozen_input": run.input_payload}
@@ -688,10 +831,14 @@ class GenerationService:
             if failed is not None:
                 failed.status = "failed"
                 failed.completed_at = datetime.now(UTC)
+                code = getattr(exc, "code", "generation_execution_failed")
                 failed.error = {
-                    "code": getattr(exc, "code", "generation_execution_failed"),
+                    "code": code,
                     "message": str(exc)[:1000],
                 }
+                failed.error_code = code
+                failed.error_detail_safe = str(exc)[:2000]
+                failed.error_hint = business_hint_for(code, category="generation")
                 current = next(
                     (item for item in failed.steps if item.step_key == failed.current_step), None
                 )
@@ -699,6 +846,25 @@ class GenerationService:
                     current.status = "failed"
                     current.completed_at = datetime.now(UTC)
                     current.error = dict(failed.error)
+                self.session.add(
+                    SystemEvent(
+                        id=uuid4(),
+                        workspace_id=failed.workspace_id,
+                        severity="error",
+                        category="generation",
+                        event_type="generation.run_failed",
+                        message=f"生成工作流执行失败：{str(exc)[:200]}",
+                        resource_type="generation_run",
+                        resource_id=failed.id,
+                        status="open",
+                        error_code=code,
+                        error_detail=str(exc)[:2000],
+                        error_hint=business_hint_for(code, category="generation"),
+                        metadata_safe_json={"model": failed.model, "provider": failed.provider},
+                        trace_id=uuid4(),
+                        created_at=datetime.now(UTC),
+                    )
+                )
                 await self.session.commit()
             raise
 
@@ -787,8 +953,6 @@ class GenerationService:
             findings: list[dict[str, Any]] = []
             if not draft.strip():
                 findings.append({"code": "empty_draft", "severity": "error"})
-            if provider.is_mock and "MOCK TEST OUTPUT" not in draft:
-                findings.append({"code": "mock_marker_missing", "severity": "error"})
             return {"passed": not findings, "findings": findings}, None
         if step_key == "qa_validation":
             config = run.model_config
@@ -982,10 +1146,233 @@ class GenerationService:
                 ],
             },
         )
+        started_at = datetime.now(UTC)
+        attempt_number = run.rewrite_count + 1
         try:
-            return await provider.generate(request), snapshot
-        except LLMProviderError as exc:
+            response = await provider.generate(request)
+            finished_at = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key=provider.key,
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="success",
+                    target_url=None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+                    http_status=None,
+                    error_code=None,
+                    error_detail_safe=None,
+                    retryable=None,
+                    request_summary={"step_key": step_key, "model": run.model},
+                    response_summary={
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                        "usage_source": response.usage.source,
+                    },
+                )
+            )
+            return response, snapshot
+        except (LLMProviderRateLimitError, LLMProviderAuthenticationError) as exc:
+            finished_at = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key=provider.key,
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="failed",
+                    target_url=None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+                    http_status=None,
+                    error_code=exc.code,
+                    error_detail_safe=str(exc)[:500],
+                    retryable=exc.retryable,
+                    request_summary={"step_key": step_key, "model": run.model},
+                    response_summary=None,
+                )
+            )
+            # ── Fallback: retry via llm_fallback_base_url if configured ──────
+            fallback_url = self.settings.llm_fallback_base_url if self.settings else None
+            if fallback_url:
+                fallback_response = await self._attempt_fallback(
+                    run, request, step_key, fallback_url, attempt_number
+                )
+                if fallback_response is not None:
+                    return fallback_response, snapshot
             raise GenerationError(str(exc), code=exc.code, status_code=502) from exc
+        except LLMProviderError as exc:
+            finished_at = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key=provider.key,
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="failed",
+                    target_url=None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+                    http_status=None,
+                    error_code=exc.code,
+                    error_detail_safe=str(exc)[:500],
+                    retryable=exc.retryable,
+                    request_summary={"step_key": step_key, "model": run.model},
+                    response_summary=None,
+                )
+            )
+            raise GenerationError(str(exc), code=exc.code, status_code=502) from exc
+        except Exception:
+            finished_at = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key=provider.key,
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="failed",
+                    target_url=None,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+                    http_status=None,
+                    error_code="unexpected_llm_provider_error",
+                    error_detail_safe="LLM provider failed unexpectedly",
+                    retryable=False,
+                    request_summary={"step_key": step_key, "model": run.model},
+                    response_summary=None,
+                )
+            )
+            raise
+
+    async def _attempt_fallback(
+        self,
+        run: GenerationRun,
+        request: LLMRequest,
+        step_key: str,
+        fallback_url: str,
+        attempt_number: int,
+    ) -> LLMResponse | None:
+        """Retry a failed LLM request via the configured fallback endpoint.
+
+        Returns the response on success, or None if the fallback also fails.
+        """
+        import logging as _logging
+
+        _logger = _logging.getLogger(__name__)
+        internal_hosts = tuple(self.settings.llm_internal_hosts_allowlist if self.settings else [])
+        fallback_provider = OpenAICompatibleProvider(
+            base_url=fallback_url,
+            api_key="fallback-no-key-required",
+            timeout_seconds=float(request.parameters.get("timeout_seconds", 60)),
+            max_attempts=1,
+            internal_hosts=internal_hosts,
+        )
+        fallback_started = datetime.now(UTC)
+        try:
+            response = await fallback_provider.generate(request)
+            fallback_finished = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key="llm_fallback",
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="success",
+                    target_url=fallback_url,
+                    started_at=fallback_started,
+                    finished_at=fallback_finished,
+                    duration_ms=max(
+                        0,
+                        int((fallback_finished - fallback_started).total_seconds() * 1000),
+                    ),
+                    http_status=None,
+                    error_code=None,
+                    error_detail_safe=None,
+                    retryable=None,
+                    request_summary={
+                        "step_key": step_key,
+                        "model": run.model,
+                        "fallback": True,
+                    },
+                    response_summary={
+                        "input_tokens": response.usage.input_tokens,
+                        "output_tokens": response.usage.output_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                        "usage_source": response.usage.source,
+                    },
+                )
+            )
+            _logger.info(
+                "LLM fallback succeeded",
+                extra={
+                    "event": "llm.fallback.success",
+                    "fallback_url": fallback_url,
+                    "step_key": step_key,
+                },
+            )
+            return response
+        except Exception as fallback_exc:
+            fallback_finished = datetime.now(UTC)
+            self.session.add(
+                build_external_call_attempt(
+                    id=uuid4(),
+                    workspace_id=run.workspace_id,
+                    call_type="llm",
+                    provider_key="llm_fallback",
+                    entity_type="generation_run",
+                    entity_id=run.id,
+                    attempt_number=attempt_number,
+                    status="failed",
+                    target_url=fallback_url,
+                    started_at=fallback_started,
+                    finished_at=fallback_finished,
+                    duration_ms=max(
+                        0,
+                        int((fallback_finished - fallback_started).total_seconds() * 1000),
+                    ),
+                    http_status=None,
+                    error_code="llm_fallback_failed",
+                    error_detail_safe=str(fallback_exc)[:500],
+                    retryable=False,
+                    request_summary={
+                        "step_key": step_key,
+                        "model": run.model,
+                        "fallback": True,
+                    },
+                    response_summary=None,
+                )
+            )
+            _logger.warning(
+                "LLM fallback also failed",
+                extra={
+                    "event": "llm.fallback.failed",
+                    "fallback_url": fallback_url,
+                    "error": str(fallback_exc)[:200],
+                },
+            )
+            return None
 
     def _set_prompt_snapshot(
         self, run: GenerationRun, step_key: str, snapshot: dict[str, Any]
@@ -1098,6 +1485,7 @@ class GenerationService:
         )
         if content is None:
             raise GenerationNotFound("作品输入不存在")
+        video_context = self._video_context(payload.input_payload)
         return {
             "title": content.title,
             "description": content.description,
@@ -1114,6 +1502,7 @@ class GenerationService:
                 }
             ],
             "frozen_at": datetime.now(UTC).isoformat(),
+            "video_context": video_context,
             **creator_controls,
         }
 
@@ -1134,6 +1523,46 @@ class GenerationService:
         if isinstance(creator_brief, str) and creator_brief.strip():
             controls["creator_brief"] = creator_brief.strip()[:2000]
         return controls
+
+    @staticmethod
+    def _video_context(payload: dict[str, Any]) -> dict[str, Any]:
+        """Freeze the operator's bounded material selections with the run."""
+        raw = payload.get("video_context")
+        if not isinstance(raw, dict):
+            return {}
+        context: dict[str, Any] = {}
+        name = raw.get("name")
+        if isinstance(name, str) and name.strip():
+            context["name"] = name.strip()[:500]
+        tags = raw.get("tags")
+        if isinstance(tags, list):
+            context["tags"] = [str(item).strip()[:64] for item in tags if str(item).strip()][:30]
+        subtitle_langs = raw.get("subtitleLangs") or raw.get("subtitle_langs")
+        if isinstance(subtitle_langs, list):
+            context["subtitle_langs"] = [
+                str(item).strip()[:32] for item in subtitle_langs if str(item).strip()
+            ][:12]
+        subtitles = raw.get("subtitles")
+        if isinstance(subtitles, list):
+            bounded_subtitles: list[dict[str, str]] = []
+            remaining = 24000
+            for item in subtitles:
+                if not isinstance(item, dict) or remaining <= 0:
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                clipped = text.strip()[:remaining]
+                bounded_subtitles.append(
+                    {"lang": str(item.get("lang") or "")[:32], "text": clipped}
+                )
+                remaining -= len(clipped)
+            if bounded_subtitles:
+                context["subtitles"] = bounded_subtitles
+        comments = raw.get("comments")
+        if isinstance(comments, list):
+            context["comments"] = [item for item in comments[:20] if isinstance(item, dict)]
+        return context
 
     def _article_payload(self, article: Article, source: Source) -> dict[str, Any]:
         return {
@@ -1325,9 +1754,13 @@ class GenerationService:
         resource_type: str,
         resource_id: UUID,
         changes: dict[str, Any] | None = None,
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1342,6 +1775,9 @@ class GenerationService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

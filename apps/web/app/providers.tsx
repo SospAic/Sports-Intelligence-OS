@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { ToastProvider } from "@/components/toast";
+import { UiLanguageProvider } from "@/lib/ui-i18n";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -18,9 +19,11 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <AppShell>{children}</AppShell>
-      </ToastProvider>
+      <UiLanguageProvider>
+        <ToastProvider>
+          <AppShell>{children}</AppShell>
+        </ToastProvider>
+      </UiLanguageProvider>
     </QueryClientProvider>
   );
 }

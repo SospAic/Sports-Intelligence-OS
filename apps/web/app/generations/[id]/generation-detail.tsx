@@ -1,8 +1,13 @@
 "use client";
 
-import type { GenerationRun, ProblemDetails } from "@sio/shared-types";
+import type {
+  GenerationEvidencePackage,
+  GenerationRun,
+  ProblemDetails,
+} from "@sio/shared-types";
 import {
   Clipboard,
+  ClipboardCheck,
   Download,
   FileCheck2,
   RefreshCw,
@@ -15,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Badge, buttonClass, secondaryButtonClass } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import {
   generationInputTypeLabel,
   generationProgress,
@@ -49,6 +55,10 @@ export function GenerationDetail({
   const [status, setStatus] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [busy, setBusy] = useState(false);
+  const [evidence, setEvidence] = useState<GenerationEvidencePackage | null>(
+    null,
+  );
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const output = useMemo(() => run.final_output ?? {}, [run.final_output]);
   const progress = generationProgress(run);
   const isActive = run.status === "queued" || run.status === "running";
@@ -65,6 +75,34 @@ export function GenerationDetail({
     const timer = window.setInterval(() => router.refresh(), 3000);
     return () => window.clearInterval(timer);
   }, [isActive, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch(`/api/v1/generations/${run.id}/evidence`, {
+      credentials: "include",
+      headers: { "X-Workspace-Id": workspaceId },
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const problem = (await response.json().catch(() => null)) as
+            | ProblemDetails
+            | null;
+          throw new Error(problem?.detail ?? `证据包加载失败（${response.status}）`);
+        }
+        return (await response.json()) as GenerationEvidencePackage;
+      })
+      .then((result) => {
+        if (!cancelled) setEvidence(result);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setEvidenceError(cause instanceof Error ? cause.message : "证据包加载失败");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [run.id, workspaceId]);
 
   async function action(kind: "retry" | "rewrite" | "save") {
     setBusy(true);
@@ -109,6 +147,29 @@ export function GenerationDetail({
     setStatus(`${label}已复制`);
   }
 
+  async function submitForReview() {
+    setBusy(true);
+    try {
+      const response = await fetch("/api/v1/editorial-items", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": await csrf(),
+          "X-Workspace-Id": workspaceId,
+        },
+        body: JSON.stringify({ generation_run_id: run.id }),
+      });
+      if (!response.ok) await fail(response);
+      setStatus("已提交到编辑审核队列");
+      router.push("/editorial");
+    } catch (cause) {
+      setStatus(cause instanceof Error ? cause.message : "提交审核失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function download(format: "json" | "txt") {
     const response = await fetch(
       `/api/v1/generations/${run.id}/export?format=${format}`,
@@ -126,6 +187,7 @@ export function GenerationDetail({
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
+      <BackButton />
       <header className="flex flex-col gap-4 border-b border-slate-800/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold tracking-[.22em] text-cyan-400 uppercase">
@@ -153,12 +215,6 @@ export function GenerationDetail({
         </div>
       </header>
 
-      {run.metadata.provider_is_mock ? (
-        <div className="rounded-xl border border-amber-900/60 bg-amber-950/20 p-4 text-sm text-amber-200">
-          这是明确标记的 Mock 测试输出，不代表真实 LLM 生成或事实已经联网核实。
-        </div>
-      ) : null}
-
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
         <div className="flex items-center justify-between gap-4">
           <div>
@@ -180,6 +236,8 @@ export function GenerationDetail({
           />
         </div>
       </section>
+
+      <EvidencePackageView evidence={evidence} error={evidenceError} />
 
       {run.error ? (
         <div className="rounded-xl border border-rose-900/60 bg-rose-950/20 p-4 text-sm text-rose-200">
@@ -328,14 +386,19 @@ export function GenerationDetail({
               >
                 <Save size={15} /> {run.is_saved ? "取消采用" : "保存并采用"}
               </button>
+              <button
+                className={`${secondaryButtonClass} mt-2 w-full`}
+                disabled={busy}
+                onClick={() => void submitForReview()}
+                type="button"
+              >
+                <ClipboardCheck size={15} /> 提交编辑审核
+              </button>
             </section>
           </div>
 
           {/* ── B 组：7.9 完整叙事包 ────────────────────────────────────────── */}
-          <FullNarrativePackage
-            onCopy={copy}
-            output={output}
-          />
+          <FullNarrativePackage onCopy={copy} output={output} />
 
           {/* ── 重新生成 ─────────────────────────────────────────────────────── */}
           <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
@@ -455,6 +518,128 @@ export function GenerationDetail({
   );
 }
 
+function EvidencePackageView({
+  evidence,
+  error,
+}: {
+  evidence: GenerationEvidencePackage | null;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <section className="rounded-2xl border border-amber-900/60 bg-amber-950/20 p-5 text-sm text-amber-200">
+        <p className="font-medium">证据包暂不可用</p>
+        <p className="mt-1 text-xs text-amber-300/80">{error}</p>
+      </section>
+    );
+  }
+  if (!evidence) {
+    return (
+      <section className="rounded-2xl border border-slate-800 bg-slate-950/50 p-5 text-sm text-slate-500">
+        正在加载冻结证据包…
+      </section>
+    );
+  }
+
+  const tone =
+    evidence.evidence_status === "available"
+      ? "success"
+      : evidence.evidence_status === "partial"
+        ? "warning"
+        : "neutral";
+  const statusLabel =
+    evidence.evidence_status === "available"
+      ? "来源可用"
+      : evidence.evidence_status === "partial"
+        ? "部分来源"
+        : "暂无独立来源";
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
+            EVIDENCE PACKAGE
+          </p>
+          <h2 className="mt-1 text-lg font-semibold text-slate-100">冻结证据包</h2>
+        </div>
+        <Badge tone={tone}>{statusLabel}</Badge>
+      </div>
+      <p className="mt-3 text-sm text-slate-300">{evidence.evidence_detail}</p>
+      <div className="mt-4 grid gap-3 text-xs text-slate-400 sm:grid-cols-2 lg:grid-cols-4">
+        <EvidenceMeta label="来源数量" value={String(evidence.source_count)} />
+        <EvidenceMeta label="来源类型" value={evidence.source_kind} />
+        <EvidenceMeta
+          label="冻结时间"
+          value={evidence.frozen_at ? new Date(evidence.frozen_at).toLocaleString("zh-CN") : "未记录"}
+        />
+        <EvidenceMeta label="输入哈希" value={`${evidence.input_hash.slice(0, 12)}…`} />
+      </div>
+      {evidence.sources.length > 0 ? (
+        <div className="mt-4 grid gap-2 md:grid-cols-2">
+          {evidence.sources.map((source, index) => {
+            const title =
+              typeof source.title === "string" ? source.title : `来源 ${index + 1}`;
+            const url = typeof source.url === "string" ? source.url : null;
+            return (
+              <div className="rounded-lg border border-slate-800 p-3" key={`${title}-${index}`}>
+                <p className="text-sm text-slate-200">{title}</p>
+                <p className="mt-1 text-xs text-slate-500">
+                  {typeof source.provider === "string" ? source.provider : "未标注 Provider"}
+                  {typeof source.source_kind === "string" ? ` · ${source.source_kind}` : ""}
+                </p>
+                {url ? (
+                  <a
+                    className="mt-2 block truncate text-xs text-cyan-300 hover:text-cyan-200"
+                    href={url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {url}
+                  </a>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {evidence.claims.length > 0 || evidence.timeline.length > 0 ? (
+        <details className="mt-4 rounded-lg border border-slate-800 p-3">
+          <summary className="cursor-pointer text-xs text-slate-400">
+            查看事实声明与时间线（{evidence.claims.length} 条声明 · {evidence.timeline.length} 个时间节点）
+          </summary>
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
+            <EvidenceJson label="事实声明" value={evidence.claims} />
+            <EvidenceJson label="时间线" value={evidence.timeline} />
+          </div>
+        </details>
+      ) : null}
+    </section>
+  );
+}
+
+function EvidenceMeta({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-800 p-3">
+      <p className="text-[10px] text-slate-600">{label}</p>
+      <p className="mt-1 truncate text-slate-300" title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function EvidenceJson({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-600">{label}</p>
+      <pre className="mt-1 max-h-56 overflow-auto rounded bg-slate-900 p-2 text-[11px] text-slate-400">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
 // ── B/C 组：7.9 完整叙事包展开区 ─────────────────────────────────────────────
 function FullNarrativePackage({
   output,
@@ -502,7 +687,8 @@ function FullNarrativePackage({
         完整叙事包（7.9 Full Package）
       </summary>
       <p className="mt-2 text-xs text-slate-500">
-        包含故事架构、Hook 分析、CMSSML、EV3 和叙事决策说明。带 ⚠ 标注的字段来自原文不完整条目（ambiguous），为系统辅助生成。
+        包含故事架构、Hook 分析、CMSSML、EV3 和叙事决策说明。带 ⚠
+        标注的字段来自原文不完整条目（ambiguous），为系统辅助生成。
       </p>
 
       {/* 事件识别 */}
@@ -511,7 +697,9 @@ function FullNarrativePackage({
           <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
             EVENT IDENTITY
           </p>
-          <h3 className="mt-2 text-sm font-medium text-slate-100">事件精确识别</h3>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">
+            事件精确识别
+          </h3>
           <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
             {JSON.stringify(eventIdentity, null, 2)}
           </pre>
@@ -527,7 +715,9 @@ function FullNarrativePackage({
                 STORY FORMAT
               </p>
               <p className="mt-2 text-sm font-medium text-slate-100">
-                {typeof storyFormat === "string" ? storyFormat : JSON.stringify(storyFormat)}
+                {typeof storyFormat === "string"
+                  ? storyFormat
+                  : JSON.stringify(storyFormat)}
               </p>
               {storyFormatReason != null && (
                 <p className="mt-2 text-xs text-slate-400">
@@ -570,7 +760,9 @@ function FullNarrativePackage({
           )}
           {Array.isArray(hookCandidates) && hookCandidates.length > 0 && (
             <div className="mt-3">
-              <p className="text-[10px] text-slate-500">全部候选（{hookCandidates.length} 个）</p>
+              <p className="text-[10px] text-slate-500">
+                全部候选（{hookCandidates.length} 个）
+              </p>
               <pre className="mt-1 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
                 {JSON.stringify(hookCandidates, null, 2)}
               </pre>
@@ -639,7 +831,9 @@ function FullNarrativePackage({
               </Badge>
               {lcrReason != null && (
                 <span className="text-xs text-slate-400">
-                  {typeof lcrReason === "string" ? lcrReason : JSON.stringify(lcrReason)}
+                  {typeof lcrReason === "string"
+                    ? lcrReason
+                    : JSON.stringify(lcrReason)}
                 </span>
               )}
             </div>
@@ -656,7 +850,9 @@ function FullNarrativePackage({
           <p className="text-xs font-semibold tracking-[.18em] text-cyan-400 uppercase">
             ANSWER WORD MAP
           </p>
-          <h3 className="mt-2 text-sm font-medium text-slate-100">答案词与泄露映射</h3>
+          <h3 className="mt-2 text-sm font-medium text-slate-100">
+            答案词与泄露映射
+          </h3>
           <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-300">
             {JSON.stringify(answerWordMap, null, 2)}
           </pre>
@@ -664,16 +860,28 @@ function FullNarrativePackage({
       )}
 
       {/* RR / EER / EL / 对话说明 */}
-      {(reactionRelay != null || evidenceRewards != null || exclusionLadder != null || dialogueNotes != null) && (
+      {(reactionRelay != null ||
+        evidenceRewards != null ||
+        exclusionLadder != null ||
+        dialogueNotes != null) && (
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           {reactionRelay != null && (
-            <NarrativeDetail label="Reaction Relay 结构" value={reactionRelay} />
+            <NarrativeDetail
+              label="Reaction Relay 结构"
+              value={reactionRelay}
+            />
           )}
           {evidenceRewards != null && (
-            <NarrativeDetail label="证据奖励结构（EER）" value={evidenceRewards} />
+            <NarrativeDetail
+              label="证据奖励结构（EER）"
+              value={evidenceRewards}
+            />
           )}
           {exclusionLadder != null && (
-            <NarrativeDetail label="合理解释排除列表（EL）" value={exclusionLadder} />
+            <NarrativeDetail
+              label="合理解释排除列表（EL）"
+              value={exclusionLadder}
+            />
           )}
           {dialogueNotes != null && (
             <NarrativeDetail label="对话与心理说明" value={dialogueNotes} />
@@ -682,10 +890,14 @@ function FullNarrativePackage({
       )}
 
       {/* C 组：ambiguous 字段 */}
-      {(audioMap != null || ttsSettings != null || materialPlan != null || editMap != null) && (
+      {(audioMap != null ||
+        ttsSettings != null ||
+        materialPlan != null ||
+        editMap != null) && (
         <div className="mt-5 rounded-xl border border-slate-700/50 bg-slate-900/30 p-4">
           <p className="text-xs text-slate-500">
-            ⚠ 以下字段来自 7.9 原文不完整条目（ambiguous），为系统辅助生成，不能作为完整规则依据。
+            ⚠ 以下字段来自 7.9
+            原文不完整条目（ambiguous），为系统辅助生成，不能作为完整规则依据。
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {audioMap != null && (
@@ -695,7 +907,10 @@ function FullNarrativePackage({
               <NarrativeDetail label="TTS 设置建议" value={ttsSettings} />
             )}
             {materialPlan != null && (
-              <NarrativeDetail label="视频素材逐 Beat 计划" value={materialPlan} />
+              <NarrativeDetail
+                label="视频素材逐 Beat 计划"
+                value={materialPlan}
+              />
             )}
             {editMap != null && (
               <NarrativeDetail label="剪辑 Map" value={editMap} />

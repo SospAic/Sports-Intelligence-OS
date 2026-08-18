@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 PromptStatus = Literal["draft", "published", "archived"]
 InputType = Literal["news", "event", "content", "user_text"]
 RunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
-ProviderKey = Literal["mock_llm", "openai_compatible"]
+ProviderKey = Literal["openai_compatible"]
 
 
 class PromptCollectionCreate(BaseModel):
@@ -118,6 +118,7 @@ class WorkflowRead(BaseModel):
 
 class ProviderDescriptor(BaseModel):
     key: str
+    provider_id: str = "openai"
     name: str
     configured: bool
     is_mock: bool
@@ -135,8 +136,8 @@ class GenerationCreate(BaseModel):
     input_payload: dict[str, Any] = Field(default_factory=dict)
     rule_set_version_id: UUID | None = None
     prompt_version_id: UUID | None = None
-    provider: ProviderKey = "mock_llm"
-    model: str = Field(default="mock-sports-writer-v1", min_length=1, max_length=160)
+    provider: ProviderKey = "openai_compatible"
+    model: str = Field(default="gpt-4o-mini", min_length=1, max_length=160)
     model_config_data: dict[str, Any] = Field(default_factory=dict, alias="model_config")
 
     model_config = ConfigDict(populate_by_name=True)
@@ -220,6 +221,9 @@ class GenerationRunRead(BaseModel):
     token_usage: dict[str, Any]
     estimated_cost: Decimal | None
     error: dict[str, Any] | None
+    error_code: str | None = None
+    error_detail: str | None = Field(default=None, validation_alias="error_detail_safe")
+    error_hint: str | None = None
     metadata: dict[str, Any] = Field(
         validation_alias="run_metadata", serialization_alias="metadata"
     )
@@ -237,6 +241,31 @@ class GenerationRunPage(BaseModel):
     total: int
 
 
+class GenerationEvidencePackage(BaseModel):
+    """The frozen, auditable evidence view for one generation run.
+
+    This is deliberately assembled from the run's persisted frozen input and
+    completed workflow steps.  It is not a second source of truth and never
+    claims that an LLM independently verified a fact.
+    """
+
+    contract_version: str = "generation-evidence-v1"
+    run_id: UUID
+    input_hash: str
+    frozen_at: datetime | None
+    source_kind: str
+    verification_status: str
+    evidence_status: Literal["available", "partial", "unavailable"]
+    evidence_detail: str
+    source_count: int = Field(ge=0)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    timeline: list[dict[str, Any]] = Field(default_factory=list)
+    qualification: dict[str, Any] = Field(default_factory=dict)
+    step_statuses: list[dict[str, Any]] = Field(default_factory=list)
+    output_references: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PromptPreviewRequest(GenerationCreate):
     pass
 
@@ -247,6 +276,14 @@ class PromptPreviewRead(BaseModel):
     variables: dict[str, Any]
     provider: dict[str, Any]
     warnings: list[str]
+
+
+class StreamPreviewRequest(BaseModel):
+    system_prompt: str = Field(min_length=1, max_length=10000)
+    user_prompt: str = Field(min_length=1, max_length=50000)
+    model: str = Field(default="gpt-4o-mini", min_length=1, max_length=255)
+    provider_key: str = Field(default="openai_compatible", min_length=1, max_length=128)
+    model_params: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerationRewriteRequest(BaseModel):

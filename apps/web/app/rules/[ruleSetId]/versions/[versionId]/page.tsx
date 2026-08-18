@@ -4,7 +4,9 @@ import { notFound, redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { getRuleTree, getRuleVersion } from "@/lib/rules";
 import { RuleVersionViewer } from "./rule-version-viewer";
+import { RuleSimulator } from "./rule-simulator";
 import { VersionLifecycle } from "./version-lifecycle";
+import { BackButton } from "@/components/back-button";
 
 export default async function RuleVersionPage({
   params,
@@ -25,9 +27,7 @@ export default async function RuleVersionPage({
   return (
     <main className="min-h-screen px-5 py-8 lg:px-10">
       <div className="mx-auto max-w-7xl">
-        <Link className="text-sm text-cyan-300" href={`/rules/${ruleSetId}`}>
-          ← 返回版本列表
-        </Link>
+        <BackButton label="返回版本列表" />
         <div className="mt-6 flex flex-col gap-3 border-b border-slate-800 pb-6 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h1 className="text-3xl font-semibold text-white">
@@ -53,7 +53,18 @@ export default async function RuleVersionPage({
             </Link>
           </div>
         </div>
-        <RuleVersionViewer tree={tree} version={version} />
+        <RuleVersionViewer
+          ruleSetId={ruleSetId}
+          tree={tree}
+          version={version}
+          versionId={versionId}
+          workspaceId={workspace.workspace_id}
+        />
+        <RuleSimulator
+          ruleSetId={ruleSetId}
+          versionId={versionId}
+          workspaceId={workspace.workspace_id}
+        />
       </div>
     </main>
   );

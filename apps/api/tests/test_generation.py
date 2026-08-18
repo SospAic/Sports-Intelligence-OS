@@ -13,7 +13,6 @@ from app.db.session import create_engine_and_session
 from app.models.workspace import WorkspaceMembership
 from app.prompts.renderer import PromptRenderError, redact_sensitive, render_prompt
 from app.providers.llm.base import LLMMessage, LLMRequest, LLMResponse
-from app.providers.llm.mock import MockLLMProvider
 from app.providers.llm.registry import build_llm_provider_registry
 from app.services.generation import GenerationService
 from app.services.generation_seed import seed_generation_defaults
@@ -24,7 +23,7 @@ from app.workflows.generation import (
     validate_final_bundle,
 )
 
-from .conftest import TEST_PASSWORD
+from .conftest import PG_ASYNC_URL, TEST_PASSWORD, TEST_REDIS_URL, StubLLMProvider
 
 RULE_SOURCE = (
     Path(__file__).parents[3]
@@ -79,11 +78,11 @@ def test_prompt_renderer_is_strict_and_redacts_sensitive_fields() -> None:
     }
 
 
-def test_mock_llm_output_is_reproducible_and_explicitly_labelled() -> None:
+def test_stub_llm_output_is_reproducible_and_labelled_live() -> None:
     async def generate() -> tuple[LLMResponse, LLMResponse]:
-        provider = MockLLMProvider()
+        provider = StubLLMProvider()
         request = LLMRequest(
-            model="mock-sports-writer-v1",
+            model="stub-sports-writer-v1",
             messages=(LLMMessage(role="user", content="test"),),
             parameters={"target_min_chars": 200, "target_max_chars": 220},
             response_schema=None,
@@ -98,8 +97,8 @@ def test_mock_llm_output_is_reproducible_and_explicitly_labelled() -> None:
     first, second = asyncio.run(generate())
     assert first.content == second.content
     assert isinstance(first.content, str)
-    assert first.content.startswith("MOCK TEST OUTPUT")
-    assert first.provider_metadata["source_kind"] == "mock"
+    assert first.content.startswith("STUB LLM OUTPUT")
+    assert first.provider_metadata["source_kind"] == "live"
     assert 200 <= len(first.content) <= 220
 
 
@@ -144,11 +143,28 @@ def test_generation_freezes_only_bounded_creator_controls() -> None:
     }
 
 
+def test_generation_freezes_selected_video_subtitles() -> None:
+    context = GenerationService._video_context(
+        {
+            "video_context": {
+                "name": "A tracked video",
+                "subtitleLangs": ["en"],
+                "subtitles": [{"lang": "en", "text": "First verified line"}],
+            }
+        }
+    )
+    assert context == {
+        "name": "A tracked video",
+        "subtitle_langs": ["en"],
+        "subtitles": [{"lang": "en", "text": "First verified line"}],
+    }
+
+
 async def _seed_defaults(database_path: Path) -> None:
     settings = Settings(
         environment="test",
-        database_url=f"sqlite+aiosqlite:///{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-generation-secret",
         session_cookie_secure=False,
         cors_origins=["http://testserver"],
@@ -166,14 +182,15 @@ async def _seed_defaults(database_path: Path) -> None:
 async def _execute(database_path: Path, run_id: UUID) -> None:
     settings = Settings(
         environment="test",
-        database_url=f"sqlite+aiosqlite:///{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-generation-secret",
         session_cookie_secure=False,
         cors_origins=["http://testserver"],
     )
     engine, session_factory = create_engine_and_session(settings)
     providers = build_llm_provider_registry(settings)
+    providers.replace(StubLLMProvider(key="openai_compatible"))
     try:
         async with session_factory() as session:
             await GenerationService(session, providers).execute_run(run_id)
@@ -185,10 +202,13 @@ async def _execute(database_path: Path, run_id: UUID) -> None:
         await engine.dispose()
 
 
-def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
+def test_generation_api_runs_ten_step_stub_workflow_without_fake_verification(
     client: TestClient, database_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     csrf = authenticate(client)
+    # Real-shaped, test-local provider (source_kind='live'); never in production.
+    # Registered under the real key so the schema stays honest.
+    client.app.state.llm_providers.replace(StubLLMProvider(key="openai_compatible"))
     import_rules(client, csrf)
     asyncio.run(_seed_defaults(database_path))
     monkeypatch.setattr(generation_module, "enqueue_generation", lambda _run_id: None)
@@ -210,8 +230,8 @@ def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
             "title": "测试体育事件",
             "text": "这是一段由用户导入、尚未经过独立联网核实的体育事件说明。",
         },
-        "provider": "mock_llm",
-        "model": "mock-sports-writer-v1",
+        "provider": "openai_compatible",
+        "model": "stub-sports-writer-v1",
         "model_config": {
             "target_min_chars": 200,
             "target_max_chars": 220,
@@ -225,7 +245,7 @@ def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
     )
     assert preview.status_code == 200, preview.text
     assert preview.json()["provider"]["api_key"] == "***BACKEND ONLY***"
-    assert "Mock LLM" in " ".join(preview.json()["warnings"])
+    assert preview.json()["provider"]["key"] == "openai_compatible"
 
     created = client.post(
         "/api/v1/generations",
@@ -235,7 +255,7 @@ def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
     assert created.status_code == 202, created.text
     run_id = UUID(created.json()["id"])
     assert created.json()["status"] == "queued"
-    assert created.json()["metadata"]["source_kind"] == "mock"
+    assert created.json()["metadata"]["source_kind"] == "live"
 
     duplicate = client.post(
         "/api/v1/generations",
@@ -253,14 +273,25 @@ def test_generation_api_runs_ten_step_mock_workflow_without_fake_verification(
     assert result["verification_status"] == "verification_incomplete"
     assert len(result["steps"]) == 10
     assert all(step["status"] == "completed" for step in result["steps"])
-    assert result["final_output"]["source_kind"] == "mock"
-    assert result["final_output"]["tts_en"].startswith("MOCK TEST OUTPUT")
+    assert result["final_output"]["source_kind"] == "live"
+    assert result["final_output"]["tts_en"].startswith("STUB LLM OUTPUT")
     assert 200 <= len(result["final_output"]["tts_en"]) <= 220
     assert result["validation_result"]["valid"] is True
     assert result["validation_result"]["warnings"] == 1
     assert result["rewrite_count"] <= payload["model_config"]["max_rewrites"]
     assert result["token_usage"]["total_tokens"] > 0
     assert Decimal(str(result["estimated_cost"])) == 0
+
+    evidence = client.get(f"/api/v1/generations/{run_id}/evidence")
+    assert evidence.status_code == 200, evidence.text
+    evidence_payload = evidence.json()
+    assert evidence_payload["contract_version"] == "generation-evidence-v1"
+    assert evidence_payload["run_id"] == str(run_id)
+    assert len(evidence_payload["input_hash"]) == 64
+    assert evidence_payload["evidence_status"] == "unavailable"
+    assert evidence_payload["source_count"] == 0
+    assert evidence_payload["verification_status"] == "verification_incomplete"
+    assert evidence_payload["step_statuses"]
 
     # ── B 组字段完整性验证 ────────────────────────────────────────────────────
     final = result["final_output"]
@@ -349,9 +380,7 @@ def test_validate_final_bundle_requires_all_b_group_fields() -> None:
     ):
         incomplete = {k: v for k, v in valid_bundle.items() if k != b_field}
         errors = validate_final_bundle(incomplete)
-        assert any(b_field in e for e in errors), (
-            f"缺少 {b_field} 时应报错，实际返回：{errors}"
-        )
+        assert any(b_field in e for e in errors), f"缺少 {b_field} 时应报错，实际返回：{errors}"
 
 
 def test_validate_final_bundle_spoken_char_count_must_match_tts() -> None:
@@ -372,7 +401,7 @@ def test_validate_final_bundle_spoken_char_count_must_match_tts() -> None:
         "qa_report": {},
         "used_rules": [],
         "rewrite_reasons": [],
-        "spoken_char_count": 999,   # 故意错误
+        "spoken_char_count": 999,  # 故意错误
         "event_identity": {},
         "story_format": "chain-reaction",
         "central_question": "?",
@@ -446,7 +475,7 @@ def test_validate_final_bundle_lcr_enabled_must_be_bool() -> None:
         "cmssml": tts,
         "ev3": tts,
         "story_architecture": {},
-        "lcr_enabled": "true",   # 应该是布尔值
+        "lcr_enabled": "true",  # 应该是布尔值
     }
     errors = validate_final_bundle(bundle)
     assert any("lcr_enabled" in e for e in errors)

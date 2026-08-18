@@ -3,6 +3,7 @@ import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, cast
+from urllib.parse import urljoin
 
 import httpx
 
@@ -36,10 +37,14 @@ class GenericJSONFeedProvider(NewsProvider):
         client: httpx.AsyncClient | None = None,
         timeout_seconds: float = 15.0,
         max_attempts: int = 3,
+        skip_dns_check: bool = False,
     ) -> None:
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds), follow_redirects=False
+        )
         self._owns_client = client is None
         self._max_attempts = max(1, min(max_attempts, 5))
+        self._skip_dns_check = skip_dns_check
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -61,23 +66,37 @@ class GenericJSONFeedProvider(NewsProvider):
 
     async def _payload(self, ctx: NewsCallContext) -> Mapping[str, Any] | list[Any]:
         await self.validate_source(ctx.config)
-        try:
-            await ensure_public_endpoint(cast(str, ctx.config["url"]))
-        except ValueError as exc:
-            raise NewsProviderConfigurationError(str(exc)) from exc
-        except OSError as exc:
-            raise NewsProviderTransientError(str(exc)) from exc
+        url = cast(str, ctx.config["url"])
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = await self._client.get(
-                    cast(str, ctx.config["url"]),
-                    headers={"Accept": "application/json", "X-Request-Id": ctx.request_id},
-                )
+                current_url = url
+                for redirect_count in range(4):
+                    if self._skip_dns_check:
+                        await ensure_public_endpoint(current_url, skip_dns_check=True)
+                    else:
+                        await ensure_public_endpoint(current_url)
+                    response = await self._client.get(
+                        current_url,
+                        headers={"Accept": "application/json", "X-Request-Id": ctx.request_id},
+                        follow_redirects=False,
+                    )
+                    if response.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = response.headers.get("location")
+                    if not location or redirect_count == 3:
+                        raise NewsProviderConfigurationError(
+                            "JSON feed redirect chain is invalid or too long"
+                        )
+                    current_url = urljoin(current_url, location)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == self._max_attempts:
                     raise NewsProviderTransientError(type(exc).__name__) from exc
                 await asyncio.sleep(0.25 * (2 ** (attempt - 1)))
                 continue
+            except ValueError as exc:
+                raise NewsProviderConfigurationError(str(exc)) from exc
+            except OSError as exc:
+                raise NewsProviderTransientError(str(exc)) from exc
             if response.status_code == 429:
                 raise NewsProviderRateLimitError("JSON feed returned HTTP 429")
             if response.status_code >= 500 and attempt < self._max_attempts:
@@ -87,6 +106,9 @@ class GenericJSONFeedProvider(NewsProvider):
                 raise NewsProviderConfigurationError(
                     f"JSON feed returned HTTP {response.status_code}"
                 )
+            content_length = int(response.headers.get("content-length", "0") or 0)
+            if content_length > 5_000_000 or len(response.content) > 5_000_000:
+                raise NewsProviderContractError("JSON feed payload exceeds 5 MB")
             try:
                 payload = response.json()
             except ValueError as exc:

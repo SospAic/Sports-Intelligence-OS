@@ -163,6 +163,11 @@ class GenerationRun(TimestampMixin, Base):
     token_usage: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # Keep the structured error contract available without forcing operators
+    # and reporting queries to unpack the legacy JSON blob.
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_detail_safe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )

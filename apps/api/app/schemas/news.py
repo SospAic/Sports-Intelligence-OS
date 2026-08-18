@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-NewsSourceType = Literal["rss", "atom", "json", "manual"]
+NewsSourceType = Literal["rss", "atom", "json", "web", "manual"]
 NewsSort = Literal[
     "published_at",
     "fetched_at",
@@ -81,10 +81,14 @@ class SourceRead(BaseModel):
     enabled: bool
     provider_key: str
     config: dict[str, Any] = Field(validation_alias="config_json")
+    last_attempt_at: datetime | None
     last_synced_at: datetime | None
     next_sync_at: datetime | None
     last_error_code: str | None
     last_error_message: str | None
+    consecutive_failures: int
+    active_sync_run_id: UUID | None = None
+    active_sync_status: Literal["queued", "running"] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -113,6 +117,25 @@ class ManualArticleCreate(StrictModel):
     controversy_score: float = Field(default=0, ge=0, le=100)
     visual_score: float = Field(default=0, ge=0, le=100)
     story_score: float = Field(default=0, ge=0, le=100)
+
+
+class ArticleUpdate(BaseModel):
+    """Partial update for an existing article."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=1000)
+    summary: str | None = None
+    content: str | None = None
+    author: str | None = Field(default=None, max_length=255)
+    canonical_url: str | None = Field(default=None, max_length=2048)
+    published_at: datetime | None = None
+    event_time: datetime | None = None
+    language: str | None = Field(default=None, max_length=16)
+    sport: str | None = Field(default=None, max_length=120)
+    league: str | None = Field(default=None, max_length=120)
+    country: str | None = Field(default=None, min_length=2, max_length=2)
+    controversy_score: float | None = Field(default=None, ge=0, le=100)
+    visual_score: float | None = Field(default=None, ge=0, le=100)
+    story_score: float | None = Field(default=None, ge=0, le=100)
 
 
 class ArticleRead(BaseModel):
@@ -233,7 +256,7 @@ class NewsSyncRunRead(BaseModel):
     queued_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
-    status: Literal["queued", "running", "success", "error", "skipped"]
+    status: Literal["queued", "running", "success", "error", "skipped", "cancelled"]
     records_created: int
     records_updated: int
     duplicate_count: int

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -45,3 +45,69 @@ class LLMProviderSetting(TimestampMixin, Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     health_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+
+
+class SyncSettings(TimestampMixin, Base):
+    """Workspace-scoped global fetch policy for platform synchronisation.
+
+    Centralises the yt-dlp / scrape tuning that used to live per-account on
+    ``accounts.adapter_config``. Every account in a workspace now shares one
+    fetch policy: the works cap, the duplicate-skip behaviour and the
+    yt-dlp window parameters (date range, playlist start, passthrough args).
+    """
+
+    __tablename__ = "sync_settings"
+    __table_args__ = (UniqueConstraint("workspace_id"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class RuntimeSettingOverride(Base):
+    """Global, runtime-adjustable overrides for server-level Settings that are
+    otherwise frozen from environment variables at process start.
+
+    Only a handful of keys are overridable here (today: ``sync_task_max_retries``).
+    Writing a key makes it take effect **without an application restart** — the
+    Celery worker reads this table at sync-task time instead of the frozen
+    ``Settings`` singleton. Each key is a single-row *global* value (not
+    workspace-scoped) because the underlying Setting is server-global.
+    """
+
+    __tablename__ = "runtime_setting_overrides"
+
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.now(UTC)
+    )
+    updated_by: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+
+class PlatformCredentialSetting(TimestampMixin, Base):
+    """Workspace-scoped acquisition mode and encrypted platform credentials."""
+
+    __tablename__ = "platform_credential_settings"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "platform_key"),
+        Index(
+            "ix_platform_credential_settings_workspace_enabled",
+            "workspace_id",
+            "enabled",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    platform_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    config_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    config_masked: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

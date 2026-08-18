@@ -1,9 +1,10 @@
 import json
+from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Header, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 import app.services.generation as generation_module
 from app.api.dependencies import (
@@ -16,6 +17,7 @@ from app.core.problems import problem_response
 from app.schemas.generation import (
     GenerationCreate,
     GenerationDecisionUpdate,
+    GenerationEvidencePackage,
     GenerationRewriteRequest,
     GenerationRunPage,
     GenerationRunRead,
@@ -28,6 +30,7 @@ from app.schemas.generation import (
     PromptVersionRead,
     PromptVersionUpdate,
     ProviderDescriptor,
+    StreamPreviewRequest,
     WorkflowRead,
 )
 from app.services.generation import GenerationError, GenerationService
@@ -204,6 +207,75 @@ async def preview_generation_prompt(
     return await service(request, db).preview(workspace.workspace_id, payload)
 
 
+@router.post("/generations/stream-preview")
+async def stream_preview(
+    payload: StreamPreviewRequest,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> StreamingResponse:
+    """Stream LLM tokens via Server-Sent Events for prompt testing.
+
+    Accepts a system prompt, user prompt, and model parameters, then streams
+    the LLM response token-by-token.  Falls back to non-streaming generate()
+    if the active provider does not support streaming.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    svc = service(request, db)
+    try:
+        provider = await svc._provider(workspace.workspace_id, payload.provider_key)
+    except (GenerationError, LookupError):
+        provider = svc.providers.get(payload.provider_key)
+    if provider is None:
+        raise GenerationError(
+            f"未知的 LLM provider: {payload.provider_key}",
+            code="provider_not_found",
+            status_code=404,
+        )
+
+    from app.providers.llm.base import LLMMessage, LLMRequest
+
+    llm_request = LLMRequest(
+        model=payload.model,
+        messages=(
+            LLMMessage(role="system", content=payload.system_prompt),
+            LLMMessage(role="user", content=payload.user_prompt),
+        ),
+        parameters=payload.model_params,
+        response_schema=None,
+        timeout_seconds=float(payload.model_params.get("timeout_seconds", 120)),
+        idempotency_key=f"stream-preview:{uuid4()}",
+    )
+
+    async def event_generator() -> AsyncIterator[str]:
+        try:
+            if provider.supports_streaming:
+                async for token in provider.stream(llm_request):
+                    yield f"data: {json.dumps({'token': token})}\n\n"
+            else:
+                response = await provider.generate(llm_request)
+                content = (
+                    response.content
+                    if isinstance(response.content, str)
+                    else json.dumps(response.content, ensure_ascii=False)
+                )
+                yield f"data: {json.dumps({'token': content})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.post("/generations", response_model=GenerationRunRead, status_code=202)
 async def create_generation(
     payload: GenerationCreate,
@@ -254,6 +326,16 @@ async def get_generation(
     request: Request,
 ) -> GenerationRunRead:
     return await service(request, db).get_run(workspace.workspace_id, run_id)
+
+
+@router.get("/generations/{run_id}/evidence", response_model=GenerationEvidencePackage)
+async def get_generation_evidence(
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> GenerationEvidencePackage:
+    return await service(request, db).evidence_package(workspace.workspace_id, run_id)
 
 
 @router.post("/generations/{run_id}/retry", response_model=GenerationRunRead, status_code=202)

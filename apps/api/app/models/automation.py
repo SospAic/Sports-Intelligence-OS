@@ -178,6 +178,9 @@ class NotificationDelivery(TimestampMixin, Base):
     rule_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("automation_rules.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    subscription_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("subscription_rules.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     entity_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     entity_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -187,3 +190,35 @@ class NotificationDelivery(TimestampMixin, Base):
     error: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class NotificationDeliveryAttempt(Base):
+    __tablename__ = "notification_delivery_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('success', 'failed', 'timeout')",
+            name="delivery_attempt_status",
+        ),
+        Index("ix_delivery_attempts_delivery_number", "delivery_id", "attempt_number"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    delivery_id: Mapped[UUID] = mapped_column(
+        ForeignKey("notification_deliveries.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    workspace_id: Mapped[UUID] = mapped_column(nullable=False, index=True)
+    channel_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("notification_channels.id", ondelete="SET NULL"), nullable=True
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    error_detail_safe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    request_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    response_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

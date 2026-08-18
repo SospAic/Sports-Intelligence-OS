@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import Select, func, select
@@ -7,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.models.monitoring import Account, ContentItem, Platform
-from app.models.sync import SyncRun
+from app.models.settings import SyncSettings
+from app.models.sync import SyncRun, SyncRunEvent
+from app.schemas.settings import DEFAULT_SYNC_SETTINGS_CONFIG
 
 
 class SyncRepository:
@@ -78,7 +80,7 @@ class SyncRepository:
             .join(Platform, Platform.id == Account.platform_id)
             .where(
                 Account.is_active.is_(True),
-                Account.sync_status != "disabled",
+                Account.sync_status.notin_(["disabled", "queued", "syncing"]),
                 Platform.enabled.is_(True),
                 (Account.next_sync_at.is_(None) | (Account.next_sync_at <= due_at)),
             )
@@ -95,3 +97,47 @@ class SyncRepository:
                 )
             ).all()
         )
+
+    async def add_sync_run_event(self, event: SyncRunEvent) -> None:
+        """Persist a single append-only tracklog entry for a sync run."""
+
+        self.session.add(event)
+
+    async def list_sync_run_events(self, run_id: UUID, *, limit: int = 1000) -> list[SyncRunEvent]:
+        """Return a run's tracklog events ordered by sequence (creation order)."""
+
+        statement = (
+            select(SyncRunEvent)
+            .where(SyncRunEvent.sync_run_id == run_id)
+            .order_by(SyncRunEvent.sequence.asc(), SyncRunEvent.created_at.asc())
+            .limit(limit)
+        )
+        return list((await self.session.scalars(statement)).all())
+
+    async def get_sync_settings_config(self, workspace_id: UUID) -> dict[str, Any]:
+        """Return the workspace's merged fetch policy (defaults applied).
+
+        Used by the sync executor so the global ``sync_settings`` policy — works
+        cap, duplicate-skip behaviour and yt-dlp window params — is read once per
+        run instead of being stashed on each account.
+        """
+
+        row = cast(
+            SyncSettings | None,
+            await self.session.scalar(
+                select(SyncSettings).where(SyncSettings.workspace_id == workspace_id)
+            ),
+        )
+        if row is None:
+            return dict(DEFAULT_SYNC_SETTINGS_CONFIG)
+        stored = dict(row.config or {})
+        merged: dict[str, Any] = {**DEFAULT_SYNC_SETTINGS_CONFIG, **stored}
+        merged["yt_dlp"] = {
+            **DEFAULT_SYNC_SETTINGS_CONFIG["yt_dlp"],
+            **(stored.get("yt_dlp") or {}),
+        }
+        merged["download"] = {
+            **DEFAULT_SYNC_SETTINGS_CONFIG["download"],
+            **(stored.get("download") or {}),
+        }
+        return merged

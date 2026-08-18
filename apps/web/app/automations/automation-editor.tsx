@@ -22,6 +22,7 @@ import {
   inputClass,
   secondaryButtonClass,
 } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
 export type EntityType = "content" | "account" | "news" | "topic_event";
@@ -44,6 +45,7 @@ type Action = {
   action_type: string;
   channel_id?: string;
   workflow_id?: string;
+  template_id?: string;
   title?: string;
   body?: string;
 };
@@ -195,6 +197,7 @@ function configToAction(action: AutomationActionRecord): Action {
     action_type: action.action_type,
     channel_id: String(action.config.channel_id ?? ""),
     workflow_id: String(action.config.workflow_id ?? ""),
+    template_id: String(action.config.template_id ?? ""),
     title: String(action.config.title ?? ""),
     body: String(action.config.body ?? ""),
   };
@@ -280,7 +283,6 @@ function AutomationEditorForm({
   );
   const [cooldown, setCooldown] = useState(initial?.cooldown_seconds ?? 3600);
   const [dedup, setDedup] = useState(initial?.deduplication_window ?? 3600);
-  const [enabled, setEnabled] = useState(initial?.enabled ?? false);
   const [jsonMode, setJsonMode] = useState(false);
   const [jsonText, setJsonText] = useState("");
   const [saving, setSaving] = useState(false);
@@ -296,6 +298,21 @@ function AutomationEditorForm({
     queryKey: ["workflows", workspaceId],
     queryFn: () =>
       apiRequest<GenerationWorkflow[]>("/workflows", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+  });
+  const templates = useQuery({
+    queryKey: ["notification-templates", workspaceId],
+    queryFn: () =>
+      apiRequest<{
+        items: Array<{
+          id: string;
+          name: string;
+          current_version: number | null;
+          published_version: number | null;
+        }>;
+      }>("/notification-templates?page=1&page_size=100", {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
@@ -367,7 +384,7 @@ function AutomationEditorForm({
         schedule: {},
         cooldown_seconds: cooldown,
         deduplication_window: dedup,
-        enabled,
+        enabled: false,
         priority: 100,
         actions: id
           ? undefined
@@ -385,7 +402,6 @@ function AutomationEditorForm({
             schedule: {},
             cooldown_seconds: cooldown,
             deduplication_window: dedup,
-            enabled,
             priority: 100,
           }),
         });
@@ -422,6 +438,7 @@ function AutomationEditorForm({
   }
   return (
     <main className="mx-auto max-w-[1500px] space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
         eyebrow="Visual Rule Builder"
         title={id ? "编辑自动化" : "新建自动化"}
@@ -498,14 +515,6 @@ function AutomationEditorForm({
               onChange={(e) => setDedup(Number(e.target.value))}
             />
           </label>
-          <label className="flex gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-            />
-            启用规则
-          </label>
         </Panel>
         <div className="space-y-5">
           <Panel className="p-5">
@@ -578,9 +587,56 @@ function AutomationEditorForm({
                     <option value="webhook">Webhook</option>
                     <option value="external_api">外部 API 渠道</option>
                   </select>
-                  {["notification", "webhook", "external_api"].includes(
-                    action.action_type,
-                  ) ? (
+                  {action.action_type === "notification" ? (
+                    <div className="space-y-2">
+                      <select
+                        className={inputClass}
+                        value={action.channel_id ?? ""}
+                        onChange={(e) =>
+                          setActions((items) =>
+                            items.map((item) =>
+                              item.id === action.id
+                                ? { ...item, channel_id: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">选择通知渠道</option>
+                        {channels.data?.map((channel) => (
+                          <option key={channel.id} value={channel.id}>
+                            {channel.name}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className={inputClass}
+                        value={action.template_id ?? ""}
+                        onChange={(e) =>
+                          setActions((items) =>
+                            items.map((item) =>
+                              item.id === action.id
+                                ? { ...item, template_id: e.target.value }
+                                : item,
+                            ),
+                          )
+                        }
+                      >
+                        <option value="">选择已发布通知模板</option>
+                        {templates.data?.items
+                          .filter(
+                            (template) => template.published_version !== null,
+                          )
+                          .map((template) => (
+                            <option key={template.id} value={template.id}>
+                              {template.name}（v{template.published_version}）
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  ) : ["webhook", "external_api"].includes(
+                      action.action_type,
+                    ) ? (
                     <select
                       className={inputClass}
                       value={action.channel_id ?? ""}
@@ -677,6 +733,7 @@ function actionPayload(action: Action, index: number) {
   const config: Record<string, unknown> = {};
   if (action.channel_id) config.channel_id = action.channel_id;
   if (action.workflow_id) config.workflow_id = action.workflow_id;
+  if (action.template_id) config.template_id = action.template_id;
   if (action.title) config.title = action.title;
   if (action.body) config.body = action.body;
   return {

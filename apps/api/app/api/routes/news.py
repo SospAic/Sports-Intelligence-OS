@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -16,6 +16,7 @@ from app.repositories.news import ArticleFilters, EventFilters
 from app.schemas.news import (
     ArticlePage,
     ArticleRead,
+    ArticleUpdate,
     BookmarkRequest,
     EventMergeRequest,
     EventSort,
@@ -79,9 +80,14 @@ async def list_sources(
     page: Page = 1,
     page_size: PageSize = 20,
     enabled: bool | None = None,
+    include_quarantined: bool = False,
 ) -> SourcePage:
     return await service(request, db).list_sources(
-        workspace.workspace_id, page=page, page_size=page_size, enabled=enabled
+        workspace.workspace_id,
+        page=page,
+        page_size=page_size,
+        enabled=enabled,
+        include_quarantined=include_quarantined,
     )
 
 
@@ -122,6 +128,34 @@ async def disable_source(
     await service(request, db).disable_source(workspace.workspace_id, source_id, auth.user.id)
 
 
+@router.post("/sources/{source_id}/enable", response_model=SourceRead)
+async def enable_source(
+    source_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SourceRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await service(request, db).set_source_enabled(
+        workspace.workspace_id, source_id, auth.user.id, enabled=True
+    )
+
+
+@router.post("/sources/{source_id}/disable", response_model=SourceRead)
+async def disable_source_action(
+    source_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> SourceRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await service(request, db).set_source_enabled(
+        workspace.workspace_id, source_id, auth.user.id, enabled=False
+    )
+
+
 @router.post("/sources/{source_id}/sync", response_model=NewsSyncRunRead, status_code=202)
 async def sync_source(
     source_id: UUID,
@@ -159,6 +193,24 @@ async def source_sync_runs(
 ) -> NewsSyncRunPage:
     return await service(request, db).list_sync_runs(
         workspace.workspace_id, source_id, page=page, page_size=page_size
+    )
+
+
+@router.post(
+    "/sources/{source_id}/sync/{run_id}/cancel",
+    response_model=NewsSyncRunRead,
+)
+async def cancel_source_sync(
+    source_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> NewsSyncRunRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(request, db).cancel_sync_run(
+        workspace.workspace_id, source_id, run_id, auth.user.id
     )
 
 
@@ -231,6 +283,51 @@ async def get_article(
     return await service(request, db).get_article(workspace.workspace_id, article_id)
 
 
+@router.patch("/articles/{article_id}/bookmark", response_model=ArticleRead)
+async def bookmark_article(
+    article_id: UUID,
+    payload: BookmarkRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> ArticleRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(request, db).bookmark_article(
+        workspace.workspace_id, article_id, auth.user.id, payload.bookmarked
+    )
+
+
+@router.patch("/articles/{article_id}", response_model=ArticleRead)
+async def update_article(
+    article_id: UUID,
+    payload: ArticleUpdate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> ArticleRead:
+    """Update fields on an existing article."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await service(request, db).update_article(
+        workspace.workspace_id, auth.user.id, article_id, payload
+    )
+
+
+@router.delete("/articles/{article_id}", status_code=204)
+async def delete_article(
+    article_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> Response:
+    """Delete an article."""
+    require_workspace_role(workspace, {"owner", "admin"})
+    await service(request, db).delete_article(workspace.workspace_id, auth.user.id, article_id)
+    return Response(status_code=204)
+
+
 @router.get("/events", response_model=TopicEventPage)
 async def list_events(
     workspace: CurrentWorkspace,
@@ -247,6 +344,7 @@ async def list_events(
     language: str | None = None,
     country: str | None = None,
     query: str | None = None,
+    status: Literal["active", "developing", "closed"] | None = None,
     is_bookmarked: bool | None = None,
     min_heat: Annotated[float | None, Query(ge=0, le=100)] = None,
     max_heat: Annotated[float | None, Query(ge=0, le=100)] = None,
@@ -261,6 +359,7 @@ async def list_events(
             language=language,
             country=country,
             query=query,
+            status=status,
             is_bookmarked=is_bookmarked,
             min_heat=min_heat,
             max_heat=max_heat,
@@ -270,6 +369,17 @@ async def list_events(
         page=page,
         page_size=page_size,
     )
+
+
+@router.post("/events/lifecycle/refresh", response_model=dict[str, int])
+async def refresh_event_lifecycle(
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> dict[str, int]:
+    require_workspace_role(workspace, {"owner", "admin"})
+    return await service(request, db).refresh_event_lifecycle(workspace.workspace_id)
 
 
 @router.get("/events/{event_id}", response_model=TopicEventDetail)
@@ -322,6 +432,17 @@ async def bookmark_event(
     return await service(request, db).bookmark_event(
         workspace.workspace_id, event_id, auth.user.id, payload.bookmarked
     )
+
+
+@router.get("/events/{event_id}/explain")
+async def explain_event(
+    event_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+) -> dict[str, object]:
+    """Return the heat_score breakdown for a topic event."""
+    return await service(request, db).explain_event(workspace.workspace_id, event_id)
 
 
 @router.get("/scoring-config", response_model=NewsScoringConfigRead)

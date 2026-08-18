@@ -14,8 +14,8 @@ from app.services.automation_seed import seed_automation_examples
 from app.services.bootstrap import bootstrap_admin
 from app.services.editorial_rules import EditorialRuleService
 from app.services.generation_seed import seed_generation_defaults
-from app.services.monitoring_seed import seed_demo_monitoring, seed_platform_catalog
 from app.services.news_seed import seed_news_source_examples
+from app.services.platform_catalog_seed import seed_platform_catalog
 
 
 async def run_bootstrap(args: argparse.Namespace) -> None:
@@ -55,27 +55,10 @@ async def run_seed_platforms() -> None:
     engine, session_factory = create_engine_and_session(settings)
     try:
         async with session_factory() as session:
-            created = await seed_platform_catalog(session)
-        print(f"Platform catalog ready; created {created} platform records.")
-    finally:
-        await engine.dispose()
-
-
-async def run_seed_demo() -> None:
-    settings = get_settings()
-    engine, session_factory = create_engine_and_session(settings)
-    try:
-        async with session_factory() as session:
-            workspace_id = await session.scalar(
-                select(Workspace.id).where(Workspace.status == "active").order_by(Workspace.id)
-            )
-            if workspace_id is None:
-                raise SystemExit("create an administrator workspace before seeding demo data")
-            result = await seed_demo_monitoring(session, workspace_id)
+            created, updated = await seed_platform_catalog(session)
         print(
-            "DEMO/MOCK monitoring seed completed; "
-            f"accounts_created={result['accounts_created']}, "
-            f"contents_created={result['contents_created']}."
+            f"Platform catalog ready; created {created} platform records, "
+            f"updated {updated} existing records."
         )
     finally:
         await engine.dispose()
@@ -209,10 +192,6 @@ def main() -> None:
     bootstrap_parser.add_argument("--display-name")
     subparsers.add_parser("seed-platforms", help="Create the idempotent platform catalog")
     subparsers.add_parser(
-        "seed-demo-monitoring",
-        help="Create clearly labelled mock/demo monitoring data in the first workspace",
-    )
-    subparsers.add_parser(
         "seed-news-sources",
         help="Create disabled official RSS examples and an empty manual source",
     )
@@ -230,8 +209,6 @@ def main() -> None:
         asyncio.run(run_bootstrap(args))
     elif args.command == "seed-platforms":
         asyncio.run(run_seed_platforms())
-    elif args.command == "seed-demo-monitoring":
-        asyncio.run(run_seed_demo())
     elif args.command == "seed-news-sources":
         asyncio.run(run_seed_news_sources())
     elif args.command == "import-rules":

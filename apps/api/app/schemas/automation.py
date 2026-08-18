@@ -18,7 +18,6 @@ ActionType = Literal[
     "external_api",
 ]
 ProviderKey = Literal[
-    "mock_notification",
     "email",
     "generic_webhook",
     "telegram",
@@ -140,8 +139,33 @@ class AutomationEvaluateRequest(StrictModel):
     previous: dict[str, Any] = Field(default_factory=dict)
     trigger_type: str = Field(default="entity_updated", min_length=1, max_length=64)
     event_key: str = Field(min_length=1, max_length=200)
-    source_kind: Literal["live", "imported", "mock"]
+    source_kind: Literal["live", "imported"]
     test_mode: bool = False
+
+
+class AutomationReplayRequest(StrictModel):
+    """Evaluate rules against supplied facts without writing or executing actions."""
+
+    rule_id: UUID | None = None
+    entity_type: EntityType
+    entity_id: UUID
+    facts: dict[str, Any]
+    previous: dict[str, Any] = Field(default_factory=dict)
+    trigger_type: str = Field(default="entity_updated", min_length=1, max_length=64)
+    source_kind: Literal["live", "imported"]
+
+
+class AutomationReplayResult(BaseModel):
+    rule_id: UUID
+    rule_name: str
+    entity_type: EntityType
+    entity_id: UUID
+    matched: bool
+    condition_result: dict[str, Any]
+    actions: list[dict[str, Any]]
+    execution_status: Literal["matched", "not_matched"]
+    source_kind: Literal["live", "imported"]
+    evaluated_at: datetime
 
 
 class AutomationEvaluationRead(BaseModel):
@@ -175,7 +199,7 @@ class NotificationChannelCreate(StrictModel):
 
     @model_validator(mode="after")
     def reject_empty_config(self) -> NotificationChannelCreate:
-        if not self.config and self.provider_key != "mock_notification":
+        if not self.config:
             raise ValueError("notification channel config cannot be empty")
         return self
 
@@ -200,6 +224,23 @@ class NotificationChannelRead(BaseModel):
     updated_at: datetime
 
 
+class NotificationChannelValidationRead(BaseModel):
+    """Result of a local notification configuration check.
+
+    This endpoint deliberately performs no external I/O.  A valid result means
+    the provider accepted the decrypted configuration; it is not a delivery
+    receipt.
+    """
+
+    channel_id: UUID
+    provider_key: str
+    status: Literal["configured", "invalid", "disabled"]
+    is_mock: bool
+    external_io_performed: bool = False
+    checked_at: datetime
+    detail: str
+
+
 class NotificationProviderRead(BaseModel):
     key: str
     name: str
@@ -218,6 +259,7 @@ class NotificationDeliveryRead(BaseModel):
     id: UUID
     channel_id: UUID
     rule_id: UUID | None
+    subscription_id: UUID | None = None
     entity_type: str
     entity_id: UUID
     payload: dict[str, Any]
@@ -235,3 +277,38 @@ class NotificationDeliveryPage(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class NotificationChannelHealthRead(BaseModel):
+    channel_id: UUID
+    name: str
+    provider_key: str
+    enabled: bool
+    health_status: str
+    deliveries: int = 0
+    delivered: int = 0
+    failed: int = 0
+    queued: int = 0
+    sending: int = 0
+    attempts: int = 0
+    successful_attempts: int = 0
+    failed_attempts: int = 0
+    success_rate: float | None = None
+    average_latency_ms: float | None = None
+    last_delivery_at: datetime | None = None
+    last_error_code: str | None = None
+
+
+class NotificationHealthSummaryRead(BaseModel):
+    window_minutes: int
+    generated_at: datetime
+    channels: list[NotificationChannelHealthRead] = Field(default_factory=list)
+    deliveries: int = 0
+    delivered: int = 0
+    failed: int = 0
+    queued: int = 0
+    sending: int = 0
+    successful_attempts: int = 0
+    failed_attempts: int = 0
+    success_rate: float | None = None
+    average_latency_ms: float | None = None

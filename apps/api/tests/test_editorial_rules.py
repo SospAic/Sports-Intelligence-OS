@@ -130,6 +130,44 @@ def test_rule_import_version_edit_publish_compare_rollback_and_export(
     assert result["validation"]["valid"] is True
     assert result["validation"]["warnings"] > 0
 
+    simulation = client.post(
+        f"/api/v1/rules/{rule_set_id}/versions/{published_id}/simulate",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "context": {
+                "text": "A late winner changed the match.",
+                "sport": "football",
+                "story_type": "news",
+                "output_type": "tts",
+                "facts": {"verified": True},
+            },
+            "historical_at": "2026-08-16T12:00:00Z",
+        },
+    )
+    assert simulation.status_code == 201, simulation.text
+    simulation_body = simulation.json()
+    assert simulation_body["version_id"] == published_id
+    assert simulation_body["rules"]
+    assert all(item["execution_state"] == "not_executed" for item in simulation_body["rules"])
+    assert simulation_body["applicable_count"] + simulation_body["skipped_count"] == len(
+        simulation_body["rules"]
+    )
+    simulated_rule_id = simulation_body["rules"][0]["rule_id"]
+    feedback = client.post(
+        f"/api/v1/rules/{rule_set_id}/versions/{published_id}/simulations/"
+        f"{simulation_body['id']}/rules/{simulated_rule_id}/feedback",
+        headers={"X-CSRF-Token": csrf},
+        json={"verdict": "uncertain", "comment": "需结合完整素材人工复核"},
+    )
+    assert feedback.status_code == 200, feedback.text
+    assert feedback.json()["verdict"] == "uncertain"
+    history = client.get(
+        f"/api/v1/rules/{rule_set_id}/versions/{published_id}/simulations"
+    )
+    assert history.status_code == 200
+    assert history.json()["total"] == 1
+    assert history.json()["items"][0]["feedback"][0]["rule_id"] == simulated_rule_id
+
     duplicate = client.post(
         "/api/v1/rules/import",
         headers={"X-CSRF-Token": csrf},

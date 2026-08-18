@@ -39,6 +39,63 @@ class WorkspaceMembershipSummary(BaseModel):
     role: WorkspaceRole
 
 
+class WorkspaceMemberRead(BaseModel):
+    id: UUID
+    display_name: str
+    email: str
+    role: WorkspaceRole
+
+
+class WorkspaceMemberUpdate(BaseModel):
+    role: Literal["admin", "editor", "analyst", "viewer"] | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class WorkspaceInvitationCreate(BaseModel):
+    email: EmailStr
+    role: Literal["admin", "editor", "analyst", "viewer"] = "viewer"
+    expires_in_hours: int = Field(default=72, ge=1, le=720)
+
+
+class WorkspaceInvitationRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    email: EmailStr
+    role: Literal["admin", "editor", "analyst", "viewer"]
+    status: Literal["pending", "accepted", "revoked", "expired"]
+    invited_by: UUID
+    accepted_by: UUID | None
+    expires_at: datetime
+    accepted_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceInvitationCreateResponse(WorkspaceInvitationRead):
+    token: str
+
+
+class WorkspaceInvitationAccept(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
+class WorkspaceAccountGrantCreate(BaseModel):
+    account_id: UUID
+    user_id: UUID
+    permission: Literal["viewer", "editor"] = "viewer"
+
+
+class WorkspaceAccountGrantRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    account_id: UUID
+    user_id: UUID
+    permission: Literal["viewer", "editor"]
+    created_by: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
 class CurrentUserResponse(BaseModel):
     user: UserSummary
     memberships: list[WorkspaceMembershipSummary]

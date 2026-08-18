@@ -15,8 +15,13 @@ import {
   buttonClass,
   secondaryButtonClass,
 } from "@/components/ui";
+import { BackButton } from "@/components/back-button";
 import { apiRequest } from "@/lib/browser-api";
-import { formatDate } from "@/lib/format";
+import { formatDate, sportLabel } from "@/lib/format";
+import {
+  eventRecommendationScore,
+  isEventScoreAvailable,
+} from "@/lib/news-metrics";
 export function EventDetailClient({ id }: { id: string }) {
   const { workspaceId } = useWorkspace();
   const { notify } = useToast();
@@ -61,10 +66,17 @@ export function EventDetailClient({ id }: { id: string }) {
       </main>
     );
   const item = query.data;
+  const storyAvailable = isEventScoreAvailable(item.metadata, "story_score");
+  const recommendationScore = eventRecommendationScore(item.metadata);
   return (
     <main className="mx-auto max-w-6xl space-y-6 px-4 py-7 lg:px-8">
+      <BackButton />
       <PageHeader
-        eyebrow={`${item.sport || "综合体育"} · ${item.status}`}
+        eyebrow={`${sportLabel(item.sport)} · ${
+          { active: "活跃", developing: "发展中", closed: "已结束" }[
+            item.status
+          ] ?? item.status
+        }`}
         title={item.title}
         description={item.summary ?? "暂无事件摘要"}
         actions={
@@ -87,12 +99,33 @@ export function EventDetailClient({ id }: { id: string }) {
         }
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <MetricCard label="热度" value={item.heat_score} />
-        <MetricCard label="可靠度" value={item.reliability_score} />
-        <MetricCard label="来源数" value={item.source_count} />
+        <MetricCard
+          label="客观热度"
+          value={item.heat_score}
+          hint="不含收藏偏好"
+        />
+        <MetricCard label="来源可靠度均值" value={item.reliability_score} />
+        <MetricCard
+          label="来源数"
+          value={item.source_count}
+          hint={
+            item.source_count < 2 ? "单一来源，尚未交叉验证" : "已覆盖多个来源"
+          }
+        />
         <MetricCard label="报道数" value={item.article_count} />
-        <MetricCard label="故事价值" value={item.story_score} />
+        <MetricCard
+          label="故事价值"
+          value={storyAvailable ? item.story_score : "—"}
+          hint={storyAvailable ? "来自文章元数据" : "数据源未提供，不按 0 分"}
+        />
       </div>
+      {recommendationScore !== null &&
+        recommendationScore !== item.heat_score && (
+          <p className="text-xs text-slate-500">
+            个性化推荐分 {recommendationScore.toFixed(1)}
+            ，其中包含当前用户的收藏偏好；客观热度保持独立。
+          </p>
+        )}
       <Panel>
         <div className="border-b border-slate-800 p-5">
           <h2 className="font-medium text-white">事件时间线与来源</h2>

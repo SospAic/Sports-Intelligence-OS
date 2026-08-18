@@ -25,12 +25,17 @@ coverage/
 *.tsbuildinfo
 .pnpm-store/
 
+# Playwright
+test-results/
+playwright-report/
+
 # Runtime data (versioned rule source is an explicit exception)
 data/*
 !data/rules/
 !data/rules/*.md
 !data/rules/*.txt
 uploads/
+media/
 *.db
 *.sqlite3
 celerybeat-schedule*
@@ -47,6 +52,16 @@ Desktop.ini
 tmp/
 temp/
 .sio/
+tmp_*.json
+tmp_cookies*.txt
+cookies*.txt
+storage_state*.json
 
 # Docker overrides
 docker-compose.override.yml
+
+# Project memory / local workspace data (not source-controlled)
+.workbuddy/
+
+# Agent scratch directory (benchmark scripts, tool caches)
+.tmp/

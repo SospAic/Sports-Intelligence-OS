@@ -1,12 +1,13 @@
 "use client";
 import type { AutomationRulePage } from "@sio/shared-types";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus } from "lucide-react";
+import { Loader2, Pencil, Plus, Power } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 import { useWorkspace } from "@/components/app-shell";
 import { DataTable } from "@/components/data-table";
+import { useToast } from "@/components/toast";
 import {
   Badge,
   PageHeader,
@@ -19,6 +20,8 @@ import { apiRequest } from "@/lib/browser-api";
 import { formatDate } from "@/lib/format";
 export function AutomationsClient() {
   const { workspaceId, role } = useWorkspace();
+  const queryClient = useQueryClient();
+  const { notify } = useToast();
   const [page, setPage] = useState(1);
   const [entityType, setEntityType] = useState("");
   const [enabled, setEnabled] = useState("");
@@ -32,6 +35,23 @@ export function AutomationsClient() {
         workspaceId: workspaceId!,
       }),
     enabled: Boolean(workspaceId),
+  });
+  const canEdit = ["owner", "admin", "editor"].includes(role ?? "");
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiRequest(`/automations/${id}`, {
+        method: "PATCH",
+        workspaceId: workspaceId!,
+        csrf: true,
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: async (_, variables) => {
+      await queryClient.invalidateQueries({ queryKey: ["automations", workspaceId] });
+      notify(variables.enabled ? "自动化规则已启用" : "自动化规则已停用");
+    },
+    onError: (error) => {
+      notify(error instanceof Error ? error.message : "自动化规则状态更新失败", "error");
+    },
   });
   const columns: ColumnDef<AutomationRulePage["items"][number], unknown>[] = [
     {
@@ -72,6 +92,53 @@ export function AutomationsClient() {
       accessorKey: "updated_at",
       header: "更新",
       cell: ({ row }) => formatDate(row.original.updated_at),
+    },
+    {
+      id: "edit",
+      header: "编辑",
+      cell: ({ row }) => {
+        const isToggling =
+          toggleMutation.isPending && toggleMutation.variables?.id === row.original.id;
+        return (
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            {canEdit ? (
+              <Link
+                href={`/automations/${row.original.id}`}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-cyan-500/70 hover:text-cyan-200"
+                title="编辑规则"
+              >
+                <Pencil size={13} />
+                编辑
+              </Link>
+            ) : (
+              <Link
+                href={`/automations/${row.original.id}`}
+                className="text-xs text-cyan-300 hover:underline"
+              >
+                查看
+              </Link>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-300 hover:border-amber-500/70 hover:text-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
+                title={row.original.enabled ? "停用规则" : "启用规则"}
+                aria-label={row.original.enabled ? "停用规则" : "启用规则"}
+                disabled={isToggling}
+                onClick={() =>
+                  toggleMutation.mutate({
+                    id: row.original.id,
+                    enabled: !row.original.enabled,
+                  })
+                }
+              >
+                {isToggling ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />}
+                {row.original.enabled ? "停用" : "启用"}
+              </button>
+            )}
+          </div>
+        );
+      },
     },
   ];
   return (

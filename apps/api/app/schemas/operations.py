@@ -14,6 +14,8 @@ class OperationTaskRead(BaseModel):
     finished_at: datetime | None
     error_code: str | None
     error_message: str | None
+    error_detail: str | None = None
+    error_hint: str | None = None
     metadata: dict[str, Any]
 
 
@@ -33,6 +35,9 @@ class SystemEventRead(BaseModel):
     resource_type: str | None
     resource_id: UUID | None
     status: str
+    error_code: str | None = None
+    error_detail: str | None = None
+    error_hint: str | None = None
     metadata: dict[str, Any]
     trace_id: UUID
     created_at: datetime
@@ -54,6 +59,10 @@ class AuditEntryRead(BaseModel):
     resource_id: UUID | None
     change_summary: dict[str, Any]
     reason: str | None
+    status: str = "success"
+    error_code: str | None = None
+    error_detail: str | None = None
+    error_hint: str | None = None
     trace_id: UUID
     created_at: datetime
 

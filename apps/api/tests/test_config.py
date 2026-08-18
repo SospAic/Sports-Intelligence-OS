@@ -21,3 +21,9 @@ def test_production_rejects_development_secrets() -> None:
             secret_key=DEVELOPMENT_SECRET,
             session_cookie_secure=False,
         )
+
+
+def test_empty_optional_media_quota_is_treated_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIO_MEDIA_STORAGE_QUOTA_BYTES", "")
+    settings = Settings()
+    assert settings.media_storage_quota_bytes is None

@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
@@ -19,11 +19,16 @@ from app.models.monitoring import (
     ContentSnapshot,
     DerivedMetric,
 )
-from app.models.workspace import Workspace
-from app.services.monitoring_seed import seed_demo_monitoring
 from app.services.sync import PlatformSyncExecutor
 
-from .conftest import TEST_PASSWORD, TEST_PLATFORM_ID
+from .conftest import (
+    PG_ASYNC_URL,
+    PG_SYNC_URL,
+    TEST_PASSWORD,
+    TEST_PLATFORM_ID,
+    TEST_REDIS_URL,
+    RealShapedTestAdapter,
+)
 
 
 def authenticate(client: TestClient) -> str:
@@ -66,7 +71,9 @@ def test_platform_and_account_crud_are_authenticated_and_auditable(
 
     platforms = client.get("/api/v1/platforms")
     assert platforms.status_code == 200
-    assert platforms.json()[0]["key"] == "test_platform"
+    # The endpoint is seeded with the built-in platforms at startup, so the
+    # test-created platform is not guaranteed to be first; assert membership.
+    assert any(p["key"] == "test_platform" for p in platforms.json())
 
     account = create_account(client, csrf_token)
     assert account["source_kind"] == "imported"
@@ -131,7 +138,7 @@ def test_platform_and_account_crud_are_authenticated_and_auditable(
 
 
 @pytest.mark.asyncio
-async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
+async def test_real_shaped_sync_executes_end_to_end_and_is_labelled_live(
     client: TestClient,
     database_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -147,14 +154,16 @@ async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
 
     settings = Settings(
         environment="test",
-        database_url=f"sqlite+aiosqlite:///{database_path}",
-        redis_url="redis://127.0.0.1:6399/15",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
         secret_key="test-only-secret-not-used-in-production",
         sync_page_limit=2,
     )
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     registry = build_platform_adapter_registry(settings)
+    # Real-shaped, test-local adapter (source_kind='live'); never a mock.
+    registry.replace(RealShapedTestAdapter(key="youtube_browser", content_count=12))
     try:
         async with session_factory() as session:
             await PlatformSyncExecutor(session, registry, settings).execute_account_run(
@@ -170,17 +179,17 @@ async def test_mock_sync_executes_end_to_end_and_remains_clearly_mock(
     refreshed = client.get(f"/api/v1/accounts/{account['id']}")
     assert refreshed.status_code == 200
     assert refreshed.json()["sync_status"] == "success"
-    assert refreshed.json()["source_kind"] == "mock"
-    assert refreshed.json()["source_provider"] == "mock_platform"
+    assert refreshed.json()["source_kind"] == "live"
+    assert refreshed.json()["source_provider"] == "youtube_browser"
     assert refreshed.json()["last_sync_error_code"] is None
     assert refreshed.json()["next_sync_at"] is not None
 
     snapshots = client.get(f"/api/v1/accounts/{account['id']}/snapshots")
     contents = client.get(f"/api/v1/accounts/{account['id']}/contents")
     runs = client.get(f"/api/v1/accounts/{account['id']}/sync-runs")
-    assert snapshots.json()["items"][0]["source_kind"] == "mock"
+    assert snapshots.json()["items"][0]["source_kind"] == "live"
     assert contents.json()["total"] == 12
-    assert all(item["source_kind"] == "mock" for item in contents.json()["items"])
+    assert all(item["source_kind"] == "live" for item in contents.json()["items"])
     assert runs.json()["items"][0]["status"] == "success"
     first_content = contents.json()["items"][0]
     metrics = client.get(f"/api/v1/contents/{first_content['id']}/metrics")
@@ -205,7 +214,7 @@ def test_content_filters_history_metrics_and_csv_export(
     now = datetime.now(UTC)
     content_id = uuid4()
 
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         account = session.get(Account, UUID(account_id))
         assert account is not None
@@ -357,13 +366,200 @@ def test_content_filters_history_metrics_and_csv_export(
     assert "imported" in contents_csv.text
 
 
+def test_account_metrics_history_returns_ascending_series_within_window(
+    client: TestClient, database_path: Path
+) -> None:
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+    account_id = UUID(account["id"])
+    now = datetime.now(UTC)
+
+    engine = create_engine(PG_SYNC_URL)
+    with Session(engine) as session:
+        assert session.get(Account, account_id) is not None
+        session.add_all(
+            [
+                AccountSnapshot(
+                    id=uuid4(),
+                    account_id=account_id,
+                    captured_at=now - timedelta(days=45),
+                    follower_count=1000,
+                    video_count=10,
+                    total_view_count=50_000,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=now - timedelta(days=45),
+                    created_at=now - timedelta(days=45),
+                ),
+                AccountSnapshot(
+                    id=uuid4(),
+                    account_id=account_id,
+                    captured_at=now - timedelta(days=20),
+                    follower_count=2000,
+                    video_count=20,
+                    total_view_count=120_000,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=now - timedelta(days=20),
+                    created_at=now - timedelta(days=20),
+                ),
+                AccountSnapshot(
+                    id=uuid4(),
+                    account_id=account_id,
+                    captured_at=now - timedelta(days=5),
+                    follower_count=3500,
+                    video_count=25,
+                    total_view_count=210_000,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=now - timedelta(days=5),
+                    created_at=now - timedelta(days=5),
+                ),
+            ]
+        )
+        session.commit()
+    engine.dispose()
+
+    history = client.get(
+        f"/api/v1/accounts/{account_id}/metrics/history",
+        params={"days": 30},
+    )
+    assert history.status_code == 200, history.text
+    body = history.json()
+    assert body["account_id"] == str(account_id)
+    assert body["days"] == 30
+    # The 45-day-old snapshot must fall outside the 30-day window.
+    assert len(body["points"]) == 2
+    captured = [p["captured_at"] for p in body["points"]]
+    assert captured == sorted(captured)  # ascending for charting
+    assert [p["follower_count"] for p in body["points"]] == [2000, 3500]
+
+    narrow = client.get(
+        f"/api/v1/accounts/{account_id}/metrics/history",
+        params={"days": 10},
+    )
+    assert narrow.status_code == 200
+    assert len(narrow.json()["points"]) == 1
+    assert narrow.json()["points"][0]["follower_count"] == 3500
+
+    bad = client.get(
+        f"/api/v1/accounts/{account_id}/metrics/history",
+        params={"days": 0},
+    )
+    assert bad.status_code == 422
+
+
+def test_account_metrics_history_derives_missing_total_views_without_mutating_rows(
+    client: TestClient, database_path: Path
+) -> None:
+    """Regression: TikTok/Douyin snapshots arrive with total_view_count=None.
+
+    The history endpoint must derive it at read time from synced content views
+    WITHOUT mutating the append-only AccountSnapshot row. Mutating the ORM
+    object previously raised ``RuntimeError: AccountSnapshot rows are
+    append-only`` when the request session committed, returning HTTP 500.
+    """
+    csrf_token = authenticate(client)
+    account_data = create_account(client, csrf_token)
+    account_id = UUID(account_data["id"])
+    now = datetime.now(UTC)
+
+    engine = create_engine(PG_SYNC_URL)
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        content_id = uuid4()
+        session.add(
+            ContentItem(
+                id=content_id,
+                workspace_id=account.workspace_id,
+                platform_id=TEST_PLATFORM_ID,
+                account_id=account_id,
+                external_id="derive-views",
+                content_type="video",
+                title="derive views",
+                description=None,
+                published_at=now - timedelta(days=10),
+                duration_seconds=Decimal("1"),
+                canonical_url="https://example.com/derive",
+                cover_url=None,
+                language="en",
+                status="published",
+                metadata_json={},
+                first_seen_at=now - timedelta(days=10),
+                last_seen_at=now,
+                source_kind="imported",
+                source_provider="test_fixture",
+                fetched_at=now,
+                source_url=None,
+                raw_payload_ref=None,
+            )
+        )
+        session.add_all(
+            [
+                ContentSnapshot(
+                    id=uuid4(),
+                    content_item_id=content_id,
+                    captured_at=now - timedelta(days=5),
+                    view_count=300_000,
+                    like_count=0,
+                    comment_count=0,
+                    share_count=0,
+                    favorite_count=0,
+                    follower_gain=0,
+                    average_watch_time=None,
+                    completion_rate=None,
+                    search_traffic_rate=None,
+                    recommendation_traffic_rate=None,
+                    profile_traffic_rate=None,
+                    revenue=None,
+                    rpm=None,
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="test_fixture",
+                    fetched_at=now - timedelta(days=5),
+                    raw_payload_ref=None,
+                    created_at=now - timedelta(days=5),
+                ),
+                AccountSnapshot(
+                    id=uuid4(),
+                    account_id=account_id,
+                    captured_at=now - timedelta(days=3),
+                    follower_count=1000,
+                    video_count=5,
+                    total_view_count=None,  # the TikTok/Douyin case
+                    metadata_json={},
+                    source_kind="imported",
+                    source_provider="manual",
+                    fetched_at=now - timedelta(days=3),
+                    created_at=now - timedelta(days=3),
+                ),
+            ]
+        )
+        session.commit()
+    engine.dispose()
+
+    history = client.get(
+        f"/api/v1/accounts/{account_id}/metrics/history",
+        params={"days": 10},
+    )
+    assert history.status_code == 200, history.text
+    points = history.json()["points"]
+    assert len(points) == 1
+    # Derived total_view_count must be backfilled from content views (300_000)
+    # without ever touching the append-only snapshot row.
+    assert points[0]["total_view_count"] == 300_000
+
+
 def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
     client: TestClient, database_path: Path
 ) -> None:
     csrf_token = authenticate(client)
     account_data = create_account(client, csrf_token)
     now = datetime.now(UTC)
-    engine = create_engine(f"sqlite:///{database_path}")
+    engine = create_engine(PG_SYNC_URL)
     with Session(engine) as session:
         account = session.get(Account, UUID(account_data["id"]))
         assert account is not None
@@ -441,30 +637,173 @@ def test_database_uniqueness_prevents_duplicate_content_and_snapshot(
     engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_demo_seed_is_idempotent_and_always_marked_mock(
-    client: TestClient, database_path: Path
+def test_account_view_preferences_route_is_not_shadowed_by_account_id(
+    client: TestClient,
 ) -> None:
-    authenticate(client)
-    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    """GET /accounts/view-preferences must resolve to the view-preferences route,
+    not be captured by GET /accounts/{account_id} (which would 422 on the UUID)."""
+    csrf_token = authenticate(client)
+    get_response = client.get("/api/v1/accounts/view-preferences")
+    assert get_response.status_code == 200
+    put_response = client.put(
+        "/api/v1/accounts/view-preferences",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"preferences": {"platform": "all", "activeState": "all", "visibility": {}}},
+    )
+    assert put_response.status_code == 200
+    assert put_response.json()["preferences"]["platform"] == "all"
+
+
+def test_cancel_sync_run_route_cancels_queued_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /accounts/{id}/sync/{run_id}/cancel terminates a queued run and flips
+    the account into the 'cancelled' state via the real HTTP surface.
+
+    The queued run is created through the real sync endpoint (with the background
+    broker monkeypatched to a no-op) instead of a separate engine, so the async
+    app and the test never contend for the same connection/transaction when the
+    whole module is collected together.
+    """
+    dispatched: list[UUID] = []
+    monkeypatch.setattr(
+        "app.services.sync.enqueue_platform_sync",
+        lambda run_id: dispatched.append(run_id),
+    )
+
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+    account_id = account["id"]
+
+    queued = client.post(
+        f"/api/v1/accounts/{account_id}/sync",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert queued.status_code == 202, queued.text
+    assert queued.json()["status"] == "queued"
+    run_id = queued.json()["id"]
+    assert len(dispatched) == 1
+
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/sync/{run_id}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "cancelled"
+
+    account_response = client.get(
+        f"/api/v1/accounts/{account_id}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert account_response.json()["sync_status"] == "cancelled"
+
+
+def test_cancel_sync_run_route_returns_404_for_missing_run(
+    client: TestClient,
+) -> None:
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+    account_id = account["id"]
+    response = client.post(
+        f"/api/v1/accounts/{account_id}/sync/{uuid4()}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert response.status_code == 404
+    assert response.json()["code"] == "sync_resource_not_found"
+
+
+@pytest.mark.asyncio
+async def test_sync_run_detail_endpoint_returns_ordered_tracklog(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /accounts/{id}/sync-runs/{run_id} must return the run plus its full,
+    ordered tracklog — including per-item failures captured during a resilient
+    sync. Exercises the real HTTP surface (auth, routing, schema) end to end."""
+    from app.adapters.platforms.base import PlatformContentData
+    from app.services.sync import PlatformSyncExecutor
+
+    dispatched: list[UUID] = []
+    monkeypatch.setattr(
+        "app.services.sync.enqueue_platform_sync", lambda run_id: dispatched.append(run_id)
+    )
+    csrf_token = authenticate(client)
+    account = create_account(client, csrf_token)
+
+    queued = client.post(
+        f"/api/v1/accounts/{account['id']}/sync",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert queued.status_code == 202, queued.text
+    run_id = queued.json()["id"]
+
+    class FailingItemExecutor(PlatformSyncExecutor):
+        async def _upsert_content(self, acc, data: PlatformContentData, skip_existing=False):  # type: ignore[override]
+            if data.external_id == "c3":
+                raise RuntimeError("simulated upsert failure for c3")
+            return await super()._upsert_content(acc, data, skip_existing=skip_existing)
+
+    settings = Settings(
+        environment="test",
+        database_url=PG_ASYNC_URL,
+        redis_url=TEST_REDIS_URL,
+        secret_key="test-only-secret-not-used-in-production",
+        sync_page_limit=2,
+    )
+    engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    from app.adapters.platforms.registry import build_platform_adapter_registry
+
+    registry = build_platform_adapter_registry(settings)
+    registry.replace(RealShapedTestAdapter(key="youtube_browser", content_count=8))
     try:
         async with session_factory() as session:
-            workspace_id = await session.scalar(
-                select(Workspace.id).where(Workspace.slug == "test-workspace")
-            )
-            assert workspace_id is not None
-            first = await seed_demo_monitoring(session, workspace_id)
-            second = await seed_demo_monitoring(session, workspace_id)
-            assert first == {"accounts_created": 1, "contents_created": 1}
-            assert second == {"accounts_created": 0, "contents_created": 0}
+            await FailingItemExecutor(session, registry, settings).execute_account_run(UUID(run_id))
     finally:
+        for adapter in registry.values():
+            close = getattr(adapter, "aclose", None)
+            if close is not None:
+                await close()
         await engine.dispose()
 
-    demo_accounts = client.get("/api/v1/accounts", params={"platform": "demo_mock"})
-    demo_contents = client.get("/api/v1/contents", params={"platform": "demo_mock"})
-    assert demo_accounts.status_code == 200
-    assert demo_accounts.json()["items"][0]["source_kind"] == "mock"
-    assert demo_accounts.json()["items"][0]["metadata"]["demo"] is True
-    assert demo_contents.status_code == 200
-    assert demo_contents.json()["items"][0]["source_kind"] == "mock"
+    detail = client.get(
+        f"/api/v1/accounts/{account['id']}/sync-runs/{run_id}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["run"]["id"] == run_id
+    assert body["run"]["status"] == "success"
+    assert body["run"]["metadata"]["items_failed"] == 1
+    events = body["events"]
+    assert events, "detail route must return the tracklog events"
+    # Events must be returned in ascending sequence order.
+    assert [e["sequence"] for e in events] == sorted(e["sequence"] for e in events)
+    item_errors = [e for e in events if e["event_type"] == "item" and e["level"] == "error"]
+    assert len(item_errors) == 1
+    assert item_errors[0]["payload"]["external_id"] == "c3"
+    assert events[-1]["event_type"] == "summary"
+
+    # A missing run must 404 rather than fabricate a tracklog.
+    missing = client.get(
+        f"/api/v1/accounts/{account['id']}/sync-runs/{uuid4()}",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "sync_resource_not_found"
+
+
+def test_operations_cancel_unsupported_category_returns_501(
+    client: TestClient,
+) -> None:
+    """The unified operations cancel endpoint must NOT fake support for task
+    categories that cannot be cancelled yet; it returns 501 instead."""
+    from uuid import uuid4
+
+    csrf_token = authenticate(client)
+    response = client.post(
+        f"/api/v1/operations/tasks/{uuid4()}/cancel",
+        headers={"X-CSRF-Token": csrf_token},
+        json={"category": "generation"},
+    )
+    assert response.status_code == 501
+    assert response.json()["code"] == "unsupported_task_cancel"

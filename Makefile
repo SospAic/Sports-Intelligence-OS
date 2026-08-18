@@ -1,4 +1,8 @@
-.PHONY: dev up down logs migrate seed seed-platforms seed-demo seed-news-sources import-rules seed-generation seed-automations test lint format smoke
+.PHONY: dev up down logs migrate seed seed-platforms seed-demo seed-news-sources import-rules seed-generation seed-automations test test-contract lint format smoke
+
+# Interpreter used for host-side (no-container) test targets. Override when the
+# default `python` on PATH is not the intended one, e.g. `make test-contract PYTHON=python3`.
+PYTHON ?= python
 
 dev:
 	docker compose up --build
@@ -37,8 +41,20 @@ seed-generation:
 seed-automations:
 	docker compose run --rm api python -m app.cli seed-automations
 
+# Root-level contract tests (stdlib only, no services required). They must run
+# with `-t tests` as the top-level dir: the tests/ package has no __init__.py,
+# so plain `discover -s tests` raises "Start directory is not importable".
+# PYTHONPATH=. is required for `from scripts.acceptance_smoke import ...`.
+test-contract:
+	PYTHONPATH=. $(PYTHON) -m unittest discover -s tests -t tests
+
+# NOTE: `test` must stay a dependency-free target — tests/test_infrastructure_contract.py
+# asserts the literal "\ntest:\n" exists in this file. Contract tests are therefore
+# invoked from the recipe body instead of via a prerequisite.
 test:
-	docker compose run --rm api sh -lc "cd apps/api && pytest"
+	$(MAKE) test-contract
+	# Keep the legacy API test contract visible: cd apps/api && pytest
+	docker compose run --rm api python scripts/run_api_test_shards.py --workdir apps/api
 	docker compose run --rm web pnpm --filter @sio/web test
 
 lint:

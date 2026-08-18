@@ -36,7 +36,7 @@ describe("管理后台 API 查询契约", () => {
     expect(paths.account).toBe("/accounts/account%20%2F%2042");
     expect(paths.snapshots).toContain("/snapshots?page=1&page_size=100");
     expect(paths.contents).toContain("/contents?page=1&page_size=20");
-    expect(paths.syncRuns).toContain("/sync-runs?page=1&page_size=50");
+    expect(paths.syncRuns).toContain("/sync-runs?page=1&page_size=20");
     expect(paths.automations).toContain("entity_type=account");
   });
 
@@ -90,7 +90,7 @@ describe("可视化自动化与通知配置", () => {
           value: "1000000",
         },
         {
-          id: "not-mock",
+          id: "not-imported",
           kind: "group",
           operator: "NOT",
           conditions: [
@@ -99,7 +99,7 @@ describe("可视化自动化与通知配置", () => {
               kind: "leaf",
               field: "source_kind",
               operator: "eq",
-              value: "mock",
+              value: "imported",
             },
           ],
         },
@@ -111,7 +111,9 @@ describe("可视化自动化与通知配置", () => {
         { field: "view_count", operator: "gte", value: 1000000 },
         {
           operator: "NOT",
-          conditions: [{ field: "source_kind", operator: "eq", value: "mock" }],
+          conditions: [
+            { field: "source_kind", operator: "eq", value: "imported" },
+          ],
         },
       ],
     });

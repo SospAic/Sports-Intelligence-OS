@@ -27,7 +27,7 @@ class Source(TimestampMixin, Base):
     __tablename__ = "news_sources"
     __table_args__ = (
         CheckConstraint(
-            "source_type IN ('rss', 'atom', 'json', 'manual')",
+            "source_type IN ('rss', 'atom', 'json', 'web', 'manual')",
             name="news_source_type",
         ),
         CheckConstraint(
@@ -35,6 +35,7 @@ class Source(TimestampMixin, Base):
             name="news_source_reliability_range",
         ),
         CheckConstraint("priority >= 0 AND priority <= 100", name="news_source_priority_range"),
+        CheckConstraint("consecutive_failures >= 0", name="news_source_failures_nonnegative"),
         UniqueConstraint("workspace_id", "name"),
         Index("ix_news_sources_workspace_enabled", "workspace_id", "enabled"),
     )
@@ -56,12 +57,14 @@ class Source(TimestampMixin, Base):
     config_json: Mapped[dict[str, Any]] = mapped_column(
         "config", JSON, nullable=False, default=dict
     )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_sync_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
     last_error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     articles: Mapped[list[Article]] = relationship(back_populates="source")
 
@@ -70,7 +73,10 @@ class Article(TimestampMixin, Base):
     __tablename__ = "articles"
     __table_args__ = (
         UniqueConstraint("source_id", "external_id"),
-        CheckConstraint("source_kind IN ('live', 'imported')", name="news_article_source_kind"),
+        CheckConstraint(
+            "source_kind IN ('live', 'imported')",
+            name="news_article_source_kind",
+        ),
         Index("ix_articles_workspace_published", "workspace_id", "published_at"),
         Index("ix_articles_workspace_fetched", "workspace_id", "fetched_at"),
         Index("ix_articles_source_published", "source_id", "published_at"),
@@ -193,7 +199,7 @@ class NewsSyncRun(Base):
     __tablename__ = "news_sync_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('queued', 'running', 'success', 'error', 'skipped')",
+            "status IN ('queued', 'running', 'success', 'error', 'skipped', 'cancelled')",
             name="news_sync_run_status",
         ),
         Index("ix_news_sync_runs_source_started", "source_id", "started_at"),
@@ -218,6 +224,8 @@ class NewsSyncRun(Base):
     duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(120), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSON, nullable=False, default=dict
     )

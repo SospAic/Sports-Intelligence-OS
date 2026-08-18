@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -17,20 +18,28 @@ from app.models.news import (
     Source,
     TopicEvent,
 )
-from app.models.operations import AuditEntry
+from app.models.operations import SystemEvent
 from app.models.topics import SavedTopic
 from app.providers.news.base import (
     NewsArticleData,
     NewsCallContext,
     NewsProvider,
+    NewsProviderContractError,
     NewsProviderError,
+    NewsProviderTransientError,
 )
-from app.providers.news.utils import article_hash, normalize_title, title_similarity
+from app.providers.news.utils import (
+    article_hash,
+    ensure_public_endpoint,
+    normalize_title,
+    title_similarity,
+)
 from app.providers.registry import ProviderRegistry
 from app.repositories.news import ArticleFilters, ArticleRow, EventFilters, NewsRepository, Order
 from app.schemas.news import (
     ArticlePage,
     ArticleRead,
+    ArticleUpdate,
     EventMergeRequest,
     EventSplitRequest,
     ManualArticleCreate,
@@ -47,12 +56,23 @@ from app.schemas.news import (
     TopicEventPage,
     TopicEventRead,
 )
+from app.services.audit import build_audit_entry, build_external_call_attempt
+from app.services.error_detail import business_hint_for
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_BY_SOURCE_TYPE = {
     "rss": "rss",
     "atom": "atom",
     "json": "generic_json",
+    "web": "browser_news",
     "manual": "manual_news",
+}
+DEFAULT_PROVIDER_FALLBACKS = {
+    "rss": ("rss", "atom", "generic_json", "browser_news"),
+    "atom": ("atom", "rss", "generic_json", "browser_news"),
+    "json": ("generic_json", "rss", "atom", "browser_news"),
+    "web": ("browser_news", "rss", "atom", "generic_json"),
 }
 SECRET_CONFIG_MARKERS = ("password", "secret", "token", "api_key", "authorization", "cookie")
 MAX_CONFIG_BYTES = 65_536
@@ -68,8 +88,17 @@ DEFAULT_NEWS_SCORING = {
 }
 DUPLICATE_LOOKBACK_DAYS = 7
 EVENT_LOOKBACK_HOURS = 72
+EVENT_DEVELOPING_AFTER_HOURS = 24
+EVENT_CLOSED_AFTER_HOURS = 72
 SOURCE_COUNT_SATURATION = 5
 ARTICLE_COUNT_SATURATION = 10
+ARTICLE_BODY_SCRAPE_CONFIRMATIONS = (
+    "public_access_confirmed",
+    "terms_or_license_confirmed",
+    "robots_or_permission_confirmed",
+    "field_necessity_confirmed",
+    "rate_limit_confirmed",
+)
 
 
 class NewsError(Exception):
@@ -212,12 +241,28 @@ class NewsService:
         page: int,
         page_size: int,
         enabled: bool | None,
+        include_quarantined: bool = False,
     ) -> SourcePage:
         items, total = await self.repository.list_sources(
-            workspace_id, page=page, page_size=page_size, enabled=enabled
+            workspace_id,
+            page=page,
+            page_size=page_size,
+            enabled=enabled,
+            include_quarantined=include_quarantined,
         )
+        source_reads: list[SourceRead] = []
+        for item in items:
+            active = await self.repository.active_run(f"news_source:{item.id}")
+            source_reads.append(
+                SourceRead.model_validate(item).model_copy(
+                    update={
+                        "active_sync_run_id": active.id if active else None,
+                        "active_sync_status": active.status if active else None,
+                    }
+                )
+            )
         return SourcePage(
-            items=[SourceRead.model_validate(item) for item in items],
+            items=source_reads,
             page=page,
             page_size=page_size,
             total=total,
@@ -227,7 +272,13 @@ class NewsService:
         source = await self.repository.source(workspace_id, source_id)
         if source is None:
             raise NewsNotFoundError("source was not found")
-        return SourceRead.model_validate(source)
+        active = await self.repository.active_run(f"news_source:{source.id}")
+        return SourceRead.model_validate(source).model_copy(
+            update={
+                "active_sync_run_id": active.id if active else None,
+                "active_sync_status": active.status if active else None,
+            }
+        )
 
     async def update_source(
         self,
@@ -266,21 +317,37 @@ class NewsService:
         await self.session.refresh(source)
         return SourceRead.model_validate(source)
 
-    async def disable_source(self, workspace_id: UUID, source_id: UUID, actor_id: UUID) -> None:
+    async def set_source_enabled(
+        self, workspace_id: UUID, source_id: UUID, actor_id: UUID, *, enabled: bool
+    ) -> SourceRead:
         source = await self.repository.source(workspace_id, source_id)
         if source is None:
             raise NewsNotFoundError("source was not found")
-        source.enabled = False
-        source.next_sync_at = None
+        source.enabled = enabled
+        if enabled:
+            source.next_sync_at = datetime.now(UTC)
+        else:
+            source.next_sync_at = None
         self._audit(
             workspace_id,
             actor_id,
-            "news.source.disabled",
+            "news.source.enabled" if enabled else "news.source.disabled",
             "news_source",
             source.id,
-            {"enabled": False, "articles_preserved": True},
+            {"enabled": enabled, "articles_preserved": True},
         )
         await self.session.commit()
+        await self.session.refresh(source)
+        active = await self.repository.active_run(f"news_source:{source.id}")
+        return SourceRead.model_validate(source).model_copy(
+            update={
+                "active_sync_run_id": active.id if active else None,
+                "active_sync_status": active.status if active else None,
+            }
+        )
+
+    async def disable_source(self, workspace_id: UUID, source_id: UUID, actor_id: UUID) -> None:
+        await self.set_source_enabled(workspace_id, source_id, actor_id, enabled=False)
 
     async def list_articles(
         self,
@@ -368,6 +435,85 @@ class NewsService:
             raise RuntimeError("manual article could not be reloaded")
         return article_read(row)
 
+    async def update_article(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        article_id: UUID,
+        payload: ArticleUpdate,
+    ) -> ArticleRead:
+        row = await self.repository.article(workspace_id, article_id)
+        if row is None:
+            raise NewsNotFoundError("article was not found")
+        article = row[0]
+        changes = payload.model_dump(exclude_unset=True)
+        if "canonical_url" in changes and changes["canonical_url"]:
+            changes["canonical_url"] = str(changes["canonical_url"])
+        for field, value in changes.items():
+            setattr(article, field, value)
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.article.updated",
+            "article",
+            article.id,
+            {"fields": sorted(payload.model_fields_set)},
+        )
+        await self.session.flush()
+        row = await self.repository.article(workspace_id, article_id)
+        return article_read(row)  # type: ignore[arg-type]
+
+    async def bookmark_article(
+        self, workspace_id: UUID, article_id: UUID, actor_id: UUID, bookmarked: bool
+    ) -> ArticleRead:
+        """Toggle an article bookmark from the news table/card views."""
+
+        row = await self.repository.article(workspace_id, article_id)
+        if row is None:
+            raise NewsNotFoundError("article was not found")
+        article = row[0]
+        article.is_bookmarked = bookmarked
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.article.bookmark_changed",
+            "article",
+            article.id,
+            {"bookmarked": bookmarked},
+        )
+        await self.session.commit()
+        refreshed = await self.repository.article(workspace_id, article_id)
+        if refreshed is None:
+            raise RuntimeError("bookmarked article could not be reloaded")
+        return article_read(refreshed)
+
+    async def delete_article(self, workspace_id: UUID, actor_id: UUID, article_id: UUID) -> None:
+        row = await self.repository.article(workspace_id, article_id)
+        if row is None:
+            raise NewsNotFoundError("article was not found")
+        article = row[0]
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.article.deleted",
+            "article",
+            article.id,
+            {"title": article.title},
+        )
+        # Remove event-article links first
+        links = (
+            (
+                await self.session.execute(
+                    select(EventArticle).where(EventArticle.article_id == article.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for link in links:
+            await self.session.delete(link)
+        await self.session.delete(article)
+
     async def list_events(
         self,
         workspace_id: UUID,
@@ -395,6 +541,37 @@ class NewsService:
             page_size=page_size,
             total=total,
         )
+
+    async def refresh_event_lifecycle(
+        self, workspace_id: UUID, *, now: datetime | None = None
+    ) -> dict[str, int]:
+        """Move open events between active/developing/closed by observation age."""
+        current_time = self._utc(now or datetime.now(UTC))
+        events = list(
+            (
+                await self.session.scalars(
+                    select(TopicEvent).where(
+                        TopicEvent.workspace_id == workspace_id,
+                        TopicEvent.status.in_(("active", "developing")),
+                    )
+                )
+            ).all()
+        )
+        counts = {
+            "scanned": len(events),
+            "changed": 0,
+            "active": 0,
+            "developing": 0,
+            "closed": 0,
+        }
+        for event in events:
+            before = event.status
+            self._apply_event_lifecycle(event, current_time)
+            counts[event.status] += 1
+            if event.status != before:
+                counts["changed"] += 1
+        await self.session.commit()
+        return counts
 
     async def get_event(self, workspace_id: UUID, event_id: UUID) -> TopicEventDetail:
         event = await self.repository.event(workspace_id, event_id)
@@ -653,65 +830,182 @@ class NewsService:
             return NewsSyncRunRead.model_validate(active), False
         return NewsSyncRunRead.model_validate(run), True
 
+    async def cancel_sync_run(
+        self,
+        workspace_id: UUID,
+        source_id: UUID,
+        run_id: UUID,
+        actor_id: UUID,
+    ) -> NewsSyncRunRead:
+        run = await self.repository.run(run_id)
+        if run is None or run.workspace_id != workspace_id or run.source_id != source_id:
+            raise NewsNotFoundError("news sync run was not found")
+        if run.status not in ("queued", "running"):
+            return NewsSyncRunRead.model_validate(run)
+        now = datetime.now(UTC)
+        run.status = "cancelled"
+        run.finished_at = now
+        run.error_code = "cancelled_by_user"
+        run.error_message = "同步任务已由用户停止"
+        run.error_detail = run.error_message
+        run.error_hint = "已记录停止操作；已获取的历史文章不会删除。"
+        run.metadata_json = {**run.metadata_json, "cancelled_by_user": True}
+        run.lock_key = None
+        self._audit(
+            workspace_id,
+            actor_id,
+            "news.source.sync_cancelled",
+            "news_sync_run",
+            run.id,
+            {"source_id": str(source_id), "status": "cancelled"},
+        )
+        await self.session.commit()
+        try:
+            from app.tasks.news import sync_news_source
+
+            sync_news_source.revoke(str(run.id), terminate=True)
+        except Exception as exc:  # pragma: no cover - broker may be unavailable in dev/test
+            logger.debug("news_sync_revoke_unavailable", exc_info=exc)
+        return NewsSyncRunRead.model_validate(run)
+
     async def execute_sync(self, run_id: UUID) -> None:
         run = await self.repository.run(run_id)
         if run is None:
             raise NewsNotFoundError("news sync run was not found")
-        if run.status == "success":
+        if run.status in ("success", "cancelled"):
             return
         source = await self.repository.source(run.workspace_id, run.source_id)
         if source is None:
             await self._sync_error(run, None, "source_not_found", "source was deleted")
             return
-        provider = self.providers.get(run.provider_key)
         now = datetime.now(UTC)
         run.status = "running"
         run.started_at = run.started_at or now
         run.error_code = None
         run.error_message = None
+        source.last_attempt_at = now
         await self.session.commit()
         ctx = NewsCallContext(
             config=self._provider_config(source), fetched_at=now, request_id=run.request_id
         )
-        cursor: str | None = None
         created = updated = duplicates = 0
-        try:
-            await provider.validate_source(ctx.config)
-            for _ in range(int(source.config_json.get("max_pages", 10))):
-                start_value = run.metadata_json.get("start")
-                end_value = run.metadata_json.get("end")
-                if isinstance(start_value, str) and isinstance(end_value, str):
-                    page = await provider.fetch_range(
-                        ctx,
-                        start=datetime.fromisoformat(start_value),
-                        end=datetime.fromisoformat(end_value),
-                        cursor=cursor,
-                        limit=100,
-                    )
-                else:
-                    page = await provider.fetch_latest(ctx, cursor=cursor, limit=100)
-                for data in page.items:
-                    _, was_created, duplicate = await self._ingest(source, data)
-                    created += int(was_created)
-                    updated += int(not was_created)
-                    duplicates += int(duplicate)
-                if not page.next_cursor:
-                    break
-                cursor = page.next_cursor
-        except NewsProviderError as exc:
-            if exc.retryable:
+        attempt_number = int(run.metadata_json.get("retry_count", 0)) + 1
+        strategy_attempts: list[dict[str, Any]] = []
+        selected_provider_key: str | None = None
+        selected_items: list[NewsArticleData] | None = None
+        last_error: NewsProviderError | None = None
+        has_retryable_error = False
+        for provider_key in self._provider_candidates(source):
+            try:
+                provider = self.providers.get(provider_key)
+            except LookupError:
+                continue
+            attempt_started = datetime.now(UTC)
+            try:
+                items = await self._fetch_provider_items(provider, ctx, run)
+                if items is None:
+                    return
+            except NewsProviderError as provider_exc:
+                last_error = provider_exc
+                has_retryable_error = has_retryable_error or provider_exc.retryable
+                strategy_attempts.append(
+                    {"provider": provider_key, "status": "failed", "code": provider_exc.code}
+                )
+                self._record_external_attempt(
+                    run,
+                    source,
+                    attempt_started,
+                    attempt_number,
+                    provider_key=provider_key,
+                    status="failed",
+                    error_code=provider_exc.code,
+                    error_detail=str(provider_exc),
+                    retryable=provider_exc.retryable,
+                )
+                attempt_number += 1
+                continue
+            except Exception as raw_exc:  # noqa: BLE001 - try the next acquisition strategy
+                fallback_exc = NewsProviderTransientError(
+                    f"{provider_key} failed unexpectedly: {type(raw_exc).__name__}"
+                )
+                last_error = fallback_exc
+                has_retryable_error = True
+                strategy_attempts.append(
+                    {"provider": provider_key, "status": "failed", "code": fallback_exc.code}
+                )
+                self._record_external_attempt(
+                    run,
+                    source,
+                    attempt_started,
+                    attempt_number,
+                    provider_key=provider_key,
+                    status="failed",
+                    error_code=fallback_exc.code,
+                    error_detail=str(raw_exc),
+                    retryable=True,
+                )
+                attempt_number += 1
+                continue
+            selected_provider_key = provider_key
+            selected_items = items
+            strategy_attempts.append(
+                {"provider": provider_key, "status": "selected", "items": len(items)}
+            )
+            self._record_external_attempt(
+                run,
+                source,
+                attempt_started,
+                attempt_number,
+                provider_key=provider_key,
+                status="success",
+                response_summary={"items": len(items)},
+            )
+            break
+
+        run.metadata_json = {
+            **run.metadata_json,
+            "acquisition_strategy": strategy_attempts,
+            "selected_provider": selected_provider_key,
+        }
+        if selected_items is None:
+            final_error = last_error or NewsProviderContractError(
+                "all news acquisition strategies failed"
+            )
+            message = "多策略采集均失败：" + "; ".join(
+                f"{item['provider']}={item.get('code', 'unknown')}" for item in strategy_attempts
+            )
+            if has_retryable_error:
                 run.status = "queued"
-                run.error_code = exc.code
-                run.error_message = str(exc)[:2000]
+                run.error_code = final_error.code
+                run.error_message = message[:2000]
+                run.error_detail = str(final_error)[:2000]
+                run.error_hint = business_hint_for(final_error.code, category="news_sync")
                 run.metadata_json = {
                     **run.metadata_json,
                     "retry_count": int(run.metadata_json.get("retry_count", 0)) + 1,
                 }
-                source.last_error_code = exc.code
-                source.last_error_message = str(exc)[:2000]
+                source.last_error_code = final_error.code
+                source.last_error_message = message[:2000]
+                self._schedule_source_backoff(source)
                 await self.session.commit()
-                raise RetryableNewsSyncError(str(exc)) from exc
-            await self._sync_error(run, source, exc.code, str(exc))
+                raise RetryableNewsSyncError(message) from final_error
+            await self._sync_error(run, source, final_error.code, message)
+            return
+
+        try:
+            for data in selected_items:
+                _, was_created, duplicate = await self._ingest(source, data)
+                created += int(was_created)
+                updated += int(not was_created)
+                duplicates += int(duplicate)
+        except NewsProviderError as ingest_exc:
+            await self._sync_error(run, source, ingest_exc.code, str(ingest_exc))
+            return
+        except Exception as ingest_exc:  # noqa: BLE001 - keep already-fetched items durable
+            await self._sync_error(run, source, "unexpected_news_sync_error", str(ingest_exc))
+            return
+        await self.session.refresh(run)
+        if run.status == "cancelled":
             return
         finished = datetime.now(UTC)
         run.status = "success"
@@ -726,7 +1020,49 @@ class NewsService:
         )
         source.last_error_code = None
         source.last_error_message = None
+        source.consecutive_failures = 0
         await self.session.commit()
+
+    def _provider_candidates(self, source: Source) -> tuple[str, ...]:
+        configured = source.config_json.get("acquisition_fallbacks")
+        raw = (
+            configured
+            if isinstance(configured, list)
+            else DEFAULT_PROVIDER_FALLBACKS.get(
+                source.source_type, (source.provider_key, "browser_news")
+            )
+        )
+        candidates = [source.provider_key, *(str(item) for item in raw)]
+        return tuple(dict.fromkeys(candidates))
+
+    async def _fetch_provider_items(
+        self, provider: NewsProvider, ctx: NewsCallContext, run: NewsSyncRun
+    ) -> list[NewsArticleData] | None:
+        await provider.validate_source(ctx.config)
+        items: list[NewsArticleData] = []
+        cursor: str | None = None
+        max_pages = max(1, min(int(ctx.config.get("max_pages", 10)), 50))
+        for _ in range(max_pages):
+            await self.session.refresh(run)
+            if run.status == "cancelled":
+                return None
+            start_value = run.metadata_json.get("start")
+            end_value = run.metadata_json.get("end")
+            if isinstance(start_value, str) and isinstance(end_value, str):
+                page = await provider.fetch_range(
+                    ctx,
+                    start=datetime.fromisoformat(start_value),
+                    end=datetime.fromisoformat(end_value),
+                    cursor=cursor,
+                    limit=100,
+                )
+            else:
+                page = await provider.fetch_latest(ctx, cursor=cursor, limit=100)
+            items.extend(page.items)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return items
 
     async def mark_retry_exhausted(self, run_id: UUID, message: str) -> None:
         run = await self.repository.run(run_id)
@@ -767,12 +1103,14 @@ class NewsService:
             run.finished_at = now
             run.error_code = "stale_task_recovered"
             run.error_message = "Task exceeded its execution lease and was released"
+            run.error_detail = "Task exceeded its execution lease and was released"
+            run.error_hint = business_hint_for("stale_task_recovered", category="news_sync")
             run.lock_key = None
             source = await self.repository.source(run.workspace_id, run.source_id)
             if source is not None:
                 source.last_error_code = run.error_code
                 source.last_error_message = run.error_message
-                source.next_sync_at = now
+                self._schedule_source_backoff(source, now=now)
             recovered += 1
         if recovered:
             await self.session.commit()
@@ -781,15 +1119,90 @@ class NewsService:
     async def _sync_error(
         self, run: NewsSyncRun, source: Source | None, code: str, message: str
     ) -> None:
+        finished_at = datetime.now(UTC)
         run.status = "error"
-        run.finished_at = datetime.now(UTC)
+        run.finished_at = finished_at
         run.error_code = code
         run.error_message = message[:2000]
+        run.error_detail = message[:2000]
+        run.error_hint = business_hint_for(code, category="news_sync")
         run.lock_key = None
         if source is not None:
             source.last_error_code = code
             source.last_error_message = message[:2000]
+            self._schedule_source_backoff(source, now=finished_at)
+            self.session.add(
+                SystemEvent(
+                    id=uuid4(),
+                    workspace_id=source.workspace_id,
+                    severity="error",
+                    category="news_sync",
+                    event_type="news.source.sync_failed",
+                    message=f"新闻源「{source.name}」同步失败",
+                    resource_type="news_source",
+                    resource_id=source.id,
+                    status="open",
+                    error_code=code,
+                    error_detail=message[:2000],
+                    error_hint=business_hint_for(code, category="news_sync"),
+                    metadata_safe_json={
+                        "provider_key": source.provider_key,
+                        "error_code": code,
+                        "next_sync_at": source.next_sync_at.isoformat()
+                        if source.next_sync_at
+                        else None,
+                    },
+                    trace_id=uuid4(),
+                    created_at=finished_at,
+                )
+            )
         await self.session.commit()
+
+    @staticmethod
+    def _schedule_source_backoff(source: Source, *, now: datetime | None = None) -> None:
+        current = now or datetime.now(UTC)
+        source.consecutive_failures += 1
+        base = max(300, int(source.config_json.get("sync_interval_seconds", 900)))
+        delay = min(21_600, base * (2 ** min(source.consecutive_failures - 1, 6)))
+        source.next_sync_at = current + timedelta(seconds=delay)
+
+    def _record_external_attempt(
+        self,
+        run: NewsSyncRun,
+        source: Source,
+        started_at: datetime,
+        attempt_number: int,
+        *,
+        provider_key: str | None = None,
+        status: str,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        retryable: bool | None = None,
+        response_summary: dict[str, Any] | None = None,
+    ) -> None:
+        finished_at = datetime.now(UTC)
+        self.session.add(
+            build_external_call_attempt(
+                id=uuid4(),
+                workspace_id=run.workspace_id,
+                call_type="news_sync",
+                provider_key=provider_key or run.provider_key,
+                entity_type="news_source",
+                entity_id=source.id,
+                attempt_number=attempt_number,
+                status=status,
+                target_url=source.url,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
+                http_status=None,
+                error_code=error_code,
+                error_detail_safe=error_detail[:500] if error_detail else None,
+                retryable=retryable,
+                request_summary={"run_id": str(run.id), "source_type": source.source_type},
+                response_summary=response_summary,
+            )
+        )
 
     async def list_sync_runs(
         self,
@@ -915,9 +1328,30 @@ class NewsService:
             article.source_provider = data.provider
             article.source_url = data.canonical_url
         await self.session.flush()
+        # Full article-page extraction is opt-in because an RSS/Atom URL does not
+        # itself grant permission to scrape the linked publisher page.
+        if (
+            not article.content
+            and article.canonical_url
+            and self._article_body_scrape_allowed(source.config_json)
+        ):
+            scraped = await self._scrape_article_body(article.canonical_url)
+            if scraped:
+                article.content = scraped
+                article.metadata_json = {
+                    **article.metadata_json,
+                    "body_scraped": True,
+                    "body_scraped_at": datetime.now(UTC).isoformat(),
+                }
         duplicate = await self._classify_duplicate(article, config)
         await self._cluster_article(article, config)
         return article, created, duplicate
+
+    @staticmethod
+    def _article_body_scrape_allowed(config: dict[str, Any]) -> bool:
+        return config.get("article_body_scrape_enabled") is True and all(
+            config.get(field) is True for field in ARTICLE_BODY_SCRAPE_CONFIRMATIONS
+        )
 
     async def _classify_duplicate(self, article: Article, config: NewsScoringConfig) -> bool:
         candidates = await self.repository.duplicate_candidates(
@@ -951,6 +1385,22 @@ class NewsService:
         return True
 
     async def _cluster_article(self, article: Article, config: NewsScoringConfig) -> TopicEvent:
+        # Extract entities for enhanced clustering
+        from app.services.entity_extraction import (
+            compute_entity_similarity,
+            extract_article_entities,
+        )
+
+        article_entities = extract_article_entities(article.title, article.summary or "")
+        entity_data = [
+            {"text": e.text, "type": e.entity_type.value, "confidence": round(e.confidence, 2)}
+            for e in article_entities
+        ]
+        article.metadata_json = {
+            **article.metadata_json,
+            "extracted_entities": entity_data,
+        }
+
         current_link = await self.session.scalar(
             select(EventArticle).where(EventArticle.article_id == article.id)
         )
@@ -968,11 +1418,46 @@ class NewsService:
         threshold = float(config.event_similarity_threshold)
         best_event: TopicEvent | None = None
         best_score = 0.0
+        best_components: dict[str, float] = {}
         for event in candidates:
-            score = title_similarity(event.title, article.title)
+            title_score = title_similarity(event.title, article.title)
+            # Entity similarity bonus (0-0.3)
+            event_entities_raw = (event.metadata_json or {}).get("extracted_entities", [])
+            event_entities = []
+            for raw in event_entities_raw:
+                from app.services.entity_extraction import EntityType, ExtractedEntity
+
+                try:
+                    event_entities.append(
+                        ExtractedEntity(
+                            text=raw["text"],
+                            entity_type=EntityType(raw["type"]),
+                            confidence=raw["confidence"],
+                        )
+                    )
+                except (KeyError, ValueError):
+                    continue
+            entity_score = (
+                compute_entity_similarity(article_entities, event_entities)
+                if event_entities
+                else 0.0
+            )
+            weighted_score = title_score * 0.65 + entity_score * 0.35
+            strong_entity_score = (
+                entity_score * 0.85 if entity_score >= 0.7 and title_score >= 0.2 else 0.0
+            )
+            # Entity enrichment must never reduce a strong title match.  The
+            # previous weighted-only formula made a title score of 0.85 fail
+            # the default 0.62 threshold whenever entity extraction was empty.
+            score = max(title_score, weighted_score, strong_entity_score)
             if score >= threshold and score > best_score:
                 best_event = event
                 best_score = score
+                best_components = {
+                    "title": round(title_score, 4),
+                    "entity": round(entity_score, 4),
+                    "combined": round(score, 4),
+                }
         if best_event is None:
             best_event = TopicEvent(
                 id=uuid4(),
@@ -992,13 +1477,25 @@ class NewsService:
                 visual_score=Decimal("0"),
                 story_score=Decimal("0"),
                 status="active",
-                metadata_json={"cluster_algorithm": "title-similarity-v1"},
+                metadata_json={
+                    "cluster_algorithm": "entity-enhanced-v2",
+                    "extracted_entities": entity_data,
+                },
                 is_bookmarked=False,
                 bookmarked_at=None,
             )
             self.session.add(best_event)
             await self.session.flush()
             best_score = 1.0
+            best_components = {"title": 1.0, "entity": 1.0, "combined": 1.0}
+        article.metadata_json = {
+            **article.metadata_json,
+            "cluster_match": {
+                "algorithm": "entity-enhanced-v2",
+                "event_id": str(best_event.id),
+                **best_components,
+            },
+        }
         self.session.add(
             EventArticle(
                 id=uuid4(),
@@ -1020,22 +1517,24 @@ class NewsService:
             event.source_count = 0
             event.heat_score = Decimal("0")
             return
+        unique_articles = list({item.content_hash: item for item in articles}.values())
         event.article_count = len(articles)
-        event.source_count = len({item.source_id for item in articles})
+        unique_sources = {item.source_id: item.source for item in articles}
+        event.source_count = len(unique_sources)
         reported_times: list[datetime] = []
-        for item in articles:
+        for item in unique_articles:
             reported_time = item.event_time or item.published_at
             if reported_time is not None:
                 reported_times.append(self._utc(reported_time))
         event.start_time = min(reported_times) if reported_times else None
         event.last_update_time = max(self._utc(item.fetched_at) for item in articles)
-        reliabilities = [float(item.source.reliability_score) for item in articles]
+        reliabilities = [float(source.reliability_score) for source in unique_sources.values()]
         event.reliability_score = Decimal(str(sum(reliabilities) / len(reliabilities)))
 
         def metadata_average(key: str) -> float:
             values = [
                 float(item.metadata_json.get(key, 0))
-                for item in articles
+                for item in unique_articles
                 if isinstance(item.metadata_json.get(key, 0), (int, float))
             ]
             return sum(values) / len(values) if values else 0.0
@@ -1043,30 +1542,394 @@ class NewsService:
         event.controversy_score = Decimal(str(metadata_average("controversy_score")))
         event.visual_score = Decimal(str(metadata_average("visual_score")))
         event.story_score = Decimal(str(metadata_average("story_score")))
+        freshness_times: list[datetime] = []
+        for item in unique_articles:
+            candidate_time = item.event_time or item.published_at
+            if candidate_time is not None:
+                freshness_times.append(self._utc(candidate_time))
+        freshness_basis = max(freshness_times) if freshness_times else event.last_update_time
+        if freshness_basis is None:
+            freshness_basis = datetime.now(UTC)
+        freshness_basis_kind = "event_or_published_at" if freshness_times else "fetched_at_fallback"
         age_hours = max(
-            0.0, (datetime.now(UTC) - self._utc(event.last_update_time)).total_seconds() / 3600
+            0.0, (datetime.now(UTC) - self._utc(freshness_basis)).total_seconds() / 3600
         )
         freshness = math.pow(0.5, age_hours / float(config.freshness_half_life_hours))
-        heat = (
+        objective_weight = max(
+            1.0,
+            float(config.source_weight)
+            + float(config.freshness_weight)
+            + float(config.source_count_weight)
+            + float(config.article_count_weight),
+        )
+        objective = (
             float(config.source_weight) * (float(event.reliability_score) / 100)
             + float(config.freshness_weight) * freshness
             + float(config.source_count_weight)
             * min(event.source_count / SOURCE_COUNT_SATURATION, 1)
             + float(config.article_count_weight)
-            * min(event.article_count / ARTICLE_COUNT_SATURATION, 1)
-            + float(config.user_interest_weight) * int(event.is_bookmarked)
+            * min(len(unique_articles) / ARTICLE_COUNT_SATURATION, 1)
+        )
+        heat = 100.0 * objective / objective_weight
+        recommendation_score = min(
+            100.0,
+            heat + float(config.user_interest_weight) * int(event.is_bookmarked),
         )
         event.heat_score = Decimal(str(min(100.0, max(0.0, heat))))
         event.metadata_json = {
             **event.metadata_json,
-            "heat_algorithm": "weighted-news-heat-v1",
+            "heat_algorithm": "objective-weighted-news-heat-v2",
             "scoring_config_version": config.version,
-            "freshness_basis": "last_fetched_update",
+            "freshness_basis": freshness_basis_kind,
+            "freshness_timestamp": freshness_basis.isoformat(),
+            "recommendation_score": round(recommendation_score, 4),
+            "score_availability": {
+                key: any(
+                    isinstance(item.metadata_json.get(key), (int, float))
+                    for item in unique_articles
+                )
+                for key in ("controversy_score", "visual_score", "story_score")
+            },
+            "unique_article_count": len(unique_articles),
+            "unique_source_count": len(unique_sources),
+        }
+        self._apply_event_lifecycle(event, datetime.now(UTC))
+
+    @staticmethod
+    def _apply_event_lifecycle(event: TopicEvent, now: datetime) -> None:
+        if event.status == "closed":
+            return
+        age_hours = max(
+            0.0,
+            (now - NewsService._utc(event.last_update_time)).total_seconds() / 3600,
+        )
+        if age_hours >= EVENT_CLOSED_AFTER_HOURS:
+            next_status = "closed"
+        elif age_hours >= EVENT_DEVELOPING_AFTER_HOURS:
+            next_status = "developing"
+        else:
+            next_status = "active"
+        event.status = next_status
+        event.metadata_json = {
+            **event.metadata_json,
+            "lifecycle": {
+                "algorithm": "observation-age-v1",
+                "age_hours": round(age_hours, 4),
+                "developing_after_hours": EVENT_DEVELOPING_AFTER_HOURS,
+                "closed_after_hours": EVENT_CLOSED_AFTER_HOURS,
+                "evaluated_at": now.isoformat(),
+            },
+        }
+
+    async def explain_event(self, workspace_id: UUID, event_id: UUID) -> dict[str, Any]:
+        """Return a breakdown of how the heat_score was calculated for an event."""
+        event = await self.repository.event(workspace_id, event_id)
+        if event is None:
+            raise NewsNotFoundError("topic event was not found")
+
+        meta = event.metadata_json or {}
+        algorithm = meta.get("heat_algorithm", "objective-weighted-news-heat-v2")
+        config_version = meta.get("scoring_config_version")
+        freshness_basis = meta.get("freshness_basis")
+        freshness_timestamp = meta.get("freshness_timestamp")
+        unique_article_count = meta.get("unique_article_count", event.article_count)
+        unique_source_count = meta.get("unique_source_count", event.source_count)
+        recommendation_score = meta.get("recommendation_score")
+
+        config = await self._scoring_config(workspace_id)
+        total_weight = (
+            float(config.source_weight)
+            + float(config.freshness_weight)
+            + float(config.source_count_weight)
+            + float(config.article_count_weight)
+        )
+
+        # Reconstruct component values from stored data
+        source_reliability = float(event.reliability_score) if event.reliability_score else 0.0
+        freshness_value = None
+        if freshness_timestamp:
+            try:
+                from datetime import datetime as dt
+
+                ft = dt.fromisoformat(freshness_timestamp)
+                age_hours = max(0.0, (datetime.now(UTC) - self._utc(ft)).total_seconds() / 3600)
+                import math as _math
+
+                freshness_value = round(
+                    _math.pow(0.5, age_hours / float(config.freshness_half_life_hours)), 4
+                )
+            except (ValueError, TypeError):
+                pass
+
+        source_count_ratio = min(event.source_count / SOURCE_COUNT_SATURATION, 1.0)
+        article_count_ratio = min((unique_article_count or 0) / ARTICLE_COUNT_SATURATION, 1.0)
+
+        components: list[dict[str, object]] = [
+            {
+                "name": "来源可靠度",
+                "raw_value": round(source_reliability, 2),
+                "percentile": None,
+                "weight": (
+                    round(float(config.source_weight) / total_weight, 4) if total_weight else 0
+                ),
+                "weighted_contribution": round(
+                    float(config.source_weight) * (source_reliability / 100) / total_weight * 100, 2
+                )
+                if total_weight
+                else None,
+                "missing": False,
+                "note": "工作区对新闻源配置的0-100先验评分",
+            },
+            {
+                "name": "新鲜度",
+                "raw_value": freshness_value,
+                "percentile": None,
+                "weight": (
+                    round(float(config.freshness_weight) / total_weight, 4) if total_weight else 0
+                ),
+                "weighted_contribution": round(
+                    float(config.freshness_weight) * (freshness_value or 0) / total_weight * 100, 2
+                )
+                if total_weight and freshness_value is not None
+                else None,
+                "missing": freshness_value is None,
+                "note": (
+                    f"半衰期{config.freshness_half_life_hours}h；基准: {freshness_basis}"
+                    if freshness_basis
+                    else None
+                ),
+            },
+            {
+                "name": "独立来源数",
+                "raw_value": float(event.source_count),
+                "percentile": None,
+                "weight": (
+                    round(float(config.source_count_weight) / total_weight, 4)
+                    if total_weight
+                    else 0
+                ),
+                "weighted_contribution": round(
+                    float(config.source_count_weight) * source_count_ratio / total_weight * 100, 2
+                )
+                if total_weight
+                else None,
+                "missing": False,
+                "note": (
+                    f"饱和值={SOURCE_COUNT_SATURATION}，当前比率={round(source_count_ratio, 2)}"
+                ),
+            },
+            {
+                "name": "独立文章数",
+                "raw_value": float(unique_article_count or 0),
+                "percentile": None,
+                "weight": (
+                    round(float(config.article_count_weight) / total_weight, 4)
+                    if total_weight
+                    else 0
+                ),
+                "weighted_contribution": round(
+                    float(config.article_count_weight) * article_count_ratio / total_weight * 100, 2
+                )
+                if total_weight
+                else None,
+                "missing": False,
+                "note": f"饱和值={ARTICLE_COUNT_SATURATION}，去重后独立内容数",
+            },
+        ]
+
+        missing_fields = [c["name"] for c in components if c["missing"]]
+        confidence = None
+        confidence_reason = None
+        if event.source_count < 2:
+            confidence = 0.4
+            confidence_reason = "单来源事件，未交叉验证"
+        elif event.source_count < 4:
+            confidence = 0.65
+            confidence_reason = f"来源数({event.source_count})较少"
+        else:
+            confidence = 0.85
+            confidence_reason = "多来源覆盖"
+        if freshness_basis == "fetched_at_fallback":
+            confidence = max(0.0, (confidence or 0.5) - 0.15)
+            confidence_reason += "；新鲜度降级为抓取时间"
+
+        return {
+            "entity_id": str(event.id),
+            "entity_type": "topic_event",
+            "score_field": "heat_score",
+            "score_value": float(event.heat_score),
+            "algorithm_version": algorithm,
+            "components": components,
+            "missing_fields": missing_fields,
+            "sample_window": {
+                "start": event.start_time.isoformat() if event.start_time else None,
+                "end": event.last_update_time.isoformat() if event.last_update_time else None,
+                "freshness_basis": freshness_basis,
+                "freshness_timestamp": freshness_timestamp,
+            },
+            "confidence": confidence,
+            "confidence_reason": confidence_reason,
+            "metadata": {
+                "scoring_config_version": config_version,
+                "recommendation_score": recommendation_score,
+                "unique_article_count": unique_article_count,
+                "unique_source_count": unique_source_count,
+                "source_count": event.source_count,
+                "article_count": event.article_count,
+            },
         }
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
         return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @staticmethod
+    async def _scrape_article_body(url: str) -> str | None:
+        """Fetch and extract the main article body text from a URL.
+
+        Uses httpx for fetching and BeautifulSoup for parsing.  The content
+        extraction applies a readability-like scoring algorithm that evaluates
+        candidate container elements based on text density, class/id signals
+        and link density.  Returns None on any failure (non-critical).
+        """
+        import logging
+        import re
+
+        _logger = logging.getLogger(__name__)
+        try:
+            await ensure_public_endpoint(url)
+
+            import httpx
+            from bs4 import BeautifulSoup, Tag
+
+            async with httpx.AsyncClient(
+                timeout=10.0,
+                follow_redirects=False,
+                headers={"User-Agent": "SportsIntelligenceOS/1.0 (article-body-extractor)"},
+            ) as client:
+                response = await client.get(url)
+                if response.status_code != 200:
+                    return None
+                content_type = response.headers.get("content-type", "")
+                if "html" not in content_type:
+                    return None
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # Phase 1: Remove clearly non-content elements
+            _JUNK_TAGS = frozenset(
+                {
+                    "script",
+                    "style",
+                    "nav",
+                    "header",
+                    "footer",
+                    "aside",
+                    "iframe",
+                    "noscript",
+                    "form",
+                    "button",
+                    "input",
+                    "select",
+                }
+            )
+            for tag in soup.find_all(_JUNK_TAGS):
+                tag.decompose()
+
+            # Also remove elements with strongly negative class/id patterns
+            _NEGATIVE_RE = re.compile(
+                r"ad[sb]?[-_]?|banner|combx|comment|community|disqus|extra|footer|"
+                r"gdpr|header|instapaper_ignore|masthead|media|meta|outbrain|"
+                r"promo|related|scroll|share|shoutbox|sidebar|social|sponsor|"
+                r"story-below|taboola|tags|toolbar|widget",
+                re.IGNORECASE,
+            )
+            for el in soup.find_all(True):
+                if not isinstance(el, Tag):
+                    continue
+                class_value = el.get("class")
+                cls = (
+                    " ".join(str(value) for value in class_value)
+                    if isinstance(class_value, list)
+                    else str(class_value or "")
+                )
+                id_value = el.get("id")
+                eid = id_value if isinstance(id_value, str) else ""
+                combined = f"{cls} {eid}"
+                if _NEGATIVE_RE.search(combined):
+                    el.decompose()
+
+            # Phase 2: Score candidate container elements
+            _POSITIVE_RE = re.compile(
+                r"article|body|content|entry|main|post|story|text|blog|hentry",
+                re.IGNORECASE,
+            )
+            _PARAGRAPHS_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.DOTALL | re.IGNORECASE)
+            candidates: list[tuple[Tag, float]] = []
+
+            for el in soup.find_all(["div", "section", "article", "main"]):
+                if not isinstance(el, Tag):
+                    continue
+                text = el.get_text(separator="\n", strip=True)
+                if len(text) < 100:
+                    continue
+
+                score = 0.0
+
+                # Positive class/id signals
+                class_value = el.get("class")
+                cls = (
+                    " ".join(str(value) for value in class_value)
+                    if isinstance(class_value, list)
+                    else str(class_value or "")
+                )
+                id_value = el.get("id")
+                eid = id_value if isinstance(id_value, str) else ""
+                combined = f"{cls} {eid}"
+                if _POSITIVE_RE.search(combined):
+                    score += 25.0
+
+                # Text density: count paragraphs and their lengths
+                inner_html = str(el)
+                paragraphs = _PARAGRAPHS_RE.findall(inner_html)
+                p_count = len(paragraphs)
+                if p_count > 0:
+                    avg_p_len = sum(len(p.strip()) for p in paragraphs) / p_count
+                    score += min(p_count * 3.0, 30.0)
+                    score += min(avg_p_len / 10.0, 10.0)
+
+                # Penalise high link density (navigation-like blocks)
+                link_text = " ".join(a.get_text(strip=True) for a in el.find_all("a"))
+                if text:
+                    link_density = len(link_text) / len(text)
+                    if link_density > 0.5:
+                        score -= 30.0
+                    elif link_density > 0.25:
+                        score -= 10.0
+
+                # Bonus for total text length (prefer substantial blocks)
+                text_len = len(text)
+                if text_len > 500:
+                    score += 5.0
+                if text_len > 2000:
+                    score += 5.0
+
+                candidates.append((el, score))
+
+            if candidates:
+                candidates.sort(key=lambda c: c[1], reverse=True)
+                target = candidates[0][0]
+            else:
+                target = soup.find("body") or soup
+
+            # Phase 3: Extract clean text
+            text = target.get_text(separator="\n", strip=True)
+            # Collapse excessive blank lines
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text[:50_000] if text else None
+        except Exception:
+            _logger.debug("scrape_article_body_failed", extra={"url": url})
+            return None
 
     def _audit(
         self,
@@ -1076,9 +1939,13 @@ class NewsService:
         resource_type: str,
         resource_id: UUID,
         summary: dict[str, Any],
+        *,
+        status: str = "success",
+        error_code: str | None = None,
+        error_detail: str | None = None,
     ) -> None:
         self.session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -1093,6 +1960,9 @@ class NewsService:
                 ip_hash=None,
                 trace_id=uuid4(),
                 created_at=datetime.now(UTC),
+                status=status,
+                error_code=error_code,
+                error_detail=error_detail,
             )
         )
 

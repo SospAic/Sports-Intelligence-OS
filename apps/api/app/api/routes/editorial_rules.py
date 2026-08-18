@@ -1,5 +1,5 @@
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
@@ -24,6 +24,11 @@ from app.schemas.editorial_rules import (
     RuleSetPage,
     RuleSetRead,
     RuleSetVersionRead,
+    RuleSimulationFeedbackCreate,
+    RuleSimulationFeedbackRead,
+    RuleSimulationPage,
+    RuleSimulationRead,
+    RuleSimulationRequest,
     RuleTreeRead,
     RuleUpdate,
     ValidationResultRead,
@@ -134,6 +139,79 @@ async def get_tree(
     return await service(db).get_tree(workspace.workspace_id, rule_set_id, version_id)
 
 
+@router.get("/{rule_set_id}/versions/{version_id}/sections")
+async def list_sections_lazy(
+    rule_set_id: UUID,
+    version_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    parent_id: UUID | None = None,
+    page: Page = 1,
+    page_size: PageSize = 50,
+) -> dict[str, Any]:
+    """Return sections at one level with children counts for lazy tree loading."""
+    from sqlalchemy import func, select
+
+    from app.models.editorial_rules import Rule, RuleSection
+
+    # Validate the complete ownership chain before any raw section query. A
+    # version UUID from another workspace must never disclose tree metadata.
+    await service(db).get_version(workspace.workspace_id, rule_set_id, version_id)
+
+    base_filter = [
+        RuleSection.version_id == version_id,
+    ]
+    if parent_id is not None:
+        base_filter.append(RuleSection.parent_id == parent_id)
+    else:
+        base_filter.append(RuleSection.parent_id.is_(None))
+
+    total = int(
+        await db.scalar(select(func.count()).select_from(RuleSection).where(*base_filter)) or 0
+    )
+    sections = (
+        await db.scalars(
+            select(RuleSection)
+            .where(*base_filter)
+            .order_by(RuleSection.sort_order)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+
+    # Compute children count and rules count for each section
+    items = []
+    for section in sections:
+        children_count = int(
+            await db.scalar(
+                select(func.count())
+                .select_from(RuleSection)
+                .where(RuleSection.parent_id == section.id)
+            )
+            or 0
+        )
+        rules_count = int(
+            await db.scalar(
+                select(func.count()).select_from(Rule).where(Rule.section_id == section.id)
+            )
+            or 0
+        )
+        items.append(
+            {
+                "id": str(section.id),
+                "title": section.title,
+                "slug": section.slug,
+                "parent_id": str(section.parent_id) if section.parent_id else None,
+                "sort_order": section.sort_order,
+                "children_count": children_count,
+                "rules_count": rules_count,
+                "has_children": children_count > 0,
+            }
+        )
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 @router.get("/{rule_set_id}/versions/{version_id}/rules", response_model=RulePage)
 async def list_rules(
     rule_set_id: UUID,
@@ -213,6 +291,88 @@ async def validate_version(
 ) -> ValidationResultRead:
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     return await service(db).validate_version(workspace.workspace_id, rule_set_id, version_id)
+
+
+@router.post(
+    "/{rule_set_id}/versions/{version_id}/simulate",
+    response_model=RuleSimulationRead,
+    status_code=201,
+)
+async def simulate_version(
+    rule_set_id: UUID,
+    version_id: UUID,
+    payload: RuleSimulationRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> RuleSimulationRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(db).simulate(
+        workspace.workspace_id, rule_set_id, version_id, auth.user.id, payload
+    )
+
+
+@router.get(
+    "/{rule_set_id}/versions/{version_id}/simulations",
+    response_model=RuleSimulationPage,
+)
+async def list_simulations(
+    rule_set_id: UUID,
+    version_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    page: Page = 1,
+    page_size: PageSize = 20,
+) -> RuleSimulationPage:
+    return await service(db).list_simulations(
+        workspace.workspace_id,
+        rule_set_id,
+        version_id,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get(
+    "/{rule_set_id}/versions/{version_id}/simulations/{simulation_id}",
+    response_model=RuleSimulationRead,
+)
+async def get_simulation(
+    rule_set_id: UUID,
+    version_id: UUID,
+    simulation_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+) -> RuleSimulationRead:
+    return await service(db).get_simulation(
+        workspace.workspace_id, rule_set_id, version_id, simulation_id
+    )
+
+
+@router.post(
+    "/{rule_set_id}/versions/{version_id}/simulations/{simulation_id}/rules/{rule_id}/feedback",
+    response_model=RuleSimulationFeedbackRead,
+)
+async def submit_simulation_feedback(
+    rule_set_id: UUID,
+    version_id: UUID,
+    simulation_id: UUID,
+    rule_id: UUID,
+    payload: RuleSimulationFeedbackCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> RuleSimulationFeedbackRead:
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await service(db).feedback(
+        workspace.workspace_id,
+        rule_set_id,
+        version_id,
+        simulation_id,
+        rule_id,
+        auth.user.id,
+        payload,
+    )
 
 
 @router.post("/{rule_set_id}/versions/{version_id}/publish", response_model=RuleSetVersionRead)

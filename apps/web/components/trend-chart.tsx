@@ -14,7 +14,7 @@ export function TrendChart({
   data,
   dataKey = "value",
 }: {
-  data: Array<Record<string, string | number>>;
+  data: Array<Record<string, string | number | null>>;
   dataKey?: string;
 }) {
   if (!data.length)
@@ -24,7 +24,7 @@ export function TrendChart({
       </div>
     );
   return (
-    <div className="h-64 w-full">
+    <div className="h-64 w-full" role="img" aria-label="时间序列趋势图">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart
           data={data}
@@ -44,6 +44,15 @@ export function TrendChart({
           <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 11 }} />
           <YAxis stroke="#64748b" tick={{ fontSize: 11 }} width={58} />
           <Tooltip
+            labelFormatter={(_: unknown, payload: unknown) => {
+              const first = Array.isArray(payload) ? payload[0] : undefined;
+              const timestamp = (
+                first as { payload?: { timestamp?: string } } | undefined
+              )?.payload?.timestamp;
+              return timestamp
+                ? new Date(timestamp).toLocaleString("zh-CN")
+                : "";
+            }}
             contentStyle={{
               background: "#020617",
               border: "1px solid #334155",
@@ -53,6 +62,7 @@ export function TrendChart({
           <Area
             type="monotone"
             dataKey={dataKey}
+            connectNulls={false}
             stroke="#22d3ee"
             fill="url(#trend)"
             strokeWidth={2}

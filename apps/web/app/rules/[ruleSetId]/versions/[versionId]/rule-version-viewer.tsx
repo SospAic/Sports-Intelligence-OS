@@ -23,7 +23,9 @@ function sectionCards(sections: EditorialRuleSectionNode[]) {
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="text-cyan-300">{rule.key}</span>
               <span className="text-slate-500">{rule.rule_type}</span>
-              <span className="text-slate-500">{rule.source_reference}</span>
+              {rule.source_reference && (
+                <span className="text-slate-500">{rule.source_reference}</span>
+              )}
             </div>
             <h3 className="mt-2 font-medium text-white">{rule.title}</h3>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-slate-400">
@@ -43,6 +45,9 @@ export function RuleVersionViewer({
 }: {
   tree: EditorialRuleTree;
   version: EditorialRuleVersion;
+  ruleSetId?: string;
+  versionId?: string;
+  workspaceId?: string;
 }) {
   const [view, setView] = useState<"structured" | "source" | "json">(
     "structured",
@@ -54,7 +59,9 @@ export function RuleVersionViewer({
       <div className="flex gap-2 border-b border-slate-800 p-4">
         {(["structured", "source", "json"] as const).map((item) => (
           <button
-            className={`rounded-lg px-3 py-2 text-sm ${view === item ? "bg-cyan-300 text-slate-950" : "text-slate-300"}`}
+            className={`rounded-lg px-3 py-2 text-sm ${
+              view === item ? "bg-cyan-300 text-slate-950" : "text-slate-300"
+            }`}
             key={item}
             onClick={() => setView(item)}
             type="button"
@@ -66,12 +73,15 @@ export function RuleVersionViewer({
                 : "JSON"}
           </button>
         ))}
+        <span className="ml-auto text-xs text-slate-600">
+          共 {tree.total_rules} 条规则
+        </span>
       </div>
       <div className="max-h-[70vh] overflow-auto p-5">
         {view === "structured" ? (
           sectionCards(tree.sections)
         ) : (
-          <pre className="whitespace-pre-wrap text-xs leading-5 text-slate-300">
+          <pre className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-300">
             {view === "source" ? version.source_text : jsonView}
           </pre>
         )}

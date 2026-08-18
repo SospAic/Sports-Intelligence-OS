@@ -9,9 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProjectContextContractTests(unittest.TestCase):
     def read(self, relative_path: str) -> str:
         path = ROOT / relative_path
-        self.assertTrue(
-            path.is_file(), f"Missing required context file: {relative_path}"
-        )
+        self.assertTrue(path.is_file(), f"Missing required context file: {relative_path}")
         return path.read_text(encoding="utf-8")
 
     def test_required_context_files_exist(self) -> None:
@@ -33,9 +31,7 @@ class ProjectContextContractTests(unittest.TestCase):
             position = content.find(marker)
             self.assertNotEqual(position, -1, f"Missing stage marker: {marker}")
             positions.append(position)
-        self.assertEqual(
-            positions, sorted(positions), "Prompt stages must remain ordered"
-        )
+        self.assertEqual(positions, sorted(positions), "Prompt stages must remain ordered")
 
     def test_truthfulness_contract_is_explicit(self) -> None:
         agents = self.read("AGENTS.md")
@@ -64,7 +60,7 @@ class ProjectContextContractTests(unittest.TestCase):
         readme = self.read("README.md")
         status = self.read("docs/STATUS.md")
         self.assertIn("第一次交付验收", readme)
-        self.assertIn("Prompt 11：最终代码审查与修复 — 已完成", status)
+        self.assertIn("Prompt 11 后续维护", status)
         self.assertIn("当前机器没有 Docker", self.read("docs/FIRST_DELIVERY_REPORT.md"))
         self.assertIn("显式 Mock 标记", readme)
         self.assertIn("verification_incomplete", status)

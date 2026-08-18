@@ -29,13 +29,13 @@ REQUIRED_OUTPUT_FIELDS: frozenset[str] = frozenset(
         "used_rules",
         "rewrite_reasons",
         # B 组：7.9 完整输出包新增核心字段（explicit / derived）
-        "spoken_char_count",   # explicit: 精确字符数，后端计算，不依赖 LLM
-        "event_identity",      # explicit: 事件精确识别（项目/赛事/人物/队伍/日期/地点）
-        "story_format",        # explicit: 主故事格式（20 种之一）
-        "central_question",    # explicit: 中心悬念/问题
-        "selected_hook",       # explicit: 选定 Hook 及评分
-        "cmssml",              # explicit: 单行 CMSSML 版本（去标签后与 tts_en 单词一致）
-        "ev3",                 # explicit: 单行 EV3 版本（去标签后与 tts_en 单词一致）
+        "spoken_char_count",  # explicit: 精确字符数，后端计算，不依赖 LLM
+        "event_identity",  # explicit: 事件精确识别（项目/赛事/人物/队伍/日期/地点）
+        "story_format",  # explicit: 主故事格式（20 种之一）
+        "central_question",  # explicit: 中心悬念/问题
+        "selected_hook",  # explicit: 选定 Hook 及评分
+        "cmssml",  # explicit: 单行 CMSSML 版本（去标签后与 tts_en 单词一致）
+        "ev3",  # explicit: 单行 EV3 版本（去标签后与 tts_en 单词一致）
         "story_architecture",  # explicit: 故事架构（格式/深度轴/轨迹/LCR状态/AW映射）
     }
 )

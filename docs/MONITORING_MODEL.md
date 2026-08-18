@@ -69,4 +69,4 @@ Demo 平台键为 `demo_mock`，Adapter 键为 `mock_platform`；账号、作品
 - YouTube 只实现 Data API 的公开字段；私有 Analytics 字段明确不可用。
 - TikTok、抖音和 Bilibili 当前为显式失败的 Adapter 骨架。
 - API 目前使用页码分页；超大时间序列的游标分页在证据表明需要时增加。
-- PostgreSQL 容器验证受本机缺少 Docker 限制；SQLite 已完成迁移升降级和 Alembic 模型差异检查，CI 负责 PostgreSQL 迁移。
+- 迁移与 Alembic 模型差异检查已在本地 Docker PostgreSQL 上完成；完整后端测试套件在本地 PostgreSQL 上全部通过，系统已不再使用 SQLite。

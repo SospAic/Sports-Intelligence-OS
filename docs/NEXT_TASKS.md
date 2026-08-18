@@ -1,0 +1,56 @@
+# 待处理任务清单
+
+更新时间：2026-08-17。本文只列当前仍未闭环的事项；已完成内容以 `docs/STATUS.md` 与 `docs/PRODUCT_AUDIT_2026-08-17.md` 为准。
+
+## P0：需要外部授权或环境条件
+
+1. YouTube 公开 Data API Key、频道、上传列表、视频批量统计和应用内 Adapter health_check canary 已通过；仍需在重建后的 API/Worker 中执行一次工作区账号添加与同步，并补充配额/错误分类记录，不能把公开 canary 扩大解释为 Analytics OAuth。
+2. TikTok 官方 canary 当前返回 `access_token_invalid`，需更新 Display API OAuth Token/Refresh Token；抖音 Token 仍未完成官方 canary。不得用浏览器公开页成功替代官方 API 验收。
+3. 为 Bilibili 提供加密账号凭证或有效 `storage_state_json`，验证自动登录、会话隔离和一键撤销；遇验证码或 2FA 必须停止，不绕过安全机制。
+4. 修复 Docker DNS/代理将公网域名映射到 `198.18.0.0/15` 的问题，在 SSRF 校验保持开启的条件下重跑全部 RSS。
+5. 配置真实 LLM 和至少一个外部通知渠道，完成可计费生成、Token/成本记录、通知投递、重试和死信端到端验收。
+
+## P1：数据与产品完善
+
+5. 产品品牌已统一为 **Content Intelligence OS（内容智能生产平台）**；体育能力作为首期垂直工作区保留，后续可扩展至全品类内容生产。
+
+6. 本轮已完成保存查询、观察性实验、字幕/模型时间段证据定位、热点榜单同题机会聚合、规则适用性模拟/历史反馈、工作区成员邀请和账号级授权本地闭环（含设置中心授权面板，契约见 `docs/WORKSPACE_ACCOUNT_ACCESS.md`）；仍未完成的是关键帧证据索引、规范事件/跨语言事实确认、频道级/发布资源权限、授权 Analytics 驱动的真实 A/B/因果分析、正式发布 Adapter，以及约 36 GB 派生指标历史的备份后分批治理。
+
+7. 能力就绪度与平台探针闭环已完成：`GET /settings/readiness`、管理员 `POST /settings/readiness/{platform_key}/probe`、设置中心诊断面板，以及仅针对已配置官方 API 的 Beat 定期 canary 已上线；探针结果有安全审计、失败转变去重、恢复关闭事件和自动/手动来源标记。仍需补的是配额/字段完整率、新闻/LLM/通知 Provider canary，以及配置真实通知渠道后的外部升级投递。
+
+### 三项当前明确阻断
+
+- 频道级/发布资源权限：现有 YouTube Key 只允许公开 Data API；TikTok Token 还已被官方判定无效，抖音也未完成有效 Token 验证。频道管理、排期/发布和资源读写都需要平台 OAuth scope、账号所有权/企业审核与平台回执，现有“账号级授权”只限制本系统工作区成员，不能创造外部平台权限。
+- 私有 Analytics 的真实 A/B/因果分析：当前实验模块是有真实发布归因证据的 observational comparison。要做因果结论，还需要私有 Analytics OAuth、随机分流或平台实验分配、曝光/处理日志、预先定义指标和样本量、跨平台协变量及统计检验；仅有历史播放/互动快照无法构造反事实。
+- 关键帧与多模态索引：当前已能保存字幕/转写和模型返回的带时间段证据，视频搜索也能做内容分析；但尚未将真实媒体切成关键帧/片段并持久化视觉、OCR、音频和向量索引。要完成还需要合法可读取的媒体、ffmpeg/帧抽取运行时、视觉/OCR/embedding Provider、存储与重建策略；`SIO_GEMINI_API_KEY` 和本地 embedding 后端当前未配置，不能用标题或 Mock 结果代替。
+
+## LLM 网关集成（已完成）
+
+本轮已完成 LLM 网关接入方案，不再列为待办：
+
+- docker-compose 新增 New API 网关服务（`calciumion/new-api`，profile `llm`，端口 3306），支持多模型聚合、Key 管理和用量统计。
+- docker-compose 新增 Chat2API 实验服务（`gpt4free`，profile `llm-experimental`，端口 8020），提供免费实验通道。
+- 后端 SSRF 校验新增 `llm_internal_hosts_allowlist` 配置，Docker 内部网关主机名（如 `new-api`、`chat2api`）可绕过公网地址检查。
+- 前端 LLM 设置新增"New API 本地网关"和"Chat2API 实验"两个预设。
+- 完整文档见 `docs/LLM_GATEWAY.md`。
+
+## 验收纪律
+
+- `live`、`imported`、`mock` 必须继续显著区分；外部凭证缺失只记录未验证，不生成替代成功。
+- 新指标必须先进入 `docs/METRIC_CATALOG.md`，保存公式版本、输入来源、缺失处理和置信度，再进入推荐排序。
+- 每个任务完成后更新 `docs/STATUS.md` 与本清单，并运行与风险相称的自动化、Docker 和真实数据验收。
+
+---
+
+## 2026-08-06 当前交接入口
+
+最新的模块进度、Docker 运行基线、验证结果、已知限制、关键代码入口和下一位 AI CODER 的执行顺序，统一见 [`docs/HANDOFF-2026-08-06.md`](HANDOFF-2026-08-06.md)。
+
+当前优先级：
+
+1. P0：使用 Docker noVNC 完成四个平台人工登录，并验证加密 Cookie 捕获、会话复用和账号同步闭环。
+2. P1：用真实账号/API Key 验收账号同步完整率、新闻源多策略、视频/字幕下载、LLM 模型探测和视频内容搜索。
+3. P1：对 1440×900、1280×720、1024×768、390×844 执行主要页面截图回归，继续检查标题、按钮、弹窗、表格和空态。
+4. P2：推进分片续跑、来源健康评分、视频片段/关键帧索引、向量召回、人工复核和成本预算。
+
+交接时以当前代码、Docker 实际状态和 `HANDOFF-2026-08-06.md` 为准；本文件此前章节保留为历史待办记录，不应直接当作当前完成度。

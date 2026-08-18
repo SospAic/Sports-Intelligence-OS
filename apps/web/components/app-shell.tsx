@@ -3,33 +3,44 @@
 import type {
   CurrentUserResponse,
   HealthResponse,
+  InboxReadStateRecord,
   MonitoringAccountPage,
   NotificationDeliveryPage,
+  OperationTaskPage,
+  SyncRunPage,
 } from "@sio/shared-types";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  AlertTriangle,
   Bell,
   BookMarked,
   Bot,
   ChevronDown,
   CircleUserRound,
+  ClipboardCheck,
+  Download,
+  FileText,
+  FlaskConical,
   Gauge,
   GitBranch,
   ListChecks,
   Menu,
-  Moon,
   Newspaper,
   PanelLeftClose,
-  Plus,
+  ScrollText,
   Search,
+  ScanSearch,
+  Send,
   Settings,
+  ShieldCheck,
   Sparkles,
-  Sun,
+  TrendingUp,
   UsersRound,
   Video,
   Webhook,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -38,12 +49,20 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import { apiRequest } from "@/lib/browser-api";
+import { accountDisplayName } from "@/lib/account-label";
+import { buildInboxItems, inboxKindLabel, inboxStatusLabel } from "@/lib/inbox";
+import { formatRelativeTime } from "@/lib/format";
 import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { LanguageSwitcher } from "@/components/language-switcher";
+import { Tooltip } from "@/components/ui";
+import { useUiLanguage } from "@/lib/ui-i18n";
 
 type WorkspaceValue = {
   currentUser: CurrentUserResponse | null;
@@ -51,6 +70,43 @@ type WorkspaceValue = {
   role: string | null;
   loading: boolean;
 };
+type GlobalSearchPage = {
+  items: Array<{
+    entity_type: string;
+    entity_id: string;
+    title: string;
+    subtitle: string;
+    url: string;
+  }>;
+  total: number;
+};
+
+const searchSubtitleLabels: Record<string, string> = {
+  video: "视频",
+  article: "新闻",
+  event: "事件",
+  account: "账号",
+  draft: "草稿",
+  published: "已发布",
+  archived: "已归档",
+  enabled: "已启用",
+  disabled: "已停用",
+  pending: "待处理",
+  running: "执行中",
+  completed: "已完成",
+  failed: "失败",
+  error: "错误",
+  healthy: "正常",
+  degraded: "降级",
+};
+
+function localizeSearchSubtitle(value: string, entityType: string): string {
+  const source = value || entityType;
+  return source
+    .split(" · ")
+    .map((part) => searchSubtitleLabels[part] ?? part)
+    .join(" · ");
+}
 const WorkspaceContext = createContext<WorkspaceValue>({
   currentUser: null,
   workspaceId: null,
@@ -61,37 +117,88 @@ export function useWorkspace(): WorkspaceValue {
   return useContext(WorkspaceContext);
 }
 
-const navigation = [
-  ["仪表盘", "/dashboard", Gauge],
-  ["账号监控", "/accounts", UsersRound],
-  ["作品数据", "/contents", Video],
-  ["新闻热点", "/news", Newspaper],
-  ["事件中心", "/events", Activity],
-  ["选题库", "/topics", BookMarked],
-  ["内容创作", "/generate", Sparkles],
-  ["规则中心", "/rules", GitBranch],
-  ["自动化", "/automations", Bot],
-  ["通知渠道", "/notification-channels", Webhook],
-  ["任务记录", "/tasks", ListChecks],
-  ["系统日志", "/logs", Activity],
-  ["设置", "/settings", Settings],
-] as const;
-
+type NavigationItem = readonly [string, string, LucideIcon];
+const navigationGroups: ReadonlyArray<{
+  label: string;
+  items: ReadonlyArray<NavigationItem>;
+}> = [
+  {
+    label: "navigation.insights",
+    items: [
+      ["navigation.dashboard", "/dashboard", Gauge],
+      ["navigation.trends", "/trends", TrendingUp],
+      ["navigation.videoSearch", "/video-search", ScanSearch],
+      ["navigation.accounts", "/accounts", UsersRound],
+      ["navigation.contents", "/contents", Video],
+      ["navigation.news", "/news", Newspaper],
+      ["navigation.events", "/events", Activity],
+    ],
+  },
+  {
+    label: "navigation.creation",
+    items: [
+      ["navigation.topics", "/topics", BookMarked],
+      ["navigation.generate", "/generate", Sparkles],
+      ["navigation.editorial", "/editorial", ClipboardCheck],
+      ["navigation.publications", "/publications", Send],
+      ["navigation.rights", "/operations/rights", ShieldCheck],
+      ["navigation.experiments", "/operations/experiments", FlaskConical],
+      ["navigation.download", "/download", Download],
+      ["navigation.rules", "/rules", GitBranch],
+    ],
+  },
+  {
+    label: "navigation.automation",
+    items: [
+      ["navigation.automations", "/automations", Bot],
+      ["navigation.notificationTemplates", "/notification-templates", FileText],
+      ["navigation.notificationChannels", "/notification-channels", Webhook],
+    ],
+  },
+  {
+    label: "navigation.operations",
+    items: [
+      ["navigation.tasks", "/tasks", ListChecks],
+      ["navigation.externalCalls", "/operations/external-calls", ScrollText],
+      ["navigation.deadLetters", "/operations/dead-letters", AlertTriangle],
+      ["navigation.slo", "/operations/slo", Gauge],
+      ["navigation.logs", "/logs", Activity],
+      ["navigation.settings", "/settings", Settings],
+    ],
+  },
+];
 export function AppShell({ children }: { children: ReactNode }) {
+  const { t } = useUiLanguage();
   const pathname = usePathname();
   const router = useRouter();
   const authPage = pathname === "/login";
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [activeSearchIndex, setActiveSearchIndex] = useState(-1);
+  const searchListRef = useRef<HTMLDivElement>(null);
   const [userOpen, setUserOpen] = useState(false);
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [theme, setTheme] = useState<"dark" | "light">(() =>
-    typeof window !== "undefined" &&
-    window.localStorage.getItem("sio-theme") === "light"
-      ? "light"
-      : "dark",
+  const userMenuRef = useRef<HTMLDivElement>(null);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [optimisticReadInboxIds, setOptimisticReadInboxIds] = useState<Set<string>>(
+    () => new Set(),
   );
+  const [syncPopoverOpen, setSyncPopoverOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!userOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && !userMenuRef.current?.contains(target)) {
+        setUserOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [userOpen]);
   const userQuery = useQuery({
     queryKey: ["current-user"],
     queryFn: () => apiRequest<CurrentUserResponse>("/me"),
@@ -109,7 +216,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         { workspaceId: workspaceId! },
       ),
     enabled: Boolean(workspaceId),
-    refetchInterval: 30_000,
+    refetchInterval: (query) => {
+      const items = query.state.data?.items;
+      if (!items) return 30_000;
+      return items.some(
+        (item) =>
+          item.sync_status === "queued" || item.sync_status === "syncing",
+      )
+        ? 5_000
+        : 30_000;
+    },
   });
   const deliveryQuery = useQuery({
     queryKey: ["shell-deliveries", workspaceId],
@@ -121,6 +237,24 @@ export function AppShell({ children }: { children: ReactNode }) {
     enabled: Boolean(workspaceId),
     refetchInterval: 30_000,
   });
+  const taskQuery = useQuery<OperationTaskPage>({
+    queryKey: ["shell-operations", workspaceId],
+    queryFn: () =>
+      apiRequest<OperationTaskPage>("/operations/tasks?page=1&page_size=30", {
+        workspaceId: workspaceId!,
+      }),
+    enabled: Boolean(workspaceId),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((item) =>
+        ["queued", "pending", "running", "syncing", "retrying"].includes(
+          item.status,
+        ),
+      )
+        ? 5_000
+        : 30_000;
+    },
+  });
   const healthQuery = useQuery<HealthResponse>({
     queryKey: ["shell-health"],
     queryFn: fetchReadyHealth,
@@ -128,10 +262,117 @@ export function AppShell({ children }: { children: ReactNode }) {
     refetchInterval: 30_000,
     retry: false,
   });
+  const globalSearchQuery = useQuery({
+    queryKey: ["global-search", workspaceId, debouncedSearch],
+    queryFn: () =>
+      apiRequest<GlobalSearchPage>(
+        `/search?q=${encodeURIComponent(debouncedSearch)}&page=1&page_size=8`,
+        { workspaceId: workspaceId! },
+      ),
+    enabled: Boolean(workspaceId) && debouncedSearch.length >= 2,
+    staleTime: 30_000,
+  });
+
+  // Fetch latest sync run for each syncing account (for header popover progress)
+  const syncingAccountItems = useMemo(
+    () =>
+      (syncQuery.data?.items ?? []).filter(
+        (item) =>
+          item.sync_status === "queued" || item.sync_status === "syncing",
+      ),
+    [syncQuery.data],
+  );
+  const shellSyncRunQueries = useQueries({
+    queries: syncingAccountItems.map((account) => ({
+      queryKey: ["shell-account-run", account.id],
+      queryFn: () =>
+        apiRequest<SyncRunPage>(
+          `/accounts/${encodeURIComponent(account.id)}/sync-runs?page=1&page_size=1`,
+          { workspaceId: workspaceId! },
+        ),
+      enabled: Boolean(workspaceId),
+      refetchInterval: 5_000,
+    })),
+  });
+
+  const inboxItems = useMemo(
+    () =>
+      buildInboxItems(
+        taskQuery.data?.items ?? [],
+        deliveryQuery.data?.items ?? [],
+      ),
+    [deliveryQuery.data?.items, taskQuery.data?.items],
+  );
+  const inboxReadStateQuery = useQuery<InboxReadStateRecord[]>({
+    queryKey: [
+      "shell-inbox-read-states",
+      workspaceId,
+      inboxItems.map((item) => item.id).join(","),
+    ],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      inboxItems.forEach((item) => params.append("item_key", item.id));
+      return apiRequest<InboxReadStateRecord[]>(
+        `/inbox/read-states?${params.toString()}`,
+        { workspaceId: workspaceId! },
+      );
+    },
+    enabled: Boolean(workspaceId) && inboxItems.length > 0,
+    staleTime: 10_000,
+  });
+  const readInboxIds = useMemo(
+    () =>
+      new Set([
+        ...(inboxReadStateQuery.data ?? []).map((state) => state.item_key),
+        ...optimisticReadInboxIds,
+      ]),
+    [inboxReadStateQuery.data, optimisticReadInboxIds],
+  );
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    const timer = window.setTimeout(
+      () => setDebouncedSearch(search.trim()),
+      300,
+    );
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    if (activeSearchIndex < 0 || !searchListRef.current) return;
+    const activeEl = searchListRef.current.querySelector(
+      `#global-search-option-${activeSearchIndex}`,
+    );
+    activeEl?.scrollIntoView({ block: "nearest" });
+  }, [activeSearchIndex]);
+
+  useEffect(() => {
+    if (authPage) return;
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if (event.key === "/" && !typing && !shortcutsOpen) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (event.key === "?" && !typing) {
+        event.preventDefault();
+        setShortcutsOpen((value) => !value);
+        return;
+      }
+      if (event.key === "Escape" && shortcutsOpen) {
+        setShortcutsOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [authPage, shortcutsOpen]);
+
   const context = useMemo(
     () => ({
       currentUser,
@@ -147,24 +388,130 @@ export function AppShell({ children }: { children: ReactNode }) {
         {children}
       </WorkspaceContext.Provider>
     );
-  const failedDeliveries =
-    deliveryQuery.data?.items.filter((item) => item.status === "failed")
-      .length ?? 0;
+  if (userQuery.isLoading) {
+    return (
+      <WorkspaceContext.Provider value={context}>
+        <div
+          className="grid min-h-screen place-items-center px-6"
+          aria-busy="true"
+          aria-label="正在加载工作区"
+        >
+          <div className="w-full max-w-sm text-center">
+            <div className="mx-auto grid size-12 place-items-center rounded-2xl bg-cyan-400 font-black text-slate-950 shadow-lg shadow-cyan-950/40">
+              CI
+            </div>
+            <p className="mt-4 text-sm text-slate-300">正在加载工作区…</p>
+            <div className="mx-auto mt-4 h-1 w-40 overflow-hidden rounded-full bg-slate-800">
+              <span className="block h-full w-1/2 animate-pulse rounded-full bg-cyan-400" />
+            </div>
+          </div>
+        </div>
+      </WorkspaceContext.Provider>
+    );
+  }
+  const unreadInboxItems = inboxItems.filter((item) => !readInboxIds.has(item.id));
+  const visibleInboxItems = unreadInboxItems.slice(0, 5);
+  async function markInboxRead(id: string) {
+    setOptimisticReadInboxIds((previous) => {
+      const next = new Set(previous);
+      next.add(id);
+      return next;
+    });
+    try {
+      await apiRequest("/inbox/read-states", {
+        method: "POST",
+        body: JSON.stringify({ item_key: id }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await inboxReadStateQuery.refetch();
+    } catch {
+      setOptimisticReadInboxIds((previous) => {
+        const next = new Set(previous);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+  async function markAllInboxRead() {
+    const ids = unreadInboxItems.map((item) => item.id);
+    if (!ids.length) return;
+    setOptimisticReadInboxIds((previous) => {
+      const next = new Set(previous);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+    try {
+      await apiRequest("/inbox/read-states/bulk", {
+        method: "POST",
+        body: JSON.stringify({ item_keys: ids }),
+        workspaceId: workspaceId!,
+        csrf: true,
+      });
+      await inboxReadStateQuery.refetch();
+    } catch {
+      setOptimisticReadInboxIds((previous) => {
+        const next = new Set(previous);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
+  }
   const syncing =
     syncQuery.data?.items.filter(
       (item) => item.sync_status === "queued" || item.sync_status === "syncing",
     ).length ?? 0;
+  const syncingAccounts = syncingAccountItems;
+  const shellSyncRunMap = new Map<
+    string,
+    { progress_percent: number; progress_stage: string } | undefined
+  >();
+  syncingAccountItems.forEach((account, index) => {
+    const run = shellSyncRunQueries[index]?.data?.items[0];
+    if (run) {
+      shellSyncRunMap.set(account.id, {
+        progress_percent: run.progress_percent,
+        progress_stage: run.progress_stage,
+      });
+    }
+  });
   const queueHealth = queueHealthPresentation({
     health: healthQuery.data,
     syncing,
     isPending: healthQuery.isPending,
     isError: healthQuery.isError,
   });
+  const localizedNavigationGroups = navigationGroups.map((group) => ({
+    ...group,
+    label: t(group.label as Parameters<typeof t>[0]),
+    items: group.items.map(([label, href, icon]) => [
+      t(label as Parameters<typeof t>[0]),
+      href,
+      icon,
+    ] as const),
+  }));
+  const localizedNavigation = localizedNavigationGroups.flatMap((group) => group.items);
   const filteredNavigation = search.trim()
-    ? navigation.filter(([label]) =>
+    ? localizedNavigation.filter(([label]) =>
         label.toLowerCase().includes(search.trim().toLowerCase()),
       )
     : [];
+  const searchResults = [
+    ...(globalSearchQuery.data?.items ?? []).map((item) => ({
+      id: `${item.entity_type}:${item.entity_id}`,
+      title: item.title,
+      subtitle: localizeSearchSubtitle(item.subtitle, item.entity_type),
+      url: item.url,
+      icon: null,
+    })),
+    ...filteredNavigation.map(([label, url, icon]) => ({
+      id: `navigation:${url}`,
+      title: label,
+      subtitle: t("shell.pageFeature"),
+      url,
+      icon,
+    })),
+  ];
 
   async function logout() {
     try {
@@ -174,69 +521,79 @@ export function AppShell({ children }: { children: ReactNode }) {
       router.refresh();
     }
   }
-  function toggleTheme() {
-    const next = theme === "dark" ? "light" : "dark";
-    setTheme(next);
-    document.documentElement.dataset.theme = next;
-    window.localStorage.setItem("sio-theme", next);
-  }
-
   const side = (
     <>
       <div className="flex h-16 items-center gap-3 border-b border-slate-800 px-4">
         <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-cyan-400 font-black text-slate-950">
-          SI
+          CI
         </div>
         {!collapsed && (
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-white">
-              Sports Intelligence OS
+              Content Intelligence OS
             </p>
-            <p className="text-[11px] text-slate-500">体育内容情报工作台</p>
+            <p className="text-[11px] text-slate-500">{t("shell.productSubtitle")}</p>
           </div>
         )}
         <button
-          aria-label="关闭导航"
+          aria-label={t("shell.closeNavigation")}
           className="ml-auto lg:hidden"
           onClick={() => setMobileOpen(false)}
         >
           <X size={20} />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto p-2" aria-label="主导航">
-        {navigation.map(([label, href, Icon]) => {
-          const active =
-            pathname === href ||
-            (href !== "/dashboard" && pathname.startsWith(`${href}/`));
-          return (
-            <Link
-              key={href}
-              href={href}
-              onClick={() => setMobileOpen(false)}
-              title={collapsed ? label : undefined}
-              className={`mb-1 flex h-10 items-center gap-3 rounded-lg px-3 text-sm transition ${active ? "bg-cyan-400/12 text-cyan-300" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}
-            >
-              <Icon size={17} className="shrink-0" />
-              {!collapsed && <span>{label}</span>}
-            </Link>
-          );
-        })}
+      <nav className="flex-1 overflow-y-auto p-2" aria-label={t("shell.mainNavigation")}>
+        {localizedNavigationGroups.map((group) => (
+          <div className="mb-3" key={group.label}>
+            {!collapsed && (
+              <p className="px-3 py-2 text-[10px] font-semibold tracking-[.18em] text-slate-600 uppercase">
+                {group.label}
+              </p>
+            )}
+            {group.items.map(([label, href, Icon]) => {
+              const active =
+                pathname === href ||
+                (href !== "/dashboard" && pathname.startsWith(`${href}/`));
+              return (
+                <Link
+                  key={href}
+                  href={href}
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setMobileOpen(false)}
+                  title={collapsed ? label : undefined}
+                  className={`mb-1 flex h-10 items-center gap-3 rounded-lg px-3 text-sm transition ${active ? "bg-cyan-400/12 text-cyan-300" : "text-slate-400 hover:bg-slate-900 hover:text-slate-100"}`}
+                >
+                  <Icon size={17} className="shrink-0" />
+                  {!collapsed && <span>{label}</span>}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
       <div className="border-t border-slate-800 p-3">
-        <button
-          className="hidden w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-slate-400 hover:bg-slate-900 lg:flex"
-          onClick={() => setCollapsed((value) => !value)}
-        >
-          <PanelLeftClose size={17} className={collapsed ? "rotate-180" : ""} />
-          {!collapsed && "收起导航"}
-        </button>
+          <Tooltip label={collapsed ? t("shell.expandNavigation") : t("shell.collapseNavigation")}>
+          <button
+            aria-label={collapsed ? t("shell.expandNavigation") : t("shell.collapseNavigation")}
+            className="hidden w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-slate-400 hover:bg-slate-900 lg:flex"
+            onClick={() => setCollapsed((value) => !value)}
+            type="button"
+          >
+            <PanelLeftClose
+              size={17}
+              className={collapsed ? "rotate-180" : ""}
+            />
+            {!collapsed && t("shell.collapseNavigation")}
+          </button>
+        </Tooltip>
       </div>
     </>
   );
 
   return (
     <WorkspaceContext.Provider value={context}>
-      <div className="min-h-screen bg-transparent text-slate-100">
+      <div className="min-h-screen min-w-0 overflow-x-clip bg-transparent text-slate-100">
         {mobileOpen && (
           <button
             aria-label="关闭导航遮罩"
@@ -260,107 +617,373 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Menu size={21} />
             </button>
-            <div className="relative min-w-0 max-w-xl flex-1">
+            <div className="hidden min-w-0 flex-1 items-center lg:flex" />
+            <div className="relative min-w-0 w-full max-w-xl flex-1">
               <Search
                 className="absolute top-1/2 left-3 -translate-y-1/2 text-slate-500"
                 size={16}
               />
               <input
                 aria-label="全局搜索"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={Boolean(search)}
+                aria-controls="global-search-results"
+                aria-activedescendant={
+                  activeSearchIndex >= 0
+                    ? `global-search-option-${activeSearchIndex}`
+                    : undefined
+                }
+                ref={searchInputRef}
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setActiveSearchIndex(-1);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setSearch("");
+                    return;
+                  }
+                  if (!searchResults.length) return;
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setActiveSearchIndex(
+                      (index) => (index + 1) % searchResults.length,
+                    );
+                    return;
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setActiveSearchIndex((index) =>
+                      index <= 0 ? searchResults.length - 1 : index - 1,
+                    );
+                    return;
+                  }
+                  const selectedResult = searchResults[activeSearchIndex];
+                  if (event.key === "Enter" && selectedResult) {
+                    event.preventDefault();
+                    router.push(selectedResult.url);
+                    setSearch("");
+                  }
+                }}
                 placeholder="搜索页面或功能…"
                 className="h-10 w-full rounded-lg border border-slate-800 bg-slate-950/80 pr-3 pl-9 text-sm outline-none focus:border-cyan-600"
               />
               {search && (
-                <div className="absolute top-12 left-0 z-50 w-full rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
+                <div
+                  id="global-search-results"
+                  ref={searchListRef}
+                  className="absolute top-12 left-0 z-50 w-full rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl"
+                  aria-live="polite"
+                  role="listbox"
+                >
+                  {globalSearchQuery.data?.items.map((item) => (
+                    <Link
+                      aria-selected={
+                        searchResults[activeSearchIndex]?.id ===
+                        `${item.entity_type}:${item.entity_id}`
+                      }
+                      className={`block rounded-lg p-3 text-sm hover:bg-slate-900 ${searchResults[activeSearchIndex]?.id === `${item.entity_type}:${item.entity_id}` ? "bg-cyan-400/10 text-cyan-100" : ""}`}
+                      href={item.url}
+                      key={`${item.entity_type}:${item.entity_id}`}
+                      id={`global-search-option-${searchResults.findIndex((result) => result.id === `${item.entity_type}:${item.entity_id}`)}`}
+                      onClick={() => setSearch("")}
+                      role="option"
+                    >
+                      <span className="block truncate text-slate-200">
+                        {item.title}
+                      </span>
+                      <span className="mt-1 block truncate text-xs text-slate-500">
+                        {localizeSearchSubtitle(
+                          item.subtitle,
+                          item.entity_type,
+                        )}
+                      </span>
+                    </Link>
+                  ))}
+                  {!!globalSearchQuery.data?.items.length &&
+                    filteredNavigation.length > 0 && (
+                      <div className="my-1 border-t border-slate-800" />
+                    )}
                   {filteredNavigation.length ? (
                     filteredNavigation.map(([label, href, Icon]) => (
                       <Link
-                        className="flex items-center gap-3 rounded-lg p-3 text-sm hover:bg-slate-900"
+                        aria-selected={
+                          searchResults[activeSearchIndex]?.id ===
+                          `navigation:${href}`
+                        }
+                        className={`flex items-center gap-3 rounded-lg p-3 text-sm hover:bg-slate-900 ${searchResults[activeSearchIndex]?.id === `navigation:${href}` ? "bg-cyan-400/10 text-cyan-100" : ""}`}
                         href={href}
                         key={href}
+                        id={`global-search-option-${searchResults.findIndex((result) => result.id === `navigation:${href}`)}`}
                         onClick={() => setSearch("")}
+                        role="option"
                       >
                         <Icon size={16} />
                         {label}
                       </Link>
                     ))
-                  ) : (
-                    <p className="p-3 text-sm text-slate-500">未找到匹配功能</p>
+                  ) : search.trim().length < 2 ? (
+                    <p className="p-3 text-sm text-slate-500">
+                      至少输入 2 个字符
+                    </p>
+                  ) : globalSearchQuery.isFetching ? (
+                    <p className="animate-pulse p-3 text-sm text-cyan-300">
+                      正在搜索…
+                    </p>
+                  ) : globalSearchQuery.isError ? (
+                    <button
+                      className="w-full rounded-lg p-3 text-left text-sm text-rose-300 hover:bg-slate-900"
+                      onClick={() => globalSearchQuery.refetch()}
+                    >
+                      搜索失败，点击重试
+                    </button>
+                  ) : globalSearchQuery.data?.items.length ? null : (
+                    <p className="p-3 text-sm text-slate-500">未找到匹配结果</p>
                   )}
                 </div>
               )}
             </div>
-            <div className="hidden items-center gap-2 text-xs text-slate-400 md:flex">
-              <Activity
-                size={15}
-                className={
-                  {
-                    checking: "animate-pulse text-slate-400",
-                    healthy: "text-emerald-400",
-                    busy: "animate-pulse text-cyan-400",
-                    degraded: "text-amber-400",
-                    unreachable: "text-rose-400",
-                  }[queueHealth.state]
-                }
-              />
-              {queueHealth.label}
-            </div>
-            <div className="relative">
+            <div className="flex shrink-0 items-center justify-end gap-1.5">
+            <ThemeToggle />
+            <LanguageSwitcher />
+            <div className="relative hidden shrink-0 md:block">
               <button
-                aria-label="快速创建"
-                className="grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
-                onClick={() => setQuickOpen((value) => !value)}
+                aria-label={`同步状态：${queueHealth.label}`}
+                title={queueHealth.label}
+                className="flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-xs text-slate-400 transition hover:bg-slate-900 hover:text-slate-200"
+                onClick={() => {
+                  setInboxOpen(false);
+                  setSyncPopoverOpen((value) => !value);
+                }}
               >
-                <Plus size={18} />
+                <Activity
+                  size={15}
+                  className={
+                    {
+                      checking: "animate-pulse text-slate-400",
+                      healthy: "text-emerald-400",
+                      busy: "animate-pulse text-cyan-400",
+                      degraded: "text-amber-400",
+                      unreachable: "text-rose-400",
+                    }[queueHealth.state]
+                  }
+                />
+                {queueHealth.label}
+                {syncing > 0 && (
+                  <span className="min-w-4 rounded-full bg-cyan-500/20 px-1.5 text-center text-[10px] font-semibold text-cyan-300">
+                    {syncing}
+                  </span>
+                )}
               </button>
-              {quickOpen && (
-                <div className="absolute top-11 right-0 w-44 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/accounts?create=1"
-                  >
-                    添加账号
-                  </Link>
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/generate"
-                  >
-                    创建内容
-                  </Link>
-                  <Link
-                    className="block rounded-lg p-2 text-sm hover:bg-slate-900"
-                    href="/automations/new"
-                  >
-                    新建自动化
-                  </Link>
+              {syncPopoverOpen && (
+                <div className="absolute top-11 right-0 z-50 w-80 rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                    <p className="text-sm font-medium text-white">同步状态</p>
+                    <button
+                      aria-label="关闭"
+                      className="grid size-6 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-white"
+                      onClick={() => setSyncPopoverOpen(false)}
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="max-h-72 overflow-y-auto p-3">
+                    {syncingAccounts.length === 0 ? (
+                      <p className="py-4 text-center text-sm text-slate-500">
+                        当前没有正在同步的账号
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {syncingAccounts.map((account) => {
+                          const run = shellSyncRunMap.get(account.id);
+                          return (
+                            <Link
+                              href={`/accounts/${account.id}`}
+                              className="block rounded-lg border border-slate-800 p-3 transition hover:border-slate-700 hover:bg-slate-900"
+                              key={account.id}
+                              onClick={() => setSyncPopoverOpen(false)}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-sm text-slate-200">
+                                  {accountDisplayName({
+                                    ...account,
+                                    platform_name: account.platform.name,
+                                  })}
+                                </span>
+                                <span className="shrink-0 text-[11px] text-slate-500">
+                                  {account.platform.name}
+                                </span>
+                              </div>
+                              <div className="mt-2 flex items-center gap-2">
+                                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+                                  <div
+                                    className="h-full rounded-full bg-cyan-400 transition-all duration-700"
+                                    style={{
+                                      width: `${Math.max(run?.progress_percent ?? 0, 2)}%`,
+                                    }}
+                                  />
+                                </div>
+                                <span className="shrink-0 text-[11px] tabular-nums text-cyan-300">
+                                  {run?.progress_percent ?? 0}%
+                                </span>
+                              </div>
+                              {run?.progress_stage && (
+                                <p className="mt-1.5 text-[11px] text-slate-500">
+                                  {{
+                                    queued: "排队",
+                                    validating: "校验",
+                                    account_profile: "账号资料",
+                                    content_list: "作品列表",
+                                    content_metrics: "指标",
+                                    derived_metrics: "派生",
+                                    completed: "完成",
+                                  }[run.progress_stage] ?? run.progress_stage}
+                                  {account.sync_status === "queued"
+                                    ? " · 排队中"
+                                    : ""}
+                                </p>
+                              )}
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                  <div className="border-t border-slate-800 p-3">
+                    <Link
+                      className="block text-center text-xs text-cyan-300 hover:text-cyan-200"
+                      href="/accounts"
+                      onClick={() => setSyncPopoverOpen(false)}
+                    >
+                      查看全部
+                    </Link>
+                  </div>
                 </div>
               )}
             </div>
-            <Link
-              aria-label={`通知中心，${failedDeliveries} 条失败`}
-              href="/notification-channels#deliveries"
-              className="relative grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
-            >
-              <Bell size={18} />
-              {failedDeliveries > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] text-white">
-                  {failedDeliveries}
-                </span>
-              )}
-            </Link>
-            <button
-              aria-label="切换主题"
-              className="grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
-              onClick={toggleTheme}
-            >
-              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
             <div className="relative">
+              <Tooltip label="未读信息">
+                <button
+                  aria-label={`未读信息，${unreadInboxItems.length} 条`}
+                  className="relative grid size-9 place-items-center rounded-lg border border-slate-700 hover:bg-slate-900"
+                  onClick={() => {
+                    setSyncPopoverOpen(false);
+                    setInboxOpen((value) => !value);
+                  }}
+                  type="button"
+                >
+                  <Bell size={18} />
+                  {unreadInboxItems.length > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-4 rounded-full bg-rose-700 px-1 text-center text-[10px] text-white">
+                      {unreadInboxItems.length > 99
+                        ? "99+"
+                        : unreadInboxItems.length}
+                    </span>
+                  )}
+                </button>
+              </Tooltip>
+              {inboxOpen && (
+                <div
+                  aria-label="未读信息中心"
+                  className="absolute top-11 right-0 z-50 w-[min(25rem,calc(100vw-2rem))] rounded-xl border border-slate-700 bg-slate-950 shadow-2xl"
+                  role="dialog"
+                >
+                  <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-white">未读信息</p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        同步、通知与后台任务的最近记录
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className="rounded px-2 py-1 text-[11px] text-cyan-300 hover:bg-slate-900 disabled:cursor-not-allowed disabled:text-slate-600"
+                        disabled={!unreadInboxItems.length}
+                        onClick={() => void markAllInboxRead()}
+                        type="button"
+                      >
+                        全部已读
+                      </button>
+                      <button
+                        aria-label="关闭未读信息"
+                        className="grid size-6 place-items-center rounded text-slate-500 hover:bg-slate-800 hover:text-white"
+                        onClick={() => setInboxOpen(false)}
+                        type="button"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto p-2">
+                    {visibleInboxItems.length ? (
+                      <div className="space-y-1">
+                        {visibleInboxItems.map((item) => (
+                          <Link
+                            className="flex items-start gap-3 rounded-lg p-3 transition hover:bg-slate-900"
+                            href={item.href}
+                            key={item.id}
+                            onClick={() => {
+                              void markInboxRead(item.id);
+                              setInboxOpen(false);
+                            }}
+                          >
+                            <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-slate-900 text-cyan-300">
+                              {item.kind === "sync" ? (
+                                <Activity size={15} />
+                              ) : item.kind === "notification" ? (
+                                <Bell size={15} />
+                              ) : (
+                                <ListChecks size={15} />
+                              )}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="truncate text-sm text-slate-200">
+                                  {item.title}
+                                </span>
+                                <span className="shrink-0 text-[10px] text-cyan-300">
+                                  {inboxKindLabel(item.kind)}
+                                </span>
+                              </span>
+                              <span className="mt-1 block truncate text-xs text-slate-500">
+                                {item.detail}
+                              </span>
+                              <span className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+                                <span>{formatRelativeTime(item.timestamp)}</span>
+                                <span>{inboxStatusLabel(item.status)}</span>
+                              </span>
+                            </span>
+                          </Link>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="py-8 text-center text-sm text-slate-500">
+                        暂无未读信息
+                      </p>
+                    )}
+                  </div>
+                  <div className="border-t border-slate-800 p-3">
+                    <Link
+                      className="block text-center text-xs text-cyan-300 hover:text-cyan-200"
+                      href="/notifications"
+                      onClick={() => setInboxOpen(false)}
+                    >
+                      更多 · 查看信息历史
+                    </Link>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="relative" ref={userMenuRef}>
               <button
+                aria-label="用户菜单"
+                aria-expanded={userOpen}
+                aria-haspopup="menu"
                 className="flex h-9 items-center gap-2 rounded-lg border border-slate-700 px-2 text-sm hover:bg-slate-900"
                 onClick={() => setUserOpen((value) => !value)}
+                type="button"
               >
                 <CircleUserRound size={18} />
                 <span className="hidden max-w-28 truncate xl:inline">
@@ -371,7 +994,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <ChevronDown size={14} />
               </button>
               {userOpen && (
-                <div className="absolute top-11 right-0 w-56 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
+                <div className="absolute top-11 right-0 w-56 rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-2xl" role="menu">
                   <div className="border-b border-slate-800 p-2">
                     <p className="truncate text-sm text-white">
                       {currentUser?.user.email}
@@ -395,10 +1018,78 @@ export function AppShell({ children }: { children: ReactNode }) {
                 </div>
               )}
             </div>
+            </div>
           </header>
-          <div className="min-h-[calc(100vh-4rem)]">{children}</div>
+          <div className="page-enter min-h-[calc(100vh-4rem)]" key={pathname}>
+            {children}
+          </div>
         </div>
+        {shortcutsOpen && (
+          <ShortcutsHelp onClose={() => setShortcutsOpen(false)} />
+        )}
       </div>
     </WorkspaceContext.Provider>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Keyboard shortcuts help dialog                                    */
+/* ------------------------------------------------------------------ */
+const SHORTCUT_ITEMS: Array<[string, string]> = [
+  ["/", "聚焦全局搜索"],
+  ["?", "打开 / 关闭本帮助"],
+  ["Esc", "关闭弹窗 / 清空搜索"],
+];
+
+function ShortcutsHelp({ onClose }: { onClose: () => void }) {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="键盘快捷键"
+    >
+      <button
+        aria-label="关闭快捷键帮助"
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+        tabIndex={-1}
+      />
+      <div className="relative w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 p-6 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">键盘快捷键</h2>
+          <button
+            aria-label="关闭"
+            className="grid size-8 place-items-center rounded-lg border border-slate-700 text-slate-400 hover:bg-slate-800"
+            onClick={onClose}
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <ul className="mt-4 space-y-2">
+          {SHORTCUT_ITEMS.map(([key, label]) => (
+            <li
+              key={key}
+              className="flex items-center justify-between gap-4 text-sm"
+            >
+              <span className="text-slate-300">{label}</span>
+              <kbd className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 font-mono text-xs text-cyan-300">
+                {key}
+              </kbd>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-4 text-xs text-slate-500">
+          在输入框中按键时快捷键不会触发，便于正常输入。
+        </p>
+      </div>
+    </div>
   );
 }

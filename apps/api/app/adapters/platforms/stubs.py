@@ -5,8 +5,6 @@ from typing import Any
 from app.adapters.platforms.base import (
     AdapterCallContext,
     AdapterCapability,
-    AdapterConfigField,
-    AdapterDescriptor,
     AdapterHealth,
     AdapterNotImplementedError,
     AdapterPage,
@@ -74,51 +72,3 @@ class SkeletonPlatformAdapter(PlatformAdapter):
 
 
 NO_CAPABILITIES = {capability: False for capability in AdapterCapability}
-
-
-class TikTokAdapter(SkeletonPlatformAdapter):
-    descriptor = AdapterDescriptor(
-        key="tiktok",
-        name="TikTok（骨架）",
-        implementation_status="skeleton",
-        capabilities=NO_CAPABILITIES,
-        config_fields=(
-            AdapterConfigField("client_key", "Client Key", True),
-            AdapterConfigField("client_secret", "Client Secret", True, secret=True),
-            AdapterConfigField("access_token", "Access Token", True, secret=True),
-        ),
-        source_kinds=frozenset({"live"}),
-    )
-
-
-class DouyinAdapter(SkeletonPlatformAdapter):
-    descriptor = AdapterDescriptor(
-        key="douyin",
-        name="抖音（骨架）",
-        implementation_status="skeleton",
-        capabilities=NO_CAPABILITIES,
-        config_fields=(
-            AdapterConfigField("client_key", "Client Key", True),
-            AdapterConfigField("client_secret", "Client Secret", True, secret=True),
-            AdapterConfigField("access_token", "Access Token", True, secret=True),
-        ),
-        source_kinds=frozenset({"live"}),
-    )
-
-
-class BilibiliAdapter(SkeletonPlatformAdapter):
-    descriptor = AdapterDescriptor(
-        key="bilibili",
-        name="Bilibili（骨架）",
-        implementation_status="skeleton",
-        capabilities=NO_CAPABILITIES,
-        config_fields=(
-            AdapterConfigField(
-                "authorized_api_config",
-                "Authorized API Configuration",
-                True,
-                secret=True,
-            ),
-        ),
-        source_kinds=frozenset({"live"}),
-    )

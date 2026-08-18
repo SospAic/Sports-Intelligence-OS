@@ -21,6 +21,59 @@ TRACKING_QUERY_KEYS = {
 }
 SENSITIVE_QUERY_PARTS = ("api_key", "apikey", "access_token", "token", "secret", "password")
 
+# Docker Desktop / transparent proxy DNS can return synthetic non-global
+# addresses (for example RFC 2544's 198.18.0.0/15) for public media sites.
+# These are the only host families allowed to use the media-download DNS
+# compatibility path; arbitrary URLs still go through the full SSRF check.
+MEDIA_SOURCE_HOST_SUFFIXES = frozenset(
+    {
+        "youtube.com",
+        "youtube-nocookie.com",
+        "youtu.be",
+        "tiktok.com",
+        "douyin.com",
+        "iesdouyin.com",
+        "bilibili.com",
+        "b23.tv",
+        "instagram.com",
+        "facebook.com",
+        "vimeo.com",
+        "twitch.tv",
+        "x.com",
+        "twitter.com",
+    }
+)
+
+# Docker Desktop and some transparent proxy DNS implementations can map public
+# API hostnames to synthetic RFC 2544 / ULA addresses.  LLM providers need the
+# same compatibility path as public media hosts, but the allowlist is kept
+# separate and intentionally narrow: arbitrary user-supplied URLs must still
+# pass the full DNS-based SSRF check.
+LLM_SOURCE_HOST_SUFFIXES = frozenset(
+    {
+        "api.openai.com",
+        "generativelanguage.googleapis.com",
+        "api.mistral.ai",
+        "api.x.ai",
+        "api.groq.com",
+        "openrouter.ai",
+        "api.together.xyz",
+        "api.perplexity.ai",
+        "api.cohere.ai",
+        "api.deepseek.com",
+        "api.moonshot.cn",
+        "open.bigmodel.cn",
+        "dashscope.aliyuncs.com",
+        "ark.cn-beijing.volces.com",
+        "spark-api-open.xf-yun.com",
+        "api.hunyuan.cloud.tencent.com",
+        "qianfan.baidubce.com",
+        "api.minimax.chat",
+        "api.stepfun.com",
+        "ai.360.cn",
+    }
+)
+
 
 def clean_text(value: object, *, limit: int = 100_000) -> str | None:
     if value is None:
@@ -76,15 +129,22 @@ def validate_source_url(value: str, *, allow_secret_query: bool = False) -> str:
     return normalized
 
 
-async def ensure_public_endpoint(value: str, *, allow_secret_query: bool = False) -> str:
+async def ensure_public_endpoint(
+    value: str, *, allow_secret_query: bool = False, skip_dns_check: bool = False
+) -> str:
     """Validate both the URL text and every currently resolved address.
 
     This check is repeated immediately before an outbound request so a hostname
     that resolves to loopback, link-local, or a private network cannot bypass the
     literal-IP validation used when a source is saved.
+
+    Set ``skip_dns_check=True`` in Docker/dev environments where the container DNS
+    resolves external hostnames to non-global ranges (e.g. 198.18.0.0/15).
     """
 
     normalized = validate_source_url(value, allow_secret_query=allow_secret_query)
+    if skip_dns_check:
+        return normalized
     host = urlsplit(normalized).hostname
     if host is None:
         raise ValueError("source URL has no hostname")
@@ -100,6 +160,67 @@ async def ensure_public_endpoint(value: str, *, allow_secret_query: bool = False
         if not ipaddress.ip_address(address[4][0]).is_global:
             raise ValueError("source URL resolved to a non-public IP address")
     return normalized
+
+
+def is_known_media_source(value: str) -> bool:
+    """Return whether ``value`` belongs to a supported public media host.
+
+    The check is deliberately suffix-boundary aware so a hostname such as
+    ``youtube.com.attacker.example`` is not treated as YouTube.
+    """
+
+    normalized = validate_source_url(value)
+    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
+    return any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in MEDIA_SOURCE_HOST_SUFFIXES
+    )
+
+
+def is_known_llm_source(value: str) -> bool:
+    """Return whether ``value`` belongs to a built-in public LLM host.
+
+    This is a DNS compatibility allowlist, not an authentication or provider
+    capability check.  The suffix boundary prevents lookalike domains such as
+    ``api.deepseek.com.attacker.example`` from matching.
+    """
+
+    normalized = validate_source_url(value)
+    host = (urlsplit(normalized).hostname or "").casefold().rstrip(".")
+    return any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in LLM_SOURCE_HOST_SUFFIXES
+    )
+
+
+async def ensure_public_media_endpoint(value: str) -> str:
+    """Validate a downloader URL without rejecting Docker synthetic DNS.
+
+    Supported media hostnames retain literal-IP, local-hostname, credential,
+    and secret-query protections. Only their DNS resolution check is skipped
+    because the downloader may run behind a transparent proxy. Unknown hosts
+    must resolve exclusively to globally routable addresses.
+    """
+
+    normalized = validate_source_url(value)
+    return await ensure_public_endpoint(
+        normalized,
+        skip_dns_check=is_known_media_source(normalized),
+    )
+
+
+async def ensure_public_llm_endpoint(value: str) -> str:
+    """Validate a public LLM URL without rejecting Docker synthetic DNS.
+
+    Only the built-in provider hostnames above may skip the runtime DNS
+    address check.  Custom OpenAI-compatible endpoints continue to require a
+    globally routable DNS result, which preserves the SSRF boundary.
+    """
+
+    normalized = validate_source_url(value, allow_secret_query=False)
+    return await ensure_public_endpoint(
+        normalized,
+        allow_secret_query=False,
+        skip_dns_check=is_known_llm_source(normalized),
+    )
 
 
 def normalize_title(value: str) -> str:
@@ -118,7 +239,15 @@ def title_similarity(left: str, right: str) -> float:
     union = left_tokens | right_tokens
     jaccard = len(left_tokens & right_tokens) / len(union) if union else 0.0
     sequence = SequenceMatcher(None, normalized_left, normalized_right).ratio()
-    return max(jaccard, sequence)
+    left_cjk = "".join(re.findall(r"[\u3400-\u9fff]", normalized_left))
+    right_cjk = "".join(re.findall(r"[\u3400-\u9fff]", normalized_right))
+    cjk_score = 0.0
+    if len(left_cjk) >= 2 and len(right_cjk) >= 2:
+        left_bigrams = {left_cjk[index : index + 2] for index in range(len(left_cjk) - 1)}
+        right_bigrams = {right_cjk[index : index + 2] for index in range(len(right_cjk) - 1)}
+        cjk_union = left_bigrams | right_bigrams
+        cjk_score = len(left_bigrams & right_bigrams) / len(cjk_union)
+    return max(jaccard, sequence, cjk_score)
 
 
 def article_hash(title: str, canonical_url: str, summary: str | None) -> str:

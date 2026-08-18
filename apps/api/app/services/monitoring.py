@@ -1,14 +1,26 @@
 import csv
 import json
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from io import StringIO
-from typing import Any
+from typing import Any, Literal, cast
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.monitoring import Account
-from app.models.operations import AuditEntry
+from app.adapters.platforms.yt_dlp import YtDlpAdapter
+from app.models.monitoring import (
+    Account,
+    AccountSnapshot,
+    Comment,
+    CommentSnapshot,
+    ContentItem,
+    ContentSnapshot,
+)
 from app.repositories.monitoring import (
     AccountFilters,
     AccountRow,
@@ -18,20 +30,42 @@ from app.repositories.monitoring import (
     Order,
 )
 from app.schemas.monitoring import (
+    AccountComparisonResponse,
+    AccountComparisonRow,
+    AccountComparisonSnapshot,
+    AccountComparisonSummary,
+    AccountContentSummary,
     AccountCreate,
+    AccountMetricsHistory,
+    AccountMetricsHistoryPoint,
     AccountPage,
     AccountRead,
     AccountSnapshotPage,
     AccountSnapshotRead,
+    AccountSyncSettingsOverride,
+    AccountSyncStatus,
     AccountUpdate,
+    CommentRead,
+    CommentSnapshotRead,
+    ContentCalendarBucket,
+    ContentCalendarResponse,
+    ContentCreate,
     ContentPage,
     ContentRead,
     ContentSnapshotPage,
     ContentSnapshotRead,
+    ContentUpdate,
     DerivedMetricPage,
     DerivedMetricRead,
+    MediaArtifactRead,
     PlatformRead,
+    SourceKind,
+    SyncIntervalResponse,
 )
+from app.services.adaptive_sync import compute_adaptive_interval
+from app.services.artifact_registry import list_content_artifacts, reconcile_manifest
+from app.services.audit import build_audit_entry
+from app.services.platform_detect import detect_platform_key_from_url
 
 RESERVED_METADATA_KEYS = {
     "source_kind",
@@ -42,13 +76,64 @@ RESERVED_METADATA_KEYS = {
     "is_mock",
     "demo",
 }
+
+_COMMENT_EXTRACTION_HOSTS = (
+    "youtube.com",
+    "youtu.be",
+    "tiktok.com",
+    "douyin.com",
+)
+
+
+def _supports_yt_dlp_comments(url: str | None) -> bool:
+    """Return whether the URL belongs to a yt-dlp comment-capable platform.
+
+    The stored ``source_provider`` describes how the work was discovered
+    (often ``youtube_browser``), not whether yt-dlp can enrich it later. The
+    comment worker is intentionally URL-based so browser-discovered YouTube
+    and TikTok works do not get rejected before the real capability check.
+    """
+    if not url:
+        return False
+    try:
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in _COMMENT_EXTRACTION_HOSTS
+    )
 MAX_METADATA_BYTES = 65_536
 MAX_CSV_EXPORT_ROWS = 10_000
+
+
+def _display_name_from_locator(locator: str, username: str | None = None) -> str:
+    """Return a compact human label instead of storing a full profile URL."""
+
+    if username and username.strip():
+        return f"@{username.strip().lstrip('@')}"
+    raw = locator.strip().lstrip("@")
+    candidate = raw if "://" in raw else f"https://{raw}"
+    try:
+        parsed = urlparse(candidate)
+        parts = [part for part in parsed.path.split("/") if part]
+        if parts:
+            handle = parts[-1].lstrip("@").strip()
+            if handle:
+                return f"@{handle}"
+    except ValueError:
+        pass
+    return locator.strip()
 
 
 class MonitoringError(Exception):
     code = "monitoring_error"
     status_code = 400
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 class MonitoringNotFoundError(MonitoringError):
@@ -128,9 +213,24 @@ class MonitoringService:
     async def create_account(
         self, workspace_id: UUID, actor_id: UUID, payload: AccountCreate
     ) -> AccountRead:
-        platform = await self._repository.get_platform(payload.platform_id)
-        if platform is None or not platform.enabled:
-            raise MonitoringValidationError("platform does not exist or is disabled")
+        # Resolve the platform: prefer an explicit choice, otherwise infer it
+        # from the profile URL so the operator only needs to paste a link.
+        if payload.platform_id is not None:
+            platform = await self._repository.get_platform(payload.platform_id)
+            if platform is None or not platform.enabled:
+                raise MonitoringValidationError("platform does not exist or is disabled")
+        else:
+            detected_key = detect_platform_key_from_url(str(payload.external_id))
+            if detected_key is None:
+                raise MonitoringValidationError(
+                    "无法从网址识别平台，请确认链接来自 YouTube / TikTok / 抖音 / Bilibili，"
+                    "或直接选择平台后重试。"
+                )
+            platform = await self._repository.get_platform_by_key(detected_key)
+            if platform is None or not platform.enabled:
+                raise MonitoringValidationError(
+                    f"识别到的平台「{detected_key}」未启用或不存在，请在平台管理中启用后重试。"
+                )
         duplicate = await self._repository.get_account_by_external_id(
             workspace_id, platform.id, payload.external_id
         )
@@ -145,7 +245,10 @@ class MonitoringService:
             platform_id=platform.id,
             external_id=payload.external_id,
             username=payload.username,
-            display_name=payload.display_name,
+            # First registration only needs the account URL; the display name
+            # is refined by the first sync when not supplied by the operator.
+            display_name=payload.display_name
+            or _display_name_from_locator(payload.external_id, payload.username),
             profile_url=str(payload.profile_url) if payload.profile_url else None,
             avatar_url=str(payload.avatar_url) if payload.avatar_url else None,
             description=payload.description,
@@ -153,7 +256,11 @@ class MonitoringService:
             language=payload.language,
             is_verified=payload.is_verified,
             is_active=True,
-            metadata_json={**metadata, "input_mode": "manual"},
+            metadata_json={
+                **metadata,
+                "input_mode": "manual",
+                "display_name_source": "manual" if payload.display_name else "adapter",
+            },
             last_synced_at=None,
             sync_interval_seconds=payload.sync_interval_seconds,
             sync_status="never",
@@ -165,7 +272,7 @@ class MonitoringService:
         )
         self._repository.add_account(account)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -223,6 +330,58 @@ class MonitoringService:
             raise MonitoringNotFoundError("account was not found")
         return account_read(row)
 
+    async def get_account_sync_settings(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> AccountSyncSettingsOverride | None:
+        """Return the account's per-account sync settings override, or ``None``.
+
+        ``None`` means the account inherits the workspace-wide ``sync_settings``
+        policy. The override (when present) is deep-merged over the workspace
+        config by the sync executor.
+        """
+        row = await self._repository.get_account(workspace_id, account_id)
+        if row is None:
+            raise MonitoringNotFoundError("account was not found")
+        override = row[0].sync_settings_override
+        if not override:
+            return None
+        return AccountSyncSettingsOverride.model_validate(override)
+
+    async def update_account_sync_settings(
+        self,
+        workspace_id: UUID,
+        account_id: UUID,
+        actor_id: UUID,
+        payload: AccountSyncSettingsOverride,
+    ) -> AccountSyncSettingsOverride:
+        """Persist a per-account sync settings override (replaces any existing)."""
+        row = await self._repository.get_account(workspace_id, account_id)
+        if row is None:
+            raise MonitoringNotFoundError("account was not found")
+        account = row[0]
+        account.sync_settings_override = payload.model_dump()
+        now = datetime.now(UTC)
+        self._session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="monitoring.account.sync_settings.updated",
+                resource_type="account",
+                resource_id=account.id,
+                before_hash=None,
+                after_hash=None,
+                change_summary_json={"download": payload.model_dump()["download"]},
+                reason="per-account sync settings override update",
+                ip_hash=None,
+                trace_id=uuid4(),
+                created_at=now,
+            )
+        )
+        await self._session.commit()
+        return payload
+
     async def update_account(
         self,
         workspace_id: UUID,
@@ -244,6 +403,11 @@ class MonitoringService:
                     **validate_user_metadata(metadata),
                     "input_mode": account.metadata_json.get("input_mode", "manual"),
                 }
+        if "display_name" in changes:
+            account.metadata_json = {
+                **(account.metadata_json or {}),
+                "display_name_source": "manual",
+            }
         for url_field in ("profile_url", "avatar_url"):
             if url_field in changes:
                 changes[url_field] = str(changes[url_field]) if changes[url_field] else None
@@ -256,7 +420,7 @@ class MonitoringService:
 
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -288,7 +452,7 @@ class MonitoringService:
         account.sync_status = "disabled"
         now = datetime.now(UTC)
         self._session.add(
-            AuditEntry(
+            build_audit_entry(
                 id=uuid4(),
                 workspace_id=workspace_id,
                 actor_type="user",
@@ -307,6 +471,160 @@ class MonitoringService:
         )
         await self._session.commit()
 
+    async def batch_update_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID], is_active: bool, actor_id: UUID
+    ) -> int:
+        """Activate or deactivate many accounts at once. Returns updated count."""
+        statement = (
+            update(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .values(is_active=is_active, updated_at=datetime.now(UTC))
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    async def batch_disable_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID], actor_id: UUID
+    ) -> int:
+        """Soft-delete many accounts (deactivate + stop syncing). Returns count."""
+        statement = (
+            update(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .values(is_active=False, sync_status="disabled", updated_at=datetime.now(UTC))
+        )
+        result = await self._session.execute(statement)
+        await self._session.commit()
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+    async def compare_accounts(
+        self, workspace_id: UUID, account_ids: list[UUID]
+    ) -> AccountComparisonResponse:
+        if not account_ids:
+            raise MonitoringValidationError("at least one account_id is required")
+        statement = (
+            select(Account)
+            .where(Account.workspace_id == workspace_id, Account.id.in_(account_ids))
+            .options(selectinload(Account.platform))
+        )
+        accounts = list(await self._session.scalars(statement))
+        found = {a.id for a in accounts}
+        missing = [str(aid) for aid in account_ids if aid not in found]
+        if missing:
+            raise MonitoringNotFoundError("accounts not found in workspace: " + ", ".join(missing))
+
+        rows: list[AccountComparisonRow] = []
+        total_followers = total_views = total_videos = 0
+        best_followers_id = best_views_id = best_engagement_id = None
+        best_followers_v = best_views_v = best_engagement_v = None
+
+        for account in accounts:
+            snapshots = list(
+                await self._session.scalars(
+                    select(AccountSnapshot)
+                    .where(AccountSnapshot.account_id == account.id)
+                    .order_by(AccountSnapshot.captured_at.desc())
+                    .limit(2)
+                )
+            )
+            latest = snapshots[0] if snapshots else None
+            previous = snapshots[1] if len(snapshots) > 1 else None
+
+            def _snapshot_dto(snap: AccountSnapshot) -> AccountComparisonSnapshot:
+                return AccountComparisonSnapshot(
+                    captured_at=snap.captured_at,
+                    follower_count=snap.follower_count,
+                    total_view_count=snap.total_view_count,
+                    video_count=snap.video_count,
+                    engagement_rate=(
+                        float(snap.engagement_rate) if snap.engagement_rate is not None else None
+                    ),
+                    source_kind=cast("SourceKind", snap.source_kind),
+                )
+
+            latest_dto = _snapshot_dto(latest) if latest is not None else None
+            previous_dto = _snapshot_dto(previous) if previous is not None else None
+
+            follower_delta = view_delta = None
+            window_hours = None
+            if latest is not None and previous is not None:
+                if latest.follower_count is not None and previous.follower_count is not None:
+                    follower_delta = latest.follower_count - previous.follower_count
+                if latest.total_view_count is not None and previous.total_view_count is not None:
+                    view_delta = latest.total_view_count - previous.total_view_count
+                window_hours = round(
+                    (latest.captured_at - previous.captured_at).total_seconds() / 3600.0, 2
+                )
+
+            rows.append(
+                AccountComparisonRow(
+                    account_id=account.id,
+                    platform_key=account.platform.key if account.platform else "",
+                    display_name=account.display_name,
+                    username=account.username,
+                    is_active=account.is_active,
+                    sync_status=cast("AccountSyncStatus", account.sync_status),
+                    latest=latest_dto,
+                    previous=previous_dto,
+                    follower_delta=follower_delta,
+                    view_delta=view_delta,
+                    window_hours=window_hours,
+                )
+            )
+
+            if latest is not None:
+                if latest.follower_count is not None:
+                    total_followers += latest.follower_count
+                    if best_followers_v is None or latest.follower_count > best_followers_v:
+                        best_followers_v = latest.follower_count
+                        best_followers_id = account.id
+                if latest.total_view_count is not None:
+                    total_views += latest.total_view_count
+                    if best_views_v is None or latest.total_view_count > best_views_v:
+                        best_views_v = latest.total_view_count
+                        best_views_id = account.id
+                if latest.video_count is not None:
+                    total_videos += latest.video_count
+                if latest.engagement_rate is not None:
+                    eng = float(latest.engagement_rate)
+                    if best_engagement_v is None or eng > best_engagement_v:
+                        best_engagement_v = eng
+                        best_engagement_id = account.id
+
+        summary = AccountComparisonSummary(
+            account_count=len(rows),
+            total_followers=total_followers or None,
+            total_views=total_views or None,
+            total_videos=total_videos or None,
+            best_followers_account_id=best_followers_id,
+            best_views_account_id=best_views_id,
+            best_engagement_account_id=best_engagement_id,
+        )
+        return AccountComparisonResponse(rows=rows, summary=summary)
+
+    async def recompute_account_sync_interval(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> SyncIntervalResponse:
+        account = (
+            await self._session.scalars(
+                select(Account).where(
+                    Account.workspace_id == workspace_id, Account.id == account_id
+                )
+            )
+        ).first()
+        if account is None:
+            raise MonitoringNotFoundError("account was not found")
+        interval, median_gap = await compute_adaptive_interval(self._session, account_id)
+        account.sync_interval_seconds = interval
+        await self._session.commit()
+        basis: Literal["adaptive", "default"] = "adaptive" if median_gap is not None else "default"
+        return SyncIntervalResponse(
+            account_id=account.id,
+            sync_interval_seconds=interval,
+            basis=basis,
+            posting_median_gap_seconds=median_gap,
+        )
+
     async def account_snapshots(
         self, workspace_id: UUID, account_id: UUID, *, page: int, page_size: int
     ) -> AccountSnapshotPage:
@@ -320,6 +638,94 @@ class MonitoringService:
             page_size=page_size,
             total=total,
         )
+
+    async def account_metrics_history(
+        self, workspace_id: UUID, account_id: UUID, *, days: int
+    ) -> AccountMetricsHistory:
+        """Return an ascending time series of account metric snapshots for charts."""
+        await self.get_account(workspace_id, account_id)
+        since = datetime.now(UTC) - timedelta(days=days)
+        snapshots = await self._repository.list_account_snapshots_history(
+            workspace_id, account_id, since=since
+        )
+        # Platforms that omit lifetime views (TikTok/Douyin via yt-dlp) leave
+        # ``total_view_count`` null on historical snapshots. Rather than render
+        # an empty 总播放量 trend, derive each point at read time from the sum
+        # of synced content views captured on or before that snapshot's time.
+        # The derived totals are applied only to the read models, never to the
+        # underlying append-only ORM rows, so the append-only invariant holds
+        # even though the request session is committed afterwards.
+        derived_totals = await self._derive_historical_total_views(account_id, snapshots)
+        points = []
+        for s in snapshots:
+            point = AccountMetricsHistoryPoint.model_validate(s)
+            derived = derived_totals.get(s.id)
+            if derived is not None:
+                point.total_view_count = derived
+            points.append(point)
+        return AccountMetricsHistory(
+            account_id=account_id,
+            days=days,
+            points=points,
+        )
+
+    async def _derive_historical_total_views(
+        self, account_id: UUID, snapshots: list[AccountSnapshot]
+    ) -> dict[UUID, int]:
+        """Best-effort backfill of ``total_view_count`` for snapshots that lack it.
+
+        Platforms that omit lifetime views (TikTok/Douyin via yt-dlp) leave
+        ``total_view_count`` null on historical snapshots. Rather than render an
+        empty 总播放量 trend, derive each point at read time from the sum of
+        synced content views captured on or before that snapshot's time.
+
+        Returns a mapping from snapshot id to the derived total. The underlying
+        append-only ORM rows are NEVER mutated — the value is applied only to the
+        read models — so the append-only invariant holds even after the request
+        session is committed.
+        """
+        missing = [s for s in snapshots if s.total_view_count is None]
+        if not missing:
+            return {}
+        from collections import defaultdict
+
+        result = await self._session.execute(
+            select(
+                ContentSnapshot.content_item_id,
+                ContentSnapshot.captured_at,
+                ContentSnapshot.view_count,
+            ).where(
+                ContentSnapshot.content_item_id.in_(
+                    select(ContentItem.id).where(ContentItem.account_id == account_id)
+                )
+            )
+        )
+        by_content: dict[UUID, list[tuple[datetime, int]]] = defaultdict(list)
+        for content_item_id, captured_at, view_count in result.all():
+            if view_count is not None:
+                by_content[content_item_id].append((captured_at, int(view_count)))
+        if not by_content:
+            return {}
+        for lst in by_content.values():
+            lst.sort(key=lambda pair: pair[0])
+
+        derived: dict[UUID, int] = {}
+        for snap in missing:
+            threshold = snap.captured_at
+            total = 0
+            for lst in by_content.values():
+                # latest view_count captured on or before ``threshold``
+                lo, hi = 0, len(lst)
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    if lst[mid][0] <= threshold:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+                if lo > 0:
+                    total += lst[lo - 1][1]
+            derived[snap.id] = total
+        return derived
 
     async def list_contents(
         self,
@@ -347,6 +753,351 @@ class MonitoringService:
             total=total,
         )
 
+    async def list_content_tags(
+        self, workspace_id: UUID, account_ids: set[UUID] | None = None
+    ) -> list[str]:
+        """Distinct tags across the workspace's works, for the filter control."""
+        return await self._repository.list_content_tags(workspace_id, account_ids)
+
+    async def list_content_comments(
+        self, workspace_id: UUID, content_item_id: UUID, limit: int = 20
+    ) -> list[CommentRead]:
+        """Ranked hot comments for a content item (top ``limit``)."""
+        await self.get_content(workspace_id, content_item_id)
+        rows = await self._repository.list_content_comments(content_item_id, limit=limit)
+        return [CommentRead.model_validate(row) for row in rows]
+
+    async def list_content_comment_snapshots(
+        self, workspace_id: UUID, content_item_id: UUID, limit: int = 100
+    ) -> list[CommentSnapshotRead]:
+        await self.get_content(workspace_id, content_item_id)
+        rows = await self._repository.list_content_comment_snapshots(
+            content_item_id, limit=limit
+        )
+        return [CommentSnapshotRead.model_validate(row) for row in rows]
+
+    async def queue_content_comments(self, workspace_id: UUID, content_item_id: UUID) -> bool:
+        """Mark a content item for asynchronous comment enrichment.
+
+        The API must expose a queued state before dispatching the Celery task;
+        otherwise the detail page can poll once, observe an old terminal state,
+        and stop before the worker has even started.
+        """
+        content = await self._session.scalar(
+            select(ContentItem).where(
+                ContentItem.id == content_item_id,
+                ContentItem.workspace_id == workspace_id,
+            )
+        )
+        if content is None:
+            raise MonitoringNotFoundError("content item was not found")
+        url = content.source_url or content.canonical_url
+        provider = content.source_provider or ""
+        if not url or not _supports_yt_dlp_comments(url):
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unsupported" if url else "unavailable",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": provider or "unknown",
+                    "source_url": url,
+                    "notice": (
+                        "当前作品适配器未提供评论采集能力"
+                        if url
+                        else "作品没有可用的公开来源地址"
+                    ),
+                },
+            }
+            await self._session.commit()
+            return False
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": {
+                "status": "queued",
+                "count": 0,
+                "limit": 20,
+                "queued_at": datetime.now(UTC).isoformat(),
+                "fetched_at": None,
+                "source_kind": "live",
+                "source_provider": provider,
+                "source_url": url,
+                "notice": "评论采集已排队，不阻塞作品详情页",
+            },
+        }
+        await self._session.commit()
+        return True
+
+    async def collect_content_comments(
+        self,
+        content_item_id: UUID,
+        *,
+        config: Mapping[str, Any] | None = None,
+    ) -> int:
+        """Fetch & store hot comments for a content item (yt-dlp backed).
+
+        Best-effort: returns the number of comments stored. When the platform
+        does not expose comments, 0 is stored and the UI shows the condition.
+        """
+        content = await self._session.get(ContentItem, content_item_id)
+        if content is None:
+            return 0
+        workspace_id = content.workspace_id
+        url = content.source_url or content.canonical_url
+        if not url:
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unavailable",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": content.source_provider or "unknown",
+                    "source_url": None,
+                    "notice": "作品没有可用的公开来源地址",
+                },
+            }
+            await self._session.commit()
+            return 0
+        if not _supports_yt_dlp_comments(url):
+            content.metadata_json = {
+                **dict(content.metadata_json or {}),
+                "comment_sync": {
+                    "status": "unsupported",
+                    "count": 0,
+                    "limit": 20,
+                    "fetched_at": None,
+                    "source_kind": content.source_kind,
+                    "source_provider": content.source_provider or "unknown",
+                    "source_url": url,
+                    "notice": "当前作品适配器未提供评论采集能力",
+                },
+            }
+            await self._session.commit()
+            return 0
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": {
+                **dict((content.metadata_json or {}).get("comment_sync") or {}),
+                "status": "running",
+                "limit": 20,
+                "source_kind": "live",
+                "source_provider": content.source_provider,
+                "source_url": url,
+                "notice": "正在读取平台公开评论",
+            },
+        }
+        await self._session.commit()
+        now = datetime.now(UTC)
+        raw: list[dict[str, Any]] = []
+        comment_provider = content.source_provider
+        browser_attempted = False
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+        if hostname == "tiktok.com" or hostname.endswith(".tiktok.com"):
+            browser_attempted = True
+            try:
+                from app.adapters.platforms.base import AdapterCallContext
+                from app.adapters.platforms.tiktok_browser import TikTokBrowserAdapter
+
+                browser_config = (
+                    dict(config.get("yt_dlp") or {})
+                    if isinstance(config, Mapping)
+                    and isinstance(config.get("yt_dlp"), Mapping)
+                    else dict(config or {})
+                )
+                browser_adapter = TikTokBrowserAdapter()
+                try:
+                    raw = await browser_adapter.extract_public_comments(
+                        AdapterCallContext(
+                            config=browser_config,
+                            observed_at=now,
+                            request_id=f"comments:{content_item_id}",
+                        ),
+                        url,
+                        limit=20,
+                    )
+                finally:
+                    await browser_adapter.aclose()
+                if raw:
+                    comment_provider = "tiktok_browser_comments"
+            except Exception:
+                # Keep the authorized yt-dlp route as a fallback when the
+                # public JSON endpoint itself is unavailable.
+                raw = []
+        raw_yt_config = config.get("yt_dlp") if isinstance(config, Mapping) else None
+        has_authorized_session = isinstance(raw_yt_config, Mapping) and bool(
+            raw_yt_config.get("cookies_netscape")
+            or raw_yt_config.get("cookies_from_browser")
+        )
+        if not raw and (not browser_attempted or has_authorized_session):
+            raw = await YtDlpAdapter.extract_comments(
+                url,
+                config=config,
+                limit=20,
+                timeout_seconds=60,
+            )
+            if raw:
+                comment_provider = content.source_provider
+        status = "success" if raw else "empty"
+        comment_meta = {
+            "status": status,
+            "count": len(raw),
+            "limit": 20,
+            "fetched_at": now.isoformat(),
+            "source_kind": "live",
+            "source_provider": comment_provider,
+            "source_url": url,
+            "notice": (
+                None
+                if raw
+                else "公开页面或当前授权会话未返回可读评论；未用估算值填充。"
+            ),
+        }
+        content.metadata_json = {
+            **dict(content.metadata_json or {}),
+            "comment_sync": comment_meta,
+        }
+        stored = 0
+        existing_rows = list(
+            (
+                await self._session.scalars(
+                    select(Comment).where(Comment.content_item_id == content_item_id)
+                )
+            ).all()
+        )
+        existing_by_id = {row.platform_comment_id: row for row in existing_rows}
+        ranked_rows: list[tuple[int, Comment]] = []
+        for rank, item in enumerate(raw, start=1):
+            existing = existing_by_id.get(str(item["platform_comment_id"]))
+            if existing:
+                if item.get("author_name"):
+                    existing.author_name = str(item["author_name"])
+                for field in ("author_url", "author_avatar_url", "text"):
+                    value = item.get(field)
+                    if value not in (None, ""):
+                        setattr(existing, field, str(value))
+                for field in ("like_count", "reply_count", "published_at"):
+                    value = item.get(field)
+                    if value is not None:
+                        setattr(existing, field, value)
+                if item.get("parent_comment_id") is not None:
+                    existing.parent_comment_id = item["parent_comment_id"]
+                if "is_reply" in item:
+                    existing.is_reply = bool(item["is_reply"])
+                existing.fetched_at = now
+                existing.source_kind = "live"
+                existing.source_provider = comment_provider
+                existing.source_url = url
+                ranked_rows.append((rank, existing))
+                continue
+            created_comment = Comment(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                content_item_id=content_item_id,
+                platform_comment_id=item["platform_comment_id"],
+                author_name=item["author_name"],
+                author_url=item.get("author_url"),
+                author_avatar_url=item.get("author_avatar_url"),
+                text=item["text"],
+                like_count=item["like_count"],
+                reply_count=item["reply_count"],
+                parent_comment_id=item.get("parent_comment_id"),
+                is_reply=bool(item.get("is_reply")),
+                published_at=item["published_at"],
+                fetched_at=now,
+                source_kind="live",
+                source_provider=comment_provider,
+                source_url=url,
+                metadata_json={"ranked_by": "like_count + 3 * reply_count"},
+            )
+            self._session.add(created_comment)
+            existing_by_id[created_comment.platform_comment_id] = created_comment
+            ranked_rows.append((rank, created_comment))
+            stored += 1
+        # This endpoint stores ranked/top-N enrichment, not a complete comment
+        # snapshot. Empty responses are common during throttling and a later
+        # top-20 response may legitimately omit older comments. Never interpret
+        # omission as deletion during sync; preserve historical evidence until
+        # an explicit cleanup action is requested.
+        await self._session.flush()
+        collection_id = str(uuid4())
+        for rank, comment in ranked_rows:
+            self._session.add(
+                CommentSnapshot(
+                    id=uuid4(),
+                    workspace_id=workspace_id,
+                    content_item_id=content_item_id,
+                    comment_id=comment.id,
+                    platform_comment_id=comment.platform_comment_id,
+                    rank=rank,
+                    like_count=comment.like_count,
+                    reply_count=comment.reply_count,
+                    published_at=comment.published_at,
+                    captured_at=now,
+                    source_kind="live",
+                    source_provider=comment_provider,
+                    source_url=url,
+                    metadata_json={
+                        "collection_id": collection_id,
+                        "ranked_by": "like_count + 3 * reply_count",
+                    },
+                )
+            )
+        await self._session.commit()
+        return stored
+
+    async def contents_calendar(
+        self,
+        workspace_id: UUID,
+        *,
+        filters: ContentFilters,
+        year: int,
+        month: int,
+    ) -> ContentCalendarResponse:
+        """Per-day aggregation of published works for a month (calendar view)."""
+        import calendar
+
+        _, last_day = calendar.monthrange(year, month)
+        month_filters = ContentFilters(
+            platform=filters.platform,
+            account=filters.account,
+            query=filters.query,
+            published_from=datetime(year, month, 1, 0, 0, 0, tzinfo=UTC),
+            published_to=datetime(year, month, last_day, 23, 59, 59, 999999, tzinfo=UTC),
+        )
+        rows = await self._repository.contents_calendar(workspace_id, filters=month_filters)
+        buckets = [
+            ContentCalendarBucket(
+                date=date, count=count, total_views=total_views, total_likes=total_likes
+            )
+            for date, count, total_views, total_likes in rows
+        ]
+        return ContentCalendarResponse(
+            year=year,
+            month=month,
+            platform=filters.platform,
+            account=filters.account,
+            buckets=buckets,
+            total_count=sum(b.count for b in buckets),
+            total_views=sum(b.total_views for b in buckets),
+        )
+
+    async def summarize_account_contents(
+        self, workspace_id: UUID, account_id: UUID
+    ) -> AccountContentSummary:
+        """Aggregated content-level overview for an account.
+
+        Builds on top of ``AccountContentSummary``: all numbers come from real
+        snapshots the adapter returned. Missing (API-gated) fields stay ``None``
+        and the UI renders the required acquisition condition instead of faking.
+        """
+        await self.get_account(workspace_id, account_id)
+        summary = await self._repository.summarize_account_contents(workspace_id, account_id)
+        return AccountContentSummary(account_id=account_id, **summary)
+
     @staticmethod
     def _validate_content_filters(filters: ContentFilters) -> None:
         if (
@@ -366,7 +1117,21 @@ class MonitoringService:
         row = await self._repository.get_content(workspace_id, content_id)
         if row is None:
             raise MonitoringNotFoundError("content item was not found")
-        return content_read(row)
+        content = row[0]
+        if content.media:
+            await reconcile_manifest(
+                self._session,
+                workspace_id=workspace_id,
+                content_item_id=content.id,
+                media=content.media,
+                source_kind=content.source_kind,
+                source_provider=content.source_provider,
+                source_url=content.source_url,
+            )
+        artifacts = await list_content_artifacts(self._session, workspace_id, content.id)
+        return content_read(row).model_copy(
+            update={"artifacts": [MediaArtifactRead.model_validate(item) for item in artifacts]}
+        )
 
     async def content_snapshots(
         self, workspace_id: UUID, content_id: UUID, *, page: int, page_size: int
@@ -395,6 +1160,151 @@ class MonitoringService:
             page_size=page_size,
             total=total,
         )
+
+    # -- Content CRUD (manual) -------------------------------------------------
+
+    async def create_content(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        payload: ContentCreate,
+    ) -> ContentRead:
+        from sqlalchemy import select
+
+        # Validate the account belongs to this workspace
+        account = await self._session.get(Account, payload.account_id)
+        if account is None or account.workspace_id != workspace_id:
+            raise MonitoringNotFoundError("account was not found")
+
+        # Check for duplicate external_id within workspace + platform
+        existing = await self._session.scalar(
+            select(ContentItem).where(
+                ContentItem.workspace_id == workspace_id,
+                ContentItem.platform_id == account.platform_id,
+                ContentItem.external_id == payload.external_id,
+            )
+        )
+        if existing is not None:
+            raise MonitoringConflictError("作品外部 ID 在该平台下已存在", code="content_duplicate")
+
+        now = datetime.now(UTC)
+        content = ContentItem(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            platform_id=account.platform_id,
+            account_id=payload.account_id,
+            external_id=payload.external_id,
+            content_type=payload.content_type,
+            title=payload.title,
+            description=payload.description,
+            published_at=payload.published_at,
+            duration_seconds=payload.duration_seconds,
+            canonical_url=payload.canonical_url,
+            cover_url=payload.cover_url,
+            language=payload.language,
+            status=payload.status,
+            metadata_json={**payload.metadata, "input_mode": "manual"},
+            first_seen_at=now,
+            last_seen_at=now,
+            source_kind="imported",
+            source_provider="manual",
+            fetched_at=now,
+        )
+        self._session.add(content)
+
+        self._session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="monitoring.content.created",
+                resource_type="content",
+                resource_id=content.id,
+                before_hash=None,
+                after_hash=None,
+                change_summary_json={"external_id": payload.external_id},
+                reason="manual content creation",
+                ip_hash=None,
+                trace_id=uuid4(),
+                created_at=now,
+            )
+        )
+        await self._session.flush()
+        row = await self._repository.get_content(workspace_id, content.id)
+        return content_read(row)  # type: ignore[arg-type]
+
+    async def update_content(
+        self,
+        workspace_id: UUID,
+        actor_id: UUID,
+        content_id: UUID,
+        payload: ContentUpdate,
+    ) -> ContentRead:
+        row = await self._repository.get_content(workspace_id, content_id)
+        if row is None:
+            raise MonitoringNotFoundError("content item was not found")
+        content = row[0]
+        changes = payload.model_dump(exclude_unset=True)
+        if "metadata" in changes:
+            metadata = changes.pop("metadata")
+            if metadata is not None:
+                existing = dict(content.metadata_json) if content.metadata_json else {}
+                content.metadata_json = {
+                    **existing,
+                    **validate_user_metadata(metadata),
+                }
+        for field, value in changes.items():
+            setattr(content, field, value)
+
+        now = datetime.now(UTC)
+        self._session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="monitoring.content.updated",
+                resource_type="content",
+                resource_id=content.id,
+                before_hash=None,
+                after_hash=None,
+                change_summary_json={"fields": sorted(payload.model_fields_set)},
+                reason="content update",
+                ip_hash=None,
+                trace_id=uuid4(),
+                created_at=now,
+            )
+        )
+        await self._session.flush()
+        row = await self._repository.get_content(workspace_id, content_id)
+        return content_read(row)  # type: ignore[arg-type]
+
+    async def delete_content(self, workspace_id: UUID, actor_id: UUID, content_id: UUID) -> None:
+        row = await self._repository.get_content(workspace_id, content_id)
+        if row is None:
+            raise MonitoringNotFoundError("content item was not found")
+        content = row[0]
+        now = datetime.now(UTC)
+        self._session.add(
+            build_audit_entry(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                actor_type="user",
+                actor_id=actor_id,
+                action="monitoring.content.deleted",
+                resource_type="content",
+                resource_id=content.id,
+                before_hash=None,
+                after_hash=None,
+                change_summary_json={"title": content.title},
+                reason="content deletion",
+                ip_hash=None,
+                trace_id=uuid4(),
+                created_at=now,
+            )
+        )
+        await self._session.delete(content)
 
     async def export_accounts_csv(
         self, workspace_id: UUID, filters: AccountFilters, sort: str, order: Order

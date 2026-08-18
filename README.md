@@ -1,6 +1,6 @@
-# Sports Intelligence OS
+# Content Intelligence OS
 
-Sports Intelligence OS 是面向体育短视频创作者、体育内容运营者和多平台账号管理者的内容情报与自动化系统。
+Content Intelligence OS（内容智能生产平台）是面向内容创作者、运营团队和多平台账号管理者的内容情报与生产自动化系统，首期保留体育内容能力作为垂直工作区。
 
 当前已进入第一次交付验收：账号、作品、新闻、事件、选题、内容创作、规则、自动化、通知、任务、日志和设置已经整合到统一中文后台；核心按钮连接真实后端 API。Prompt、模型参数和多阶段工作流由系统内部版本化管理，不要求创作者手工编排。外部平台、LLM 和通知渠道未配置真实凭证时会显示真实错误或显式 Mock 标记，不会用静态成功响应补齐功能。
 
@@ -65,6 +65,8 @@ docker compose up -d
 | `SIO_NOTIFICATION_ENCRYPTION_KEY` | 通知渠道配置加密 | 生产必填 |
 | `SIO_BOOTSTRAP_ADMIN_EMAIL/PASSWORD` | 首个管理员初始化 | 初始化时必填，无默认密码 |
 | `SIO_YOUTUBE_API_KEY` | YouTube Data API v3 | 真实 YouTube 同步必填 |
+| `SIO_TIKTOK_CLIENT_KEY` / `SIO_TIKTOK_CLIENT_SECRET` / `SIO_TIKTOK_ACCESS_TOKEN` | TikTok Display API v2 | 仅能访问授权 Token 所属账号；工作区平台管理配置优先 |
+| `SIO_DOUYIN_CLIENT_KEY` / `SIO_DOUYIN_CLIENT_SECRET` / `SIO_DOUYIN_ACCESS_TOKEN` | 抖音开放平台 | 需对应应用权限与审核；工作区平台管理配置优先 |
 | `SIO_LLM_OPENAI_COMPATIBLE_BASE_URL/API_KEY` | OpenAI 兼容 LLM | 真实模型调用必填 |
 | `SIO_TASK_STALE_AFTER_SECONDS` | Worker 失联执行租约 | 默认 2100，不应短于任务硬时限 |
 | `SIO_DATABASE_POOL_SIZE/MAX_OVERFLOW` | 每进程数据库连接池 | 按 API/Worker 副本数核算总连接数 |
@@ -131,17 +133,19 @@ make seed-generation
 docker compose run --rm api python -m app.cli seed-generation
 ```
 
-Mock LLM 无需密钥，但输出始终带 `MOCK TEST OUTPUT`、`source_kind=mock` 和测试标签。真实 OpenAI 兼容接口仅从 API/Worker 后端环境读取配置：
+Mock LLM 无需密钥，但输出始终带 `MOCK TEST OUTPUT`、`source_kind=mock` 和测试标签。真实 LLM 配置可在“设置 → LLM API”按工作区加密保存并覆盖部署默认，也可从 API/Worker 后端环境读取：
 
 ```dotenv
 SIO_LLM_OPENAI_COMPATIBLE_BASE_URL=https://provider.example/v1
 SIO_LLM_OPENAI_COMPATIBLE_API_KEY=
-SIO_LLM_DEFAULT_MODEL=gpt-4.1-mini
+SIO_LLM_DEFAULT_MODEL=gpt-5.6-terra
 ```
 
-浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
+浏览器不会获得明文 Key。Owner/Admin 可在“设置 → LLM API”按工作区加密保存 Base URL、Key、Provider 标识/显示名称、Organization/Project、自定义 Header、模型、采样、Token、超时、重试和成本参数；保存后可用非计费 `/models` 测试验证连接和默认模型可用性。创作者登录后只需进入 `/generate`，选择热门视频、新闻、聚合事件或自定义材料，再选择规则预设即可生成；`/generations` 以英文 TTS、翻译、标题、关键词、素材词和 QA 卡片展示成品。Prompt 和十步工作流仍在后端版本化、固定到每次运行并可审计，但不出现在主导航或日常创作表单中。没有独立研究证据时，运行会保持 `verification_incomplete`，不会让 LLM 自称完成联网核实。详见 [生成工作流指南](docs/GENERATION_WORKFLOW.md)。
 
-通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md)。
+通知渠道凭证只在后端加密保存。生产环境必须配置独立的 `SIO_NOTIFICATION_ENCRYPTION_KEY`；三个内置示例自动化默认停用，绑定渠道并检查后才能启用。订阅告警可在“设置 → 订阅告警”按新作品、关键词或指标突变触发统一通知队列，详见 [自动化与通知指南](docs/AUTOMATION_NOTIFICATIONS.md) 和 [订阅告警](docs/SUBSCRIPTION_ALERTS.md)。
+
+媒体文件的物理完整性、配额和生命周期治理见 [媒体存储生命周期治理](docs/STORAGE_LIFECYCLE.md)。默认只读预览，自动删除必须由 Owner/Admin 显式确认并启用策略；不会把数据库中的文件名当作真实文件存在。
 
 ### 添加 RSS 新闻源
 
@@ -162,6 +166,17 @@ SIO_YOUTUBE_API_KEY=
 留空时 YouTube 同步会记录明确的配置错误，不会静默切换为 Mock。系统目前只获取公开频道、上传作品和公开统计；YouTube Analytics API 的流量来源、留存、收入、搜索词等私有字段尚未实现，也不会伪造。
 
 登录后可调用 `POST /api/v1/accounts/{id}/sync` 手动排队，并通过 `GET /api/v1/accounts/{id}/sync-runs` 或 Dashboard 查看最近状态、错误和下一同步时间。
+
+## 视频内容搜索
+
+`/video-search` 是基于视频内容证据的定时搜索闭环：先按平台发现候选 URL，再由视频分析器读取画面、动作、音频、语音转写与 OCR；只有包含有效起止时间戳和匹配依据的候选才会进入默认命中结果。标题、简介、标签、作者和 URL 只用于定位视频，不能单独形成命中。
+
+部署与配置：
+
+- 默认 `SIO_VIDEO_SEARCH_ANALYZER=none`，只记录真实候选，不伪造内容命中。
+- 配置 `SIO_VIDEO_SEARCH_ANALYZER=gemini_video` 与 `SIO_GEMINI_API_KEY` 后，公开 YouTube 可直接交给 Gemini；公开 Bilibili、TikTok、抖音候选会在允许域名内由 yt-dlp 材料化后通过 Gemini Files API 分析。
+- Docker 后端镜像包含 Node.js、yt-dlp、yt-dlp EJS 和 ffmpeg；分析上传大小由 `SIO_VIDEO_SEARCH_MAX_UPLOAD_BYTES` 限制，临时媒体在分析后清理。
+- TikTok、抖音的候选搜索仍受平台公开搜索、反爬和登录墙限制；失败会记录为不可用/部分完成，不会显示为真实命中。完整数据边界与扩展路线见 [视频内容搜索可行性报告](docs/VIDEO_CONTENT_SEARCH_FEASIBILITY.md) 和 [技术说明书](docs/VIDEO_CONTENT_SEARCH_TECHNICAL_SPEC.md)。
 
 ## Monorepo 结构
 
@@ -268,9 +283,9 @@ docker compose config --quiet
 
 ## 数据真实性边界
 
-手动登记账号初始标记为 `imported/manual`。YouTube Adapter 的响应固定标记 `live/youtube`，但在没有本机 API Key 的情况下只完成了去敏 HTTP 契约测试，不能宣称真实账号同步已验证。Mock Adapter 和 Demo 种子固定标记 `mock`。新闻 Feed 同步固定标记 `live`，手动新闻固定标记 `imported`；当前测试使用本地去敏响应，没有主动抓取默认外部来源。7.9 规则来自用户提供的本地文件，不是模型虚构内容；结构化字段仅由确定性解析和用户编辑产生。真实 LLM 与外部通知渠道均因缺少凭证未执行可计费或真实发送验证；自动化测试只使用明确标记的 Mock Provider。详见 [平台同步](docs/PLATFORM_SYNC.md)、[新闻聚合](docs/NEWS_AGGREGATION.md)、[规则导入指南](docs/RULE_IMPORT_GUIDE.md)、[自动化通知](docs/AUTOMATION_NOTIFICATIONS.md) 与 [管理后台](docs/ADMIN_DASHBOARD.md)。
+手动登记账号和文章标记为 `imported`，实时 Provider 标记为 `live`，Mock Adapter 与 Demo 种子固定标记为 `mock`。本地 Docker 已使用真实 RSS、真实 Bilibili 历史作品和由这些作品派生的趋势数据完成验收；TikTok Token 无效、YouTube 缺少 Key、抖音上游响应异常和 Bilibili 登录墙仍保留真实失败，不能宣称成功。趋势热度与高潜分均标记为派生指标。真实 LLM 与外部通知渠道仍因缺少凭证未执行可计费或真实发送验证。详见 [平台同步](docs/PLATFORM_SYNC.md)、[真实数据验收](docs/REAL_DATA_ACCEPTANCE.md)、[新闻聚合](docs/NEWS_AGGREGATION.md)、[规则导入指南](docs/RULE_IMPORT_GUIDE.md) 与 [自动化通知](docs/AUTOMATION_NOTIFICATIONS.md)。
 
-阶段完成情况、验证记录、已知限制和下一阶段入口见 [docs/STATUS.md](docs/STATUS.md)。成熟产品对标、功能差距与第二阶段优先级见 [行业对标与产品优化建议](docs/INDUSTRY_BENCHMARK_AND_OPTIMIZATION.md)。
+阶段完成情况、验证记录、已知限制和下一阶段入口见 [docs/STATUS.md](docs/STATUS.md)。指标公式与可信度见 [数据指标口径目录](docs/METRIC_CATALOG.md)，仍待处理的外部授权和产品任务见 [待处理任务清单](docs/NEXT_TASKS.md)。成熟产品对标、功能差距与第二阶段优先级见 [行业对标与产品优化建议](docs/INDUSTRY_BENCHMARK_AND_OPTIMIZATION.md)。
 
 ## 常见问题
 
@@ -280,7 +295,7 @@ docker compose config --quiet
 
 ### 没有 YouTube 或 LLM Key 能否使用？
 
-可以使用显式 Mock 垂直链路测试产品，但不能获得真实平台或真实模型结果。YouTube 不会在缺少 Key 时自动切到 Mock。
+可以使用已配置的真实 RSS、合规公开页、加密自动登录/授权会话或显式 Mock 垂直链路；每条记录保留来源标记。YouTube 不会在缺少 Key 时自动切到 Mock，LLM 未配置时生成结果会明确标记为测试输出。
 
 ### 为什么 RSS 文章没有发布时间？
 
@@ -294,16 +309,16 @@ Mock 默认被生产自动化阻止；仅测试模式或规则明确允许 Mock 
 
 ## 当前限制
 
-- YouTube Analytics OAuth 私有指标、TikTok/抖音/Bilibili 实际 Adapter 尚未完成。
+- YouTube Analytics OAuth 私有指标尚未实现；TikTok Display、抖音开放平台与全平台浏览器 Adapter 已实现，但部分真实凭证仍未通过验收。
 - 新闻事件聚类为标题相似度基础版本，尚无跨语言向量或通用联网研究工具。
-- OpenAI 兼容 Provider 首期不提供流式响应；真实可计费调用需要用户配置并自行验收。
-- 自动化采用 30 秒级扫描，不是消息总线级实时；通知没有独立死信队列表。
+- OpenAI 兼容 Provider 支持流式预览；真实可计费调用需要用户配置并单独验收。
+- 自动化仍采用周期扫描；Outbox、外部调用尝试和死信重放/丢弃已提供审计与人工恢复入口。
 - 单机 Compose 是首期部署目标，尚未提供跨主机高可用。
 
 ## 后续路线图
 
-第二阶段建议优先完成真实 YouTube 凭证验收与 Analytics OAuth、研究检索与事实核实、新闻聚类增强、Outbox/死信恢复、服务端保存视图及浏览器持续 E2E。路线图见 [ROADMAP.md](docs/ROADMAP.md)。
+第二阶段建议优先完成各平台有效凭证验收与 Analytics OAuth、趋势异常解释和跨平台同题聚类、研究检索与事实证据、新闻跨语言聚类、服务端保存视图及持续浏览器 E2E。路线图见 [ROADMAP.md](docs/ROADMAP.md)。
 
 ## 文档索引
 
-[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md) · [最终审查](docs/FINAL_CODE_REVIEW.md) · [第一次交付报告](docs/FIRST_DELIVERY_REPORT.md)
+[安装](docs/INSTALLATION.md) · [开发](docs/DEVELOPMENT.md) · [部署](docs/DEPLOYMENT.md) · [设置中心](docs/SETTINGS_CENTER.md) · [前端测试矩阵](docs/FRONTEND_TEST_MATRIX.md) · [平台采集](docs/PLATFORM_SYNC.md) · [真实数据验收](docs/REAL_DATA_ACCEPTANCE.md) · [指标口径](docs/METRIC_CATALOG.md) · [待处理任务](docs/NEXT_TASKS.md) · [平台 Adapter](docs/PLATFORM_ADAPTER_GUIDE.md) · [新闻 Provider](docs/NEWS_PROVIDER_GUIDE.md) · [LLM Provider](docs/LLM_PROVIDER_GUIDE.md) · [通知 Provider](docs/NOTIFICATION_PROVIDER_GUIDE.md) · [订阅告警](docs/SUBSCRIPTION_ALERTS.md) · [编辑审核队列](docs/PRODUCT_AUDIT_2026-08-15.md) · [规则导入](docs/RULE_IMPORT_GUIDE.md) · [自动化](docs/AUTOMATION_GUIDE.md) · [故障排查](docs/TROUBLESHOOTING.md)

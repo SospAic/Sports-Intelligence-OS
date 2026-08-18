@@ -16,22 +16,40 @@ dependencies = [
   "fastapi>=0.116,<1",
   "feedparser>=6.0.11,<7",
   "httpx>=0.28,<1",
+  "playwright>=1.52,<2",
   "pydantic>=2.11,<3",
   "pydantic-settings>=2.10,<3",
   "pwdlib[argon2]>=0.2,<1",
   "redis>=6.2,<7",
   "sqlalchemy>=2.0.41,<2.1",
   "beautifulsoup4>=4.13,<5",
+  # yt-dlp needs curl_cffi to impersonate a real browser TLS/JA3 fingerprint.
+  # Without it TikTok/Douyin return a stripped page and extraction dies with
+  # "Unable to extract universal data for rehydration". yt-dlp only accepts
+  # curl_cffi 0.5.10 and 0.10.x-0.15.x, so 0.16+ must stay excluded.
+  "curl_cffi>=0.15,<0.16",
+  "yt-dlp[default]>=2025.1,<2027",
   "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "aiosqlite>=0.21,<1",
+  "httpx>=0.28,<1",
   "mypy>=1.16,<2",
+  # psycopg v3's binary extra bundles a prebuilt libpq so ``import psycopg``
+  # works on the slim base image (which ships no system libpq and no
+  # psycopg_c compiler). Without it the whole pytest suite fails at the
+  # autouse DB fixture with "no pq wrapper available". The runtime path uses
+  # asyncpg, so this only affects the test environment.
+  "psycopg[binary]>=3.2,<4",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.0,<2",
   "ruff>=0.12,<1",
+]
+subtitle = [
+  # Lazy-imported by the dedicated subtitle worker. The model weights are
+  # downloaded only after an operator enables ASR and submits a job.
+  "faster-whisper>=1.2,<2",
 ]
 
 [tool.setuptools.packages.find]
@@ -41,9 +59,14 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers -m 'not net'"
+filterwarnings = [
+  "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
+  "ignore:Use 'content=<...>' to upload raw bytes text content:DeprecationWarning",
+]
 markers = [
   "integration: multi-service integration tests that use local deterministic providers",
+  "net: tests that require live network, a browser/CDP endpoint, or external credentials; excluded from the default run",
 ]
 
 [tool.ruff]

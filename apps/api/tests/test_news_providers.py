@@ -4,9 +4,14 @@ import httpx
 import pytest
 
 from app.providers.news.base import NewsCallContext
+from app.providers.news.browser_news import BrowserNewsProvider
 from app.providers.news.feed import AtomProvider, RSSProvider
 from app.providers.news.json_feed import GenericJSONFeedProvider
-from app.providers.news.utils import ensure_public_endpoint, validate_source_url
+from app.providers.news.utils import (
+    ensure_public_endpoint,
+    ensure_public_media_endpoint,
+    validate_source_url,
+)
 
 NOW = datetime(2026, 7, 25, 12, 0, tzinfo=UTC)
 
@@ -150,6 +155,65 @@ async def test_endpoint_resolution_rejects_hostnames_that_resolve_private(
         await ensure_public_endpoint("https://public-looking.example/feed")
 
 
+@pytest.mark.asyncio
+async def test_known_media_url_allows_docker_synthetic_dns() -> None:
+    assert (
+        await ensure_public_media_endpoint("https://www.youtube.com/shorts/zOtEeA_tJFA")
+        == "https://www.youtube.com/shorts/zOtEeA_tJFA"
+    )
+
+
+@pytest.mark.asyncio
+async def test_known_llm_url_allows_docker_synthetic_dns() -> None:
+    from app.providers.news.utils import ensure_public_llm_endpoint
+
+    assert await ensure_public_llm_endpoint("https://api.deepseek.com/v1") == (
+        "https://api.deepseek.com/v1"
+    )
+
+
+def test_llm_url_allowlist_does_not_match_lookalike_hosts() -> None:
+    from app.providers.news.utils import is_known_llm_source
+
+    assert is_known_llm_source("https://api.deepseek.com/v1")
+    assert not is_known_llm_source("https://api.deepseek.com.attacker.example/v1")
+
+
+def test_media_url_allowlist_does_not_match_lookalike_hosts() -> None:
+    from app.providers.news.utils import is_known_media_source
+
+    assert is_known_media_source("https://www.youtube.com/watch?v=abc")
+    assert not is_known_media_source("https://youtube.com.attacker.example/video")
+
+
+@pytest.mark.asyncio
+async def test_feed_dns_check_can_be_skipped_only_by_explicit_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def capture_endpoint(_url: str, **kwargs: object) -> str:
+        calls.append(kwargs)
+        return _url
+
+    monkeypatch.setattr("app.providers.news.feed.ensure_public_endpoint", capture_endpoint)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                content=b'<rss version="2.0"><channel><title>Sports</title></channel></rss>',
+            )
+        )
+    )
+    provider = RSSProvider(client=client, max_attempts=1, skip_dns_check=True)
+    try:
+        await provider.fetch_latest(context("https://feed.example/rss"), cursor=None, limit=10)
+    finally:
+        await client.aclose()
+
+    assert calls == [{"skip_dns_check": True}]
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -160,3 +224,20 @@ async def test_endpoint_resolution_rejects_hostnames_that_resolve_private(
 def test_news_source_url_rejects_plaintext_credentials(url: str) -> None:
     with pytest.raises(ValueError, match="credentials|secrets"):
         validate_source_url(url)
+
+
+@pytest.mark.asyncio
+async def test_browser_news_normalization_caps_ui_sized_fields() -> None:
+    provider = BrowserNewsProvider()
+    article = await provider.normalize_article(
+        {
+            "title": "T" * 2_000,
+            "link": "https://sports.example/story",
+            "summary": "S" * 25_000,
+        },
+        context("https://sports.example", language="en"),
+    )
+
+    assert len(article.title) == 1_000
+    assert article.summary is not None
+    assert len(article.summary) == 20_000

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from time import struct_time
 from typing import Any, cast
+from urllib.parse import urljoin
 
 import feedparser  # type: ignore[import-untyped]
 import httpx
@@ -44,11 +45,15 @@ class FeedProvider(NewsProvider):
         timeout_seconds: float = 15.0,
         max_attempts: int = 3,
         retry_base_seconds: float = 0.25,
+        skip_dns_check: bool = False,
     ) -> None:
-        self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds), follow_redirects=False
+        )
         self._owns_client = client is None
         self._max_attempts = max(1, min(max_attempts, 5))
         self._retry_base_seconds = max(0.0, retry_base_seconds)
+        self._skip_dns_check = skip_dns_check
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -66,28 +71,44 @@ class FeedProvider(NewsProvider):
     async def _download(self, ctx: NewsCallContext) -> bytes:
         await self.validate_source(ctx.config)
         url = cast(str, ctx.config["url"])
-        try:
-            await ensure_public_endpoint(url)
-        except ValueError as exc:
-            raise NewsProviderConfigurationError(str(exc)) from exc
-        except OSError as exc:
-            raise NewsProviderTransientError(str(exc)) from exc
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = await self._client.get(
-                    url,
-                    headers={
-                        "Accept": "application/atom+xml, application/rss+xml, application/xml",
-                        "User-Agent": "Sports-Intelligence-OS/0.1 feed reader",
-                        "X-Request-Id": ctx.request_id,
-                    },
-                )
+                current_url = url
+                for redirect_count in range(4):
+                    if self._skip_dns_check:
+                        await ensure_public_endpoint(current_url, skip_dns_check=True)
+                    else:
+                        await ensure_public_endpoint(current_url)
+                    response = await self._client.get(
+                        current_url,
+                        headers={
+                            "Accept": "application/atom+xml, application/rss+xml, application/xml",
+                            "User-Agent": "Sports-Intelligence-OS/0.1 feed reader",
+                            "X-Request-Id": ctx.request_id,
+                        },
+                        follow_redirects=False,
+                    )
+                    if response.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = response.headers.get("location")
+                    if not location or redirect_count == 3:
+                        raise NewsProviderConfigurationError(
+                            "feed redirect chain is invalid or too long"
+                        )
+                    current_url = urljoin(current_url, location)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 if attempt == self._max_attempts:
                     raise NewsProviderTransientError(type(exc).__name__) from exc
                 await asyncio.sleep(self._retry_base_seconds * (2 ** (attempt - 1)))
                 continue
+            except ValueError as exc:
+                raise NewsProviderConfigurationError(str(exc)) from exc
+            except OSError as exc:
+                raise NewsProviderTransientError(str(exc)) from exc
             if response.is_success:
+                content_length = int(response.headers.get("content-length", "0") or 0)
+                if content_length > 5_000_000 or len(response.content) > 5_000_000:
+                    raise NewsProviderContractError("feed payload exceeds 5 MB")
                 return response.content
             if response.status_code in {401, 403}:
                 raise NewsProviderAuthenticationError(f"feed returned HTTP {response.status_code}")

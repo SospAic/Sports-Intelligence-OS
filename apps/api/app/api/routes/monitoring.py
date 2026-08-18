@@ -6,6 +6,11 @@ from fastapi import APIRouter, Query, Request, Response
 
 import app.services.sync as sync_module
 from app.api.dependencies import (
+    AccountAccess,
+    AccountScope,
+    AccountWriteAccess,
+    ContentAccess,
+    ContentWriteAccess,
     CsrfProtectedAuth,
     CurrentAuth,
     CurrentWorkspace,
@@ -15,24 +20,42 @@ from app.api.dependencies import (
 from app.core.problems import problem_response
 from app.repositories.monitoring import AccountFilters, ContentFilters
 from app.schemas.monitoring import (
+    AccountBatchDeleteRequest,
+    AccountBatchResult,
+    AccountBatchSyncItem,
+    AccountBatchSyncRequest,
+    AccountBatchSyncResult,
+    AccountBatchUpdateRequest,
+    AccountComparisonResponse,
+    AccountContentSummary,
     AccountCreate,
+    AccountMetricsHistory,
     AccountPage,
     AccountRead,
     AccountSnapshotPage,
     AccountSort,
+    AccountSyncSettingsOverride,
     AccountUpdate,
+    CommentRead,
+    CommentSnapshotRead,
+    ContentCalendarResponse,
+    ContentCreate,
     ContentPage,
     ContentRead,
     ContentSnapshotPage,
     ContentSort,
+    ContentUpdate,
     DerivedMetricPage,
     PlatformRead,
     SortOrder,
+    SyncIntervalResponse,
+    SyncRunDetailRead,
     SyncRunPage,
     SyncRunRead,
 )
 from app.services.monitoring import MonitoringError, MonitoringService
 from app.services.sync import SyncDispatchError, SyncError, SyncService
+from app.services.workspace_access import WorkspaceAccessError, require_account_access
 
 router = APIRouter(tags=["monitoring"])
 Page = Annotated[int, Query(ge=1)]
@@ -87,6 +110,7 @@ async def create_account(
 async def export_accounts(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    scope: AccountScope,
     sort: AccountSort = "created_at",
     order: SortOrder = "desc",
     platform: str | None = None,
@@ -95,7 +119,9 @@ async def export_accounts(
 ) -> Response:
     csv_text = await MonitoringService(db).export_accounts_csv(
         workspace.workspace_id,
-        AccountFilters(platform=platform, query=query, is_active=is_active),
+        AccountFilters(
+            platform=platform, query=query, is_active=is_active, account_ids=scope
+        ),
         sort,
         order,
     )
@@ -110,6 +136,7 @@ async def export_accounts(
 async def list_accounts(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    scope: AccountScope,
     sort: AccountSort = "created_at",
     order: SortOrder = "desc",
     page: Page = 1,
@@ -120,7 +147,9 @@ async def list_accounts(
 ) -> AccountPage:
     return await MonitoringService(db).list_accounts(
         workspace.workspace_id,
-        filters=AccountFilters(platform=platform, query=query, is_active=is_active),
+        filters=AccountFilters(
+            platform=platform, query=query, is_active=is_active, account_ids=scope
+        ),
         sort=sort,
         order=order,
         page=page,
@@ -128,11 +157,179 @@ async def list_accounts(
     )
 
 
+@router.get("/accounts/compare", response_model=AccountComparisonResponse)
+async def compare_accounts(
+    account_ids: Annotated[list[UUID], Query()],
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    scope: AccountScope,
+) -> AccountComparisonResponse:
+    """Side-by-side comparison of several accounts across platforms.
+
+    Only real observations (``source_kind`` is ``live``/``imported``) are
+    returned; nothing here is synthesised or mocked.
+    """
+    visible_ids = account_ids if scope is None else [item for item in account_ids if item in scope]
+    return await MonitoringService(db).compare_accounts(workspace.workspace_id, visible_ids)
+
+
+@router.patch("/accounts/batch", response_model=AccountBatchResult)
+async def batch_update_accounts(
+    payload: AccountBatchUpdateRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> AccountBatchResult:
+    """Activate or deactivate many accounts at once."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    for account_id in payload.account_ids:
+        await require_account_access(
+            db,
+            workspace.workspace_id,
+            auth.user.id,
+            workspace.role,
+            account_id,
+            require_editor=True,
+        )
+    updated = await MonitoringService(db).batch_update_accounts(
+        workspace.workspace_id, payload.account_ids, payload.is_active, auth.user.id
+    )
+    return AccountBatchResult(updated=updated, account_ids=payload.account_ids)
+
+
+@router.post("/accounts/batch/delete", response_model=AccountBatchResult)
+async def batch_delete_accounts(
+    payload: AccountBatchDeleteRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> AccountBatchResult:
+    """Soft-delete many accounts (deactivate and stop syncing)."""
+    require_workspace_role(workspace, {"owner", "admin"})
+    updated = await MonitoringService(db).batch_disable_accounts(
+        workspace.workspace_id, payload.account_ids, auth.user.id
+    )
+    return AccountBatchResult(updated=updated, account_ids=payload.account_ids)
+
+
+@router.post("/accounts/batch/sync", response_model=AccountBatchSyncResult, status_code=202)
+async def batch_sync_accounts(
+    payload: AccountBatchSyncRequest,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+) -> AccountBatchSyncResult:
+    """Request a sync for several accounts at once.
+
+    Each account is validated for workspace membership and dispatched like the
+    single-account endpoint. The response reports per-account outcome so a
+    caller can tell which were accepted, skipped (not found) or failed.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    service = SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    )
+    monitoring = MonitoringService(db)
+    items: list[AccountBatchSyncItem] = []
+    accepted = skipped = failed = 0
+    for account_id in payload.account_ids:
+        try:
+            await require_account_access(
+                db,
+                workspace.workspace_id,
+                auth.user.id,
+                workspace.role,
+                account_id,
+                require_editor=True,
+            )
+        except WorkspaceAccessError:
+            skipped += 1
+            items.append(
+                AccountBatchSyncItem(
+                    account_id=account_id, status="skipped", detail="account access denied"
+                )
+            )
+            continue
+        try:
+            await monitoring.get_account(workspace.workspace_id, account_id)
+        except MonitoringError:
+            skipped += 1
+            items.append(
+                AccountBatchSyncItem(
+                    account_id=account_id, status="skipped", detail="not found in workspace"
+                )
+            )
+            continue
+        try:
+            run, created = await service.request_account_sync(
+                workspace.workspace_id,
+                account_id,
+                request_id=str(request.state.request_id),
+            )
+        except SyncError as exc:
+            failed += 1
+            items.append(
+                AccountBatchSyncItem(account_id=account_id, status="failed", detail=str(exc))
+            )
+            continue
+        if created:
+            try:
+                sync_module.enqueue_platform_sync(run.id)
+            except Exception:
+                failed += 1
+                items.append(
+                    AccountBatchSyncItem(
+                        account_id=account_id,
+                        status="failed",
+                        detail="background task broker is unavailable",
+                    )
+                )
+                continue
+        accepted += 1
+        items.append(
+            AccountBatchSyncItem(account_id=account_id, status="accepted", sync_run_id=run.id)
+        )
+    return AccountBatchSyncResult(accepted=accepted, skipped=skipped, failed=failed, items=items)
+
+
 @router.get("/accounts/{account_id}", response_model=AccountRead)
 async def get_account(
-    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession, _: AccountAccess
 ) -> AccountRead:
     return await MonitoringService(db).get_account(workspace.workspace_id, account_id)
+
+
+@router.get(
+    "/accounts/{account_id}/sync-settings",
+    response_model=AccountSyncSettingsOverride | None,
+)
+async def get_account_sync_settings(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession, _: AccountAccess
+) -> AccountSyncSettingsOverride | None:
+    """Return the account's per-account sync settings override (None = inherit)."""
+    return await MonitoringService(db).get_account_sync_settings(workspace.workspace_id, account_id)
+
+
+@router.patch(
+    "/accounts/{account_id}/sync-settings",
+    response_model=AccountSyncSettingsOverride,
+)
+async def update_account_sync_settings(
+    account_id: UUID,
+    payload: AccountSyncSettingsOverride,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    _: AccountWriteAccess,
+) -> AccountSyncSettingsOverride:
+    """Set a per-account sync settings override layered on the workspace policy."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await MonitoringService(db).update_account_sync_settings(
+        workspace.workspace_id, account_id, auth.user.id, payload
+    )
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountRead)
@@ -142,6 +339,7 @@ async def update_account(
     workspace: CurrentWorkspace,
     auth: CsrfProtectedAuth,
     db: DatabaseSession,
+    _: AccountWriteAccess,
 ) -> AccountRead:
     require_workspace_role(workspace, {"owner", "admin", "editor"})
     return await MonitoringService(db).update_account(
@@ -155,6 +353,7 @@ async def delete_account(
     workspace: CurrentWorkspace,
     auth: CsrfProtectedAuth,
     db: DatabaseSession,
+    _: AccountWriteAccess,
 ) -> None:
     require_workspace_role(workspace, {"owner", "admin"})
     await MonitoringService(db).disable_account(workspace.workspace_id, account_id, auth.user.id)
@@ -167,6 +366,7 @@ async def request_account_sync(
     _: CsrfProtectedAuth,
     db: DatabaseSession,
     request: Request,
+    account_access: AccountWriteAccess,
 ) -> SyncRunRead:
     require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
     service = SyncService(
@@ -188,12 +388,53 @@ async def request_account_sync(
     return run
 
 
+@router.post("/accounts/{account_id}/sync/{run_id}/cancel", response_model=SyncRunRead)
+async def cancel_account_sync(
+    account_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    _: CsrfProtectedAuth,
+    db: DatabaseSession,
+    request: Request,
+    account_access: AccountWriteAccess,
+) -> SyncRunRead:
+    """Terminate a queued or running account sync run.
+
+    Idempotent for runs that have already reached a terminal state. Honors the
+    project's no-fake-success rule: it only records the cancellation against the
+    persisted run and releases the account lock; it does not assert a successful
+    platform call.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    return await SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    ).cancel_sync_run(workspace.workspace_id, account_id, run_id)
+
+
+@router.post("/accounts/{account_id}/sync-interval", response_model=SyncIntervalResponse)
+async def recompute_sync_interval(
+    account_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    _: AccountWriteAccess,
+) -> SyncIntervalResponse:
+    """Recompute the adaptive sync interval from recent posting cadence."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await MonitoringService(db).recompute_account_sync_interval(
+        workspace.workspace_id, account_id
+    )
+
+
 @router.get("/accounts/{account_id}/sync-runs", response_model=SyncRunPage)
 async def list_account_sync_runs(
     account_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
     request: Request,
+    _: AccountAccess,
     page: Page = 1,
     page_size: PageSize = 20,
 ) -> SyncRunPage:
@@ -209,11 +450,33 @@ async def list_account_sync_runs(
     )
 
 
+@router.get(
+    "/accounts/{account_id}/sync-runs/{run_id}",
+    response_model=SyncRunDetailRead,
+)
+async def get_account_sync_run_detail(
+    account_id: UUID,
+    run_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    request: Request,
+    _: AccountAccess,
+) -> SyncRunDetailRead:
+    """Return a single sync run together with its full execution tracklog."""
+
+    return await SyncService(
+        db,
+        request.app.state.platform_adapters,
+        request.app.state.settings,
+    ).get_run_detail(workspace.workspace_id, account_id, run_id)
+
+
 @router.get("/accounts/{account_id}/snapshots", response_model=AccountSnapshotPage)
 async def list_account_snapshots(
     account_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    _: AccountAccess,
     page: Page = 1,
     page_size: PageSize = 50,
 ) -> AccountSnapshotPage:
@@ -222,11 +485,29 @@ async def list_account_snapshots(
     )
 
 
+@router.get(
+    "/accounts/{account_id}/metrics/history",
+    response_model=AccountMetricsHistory,
+)
+async def account_metrics_history(
+    account_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: AccountAccess,
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
+) -> AccountMetricsHistory:
+    """Compact account metric time series for charts (fan-out/followers/views)."""
+    return await MonitoringService(db).account_metrics_history(
+        workspace.workspace_id, account_id, days=days
+    )
+
+
 @router.get("/accounts/{account_id}/contents", response_model=ContentPage)
 async def list_account_contents(
     account_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    _: AccountAccess,
     sort: ContentSort = "published_at",
     order: SortOrder = "desc",
     page: Page = 1,
@@ -258,10 +539,24 @@ async def list_account_contents(
     )
 
 
+@router.get(
+    "/accounts/{account_id}/content-summary",
+    response_model=AccountContentSummary,
+)
+async def summarize_account_contents(
+    account_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession, _: AccountAccess
+) -> AccountContentSummary:
+    """Aggregated content overview (completion, watch time, traffic split)."""
+    return await MonitoringService(db).summarize_account_contents(
+        workspace.workspace_id, account_id
+    )
+
+
 @router.get("/contents/export.csv")
 async def export_contents(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    scope: AccountScope,
     sort: ContentSort = "published_at",
     order: SortOrder = "desc",
     platform: str | None = None,
@@ -282,6 +577,7 @@ async def export_contents(
             min_views=min_views,
             max_views=max_views,
             query=query,
+            account_ids=scope,
         ),
         sort,
         order,
@@ -293,10 +589,33 @@ async def export_contents(
     )
 
 
+@router.get("/contents/calendar", response_model=ContentCalendarResponse)
+async def contents_calendar(
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    scope: AccountScope,
+    year: int,
+    month: Annotated[int, Query(ge=1, le=12)],
+    platform: str | None = None,
+    account: UUID | None = None,
+    query: str | None = None,
+) -> ContentCalendarResponse:
+    """Per-day calendar aggregation of published works for a given month."""
+    return await MonitoringService(db).contents_calendar(
+        workspace.workspace_id,
+        filters=ContentFilters(
+            platform=platform, account=account, query=query, account_ids=scope
+        ),
+        year=year,
+        month=month,
+    )
+
+
 @router.get("/contents", response_model=ContentPage)
 async def list_contents(
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    scope: AccountScope,
     sort: ContentSort = "published_at",
     order: SortOrder = "desc",
     page: Page = 1,
@@ -308,6 +627,7 @@ async def list_contents(
     min_views: Annotated[int | None, Query(ge=0)] = None,
     max_views: Annotated[int | None, Query(ge=0)] = None,
     query: str | None = None,
+    tags: Annotated[list[str] | None, Query()] = None,
 ) -> ContentPage:
     return await MonitoringService(db).list_contents(
         workspace.workspace_id,
@@ -319,6 +639,8 @@ async def list_contents(
             min_views=min_views,
             max_views=max_views,
             query=query,
+            tags=tags,
+            account_ids=scope,
         ),
         sort=sort,
         order=order,
@@ -327,9 +649,17 @@ async def list_contents(
     )
 
 
+@router.get("/contents/tags", response_model=list[str])
+async def list_content_tags(
+    workspace: CurrentWorkspace, db: DatabaseSession, scope: AccountScope
+) -> list[str]:
+    """Distinct tags across the workspace's works, for the multi-select filter."""
+    return await MonitoringService(db).list_content_tags(workspace.workspace_id, scope)
+
+
 @router.get("/contents/{content_id}", response_model=ContentRead)
 async def get_content(
-    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession
+    content_id: UUID, workspace: CurrentWorkspace, db: DatabaseSession, _: ContentAccess
 ) -> ContentRead:
     return await MonitoringService(db).get_content(workspace.workspace_id, content_id)
 
@@ -339,6 +669,7 @@ async def list_content_snapshots(
     content_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    _: ContentAccess,
     page: Page = 1,
     page_size: PageSize = 50,
 ) -> ContentSnapshotPage:
@@ -352,9 +683,126 @@ async def list_content_metrics(
     content_id: UUID,
     workspace: CurrentWorkspace,
     db: DatabaseSession,
+    _: ContentAccess,
     page: Page = 1,
     page_size: PageSize = 50,
 ) -> DerivedMetricPage:
     return await MonitoringService(db).content_metrics(
         workspace.workspace_id, content_id, page=page, page_size=page_size
     )
+
+
+@router.get("/contents/{content_id}/comments", response_model=list[CommentRead])
+async def list_content_comments(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: ContentAccess,
+    limit: Annotated[int, Query(ge=1, le=20)] = 20,
+) -> list[CommentRead]:
+    """Ranked hot comments for a content item (top ``limit``, default 20).
+
+    Ranking blends likes + replies (replies weighted 3×). When a platform
+    yields no comment data the list is empty and the UI shows the required
+    acquisition condition rather than a fabricated count.
+    """
+    return await MonitoringService(db).list_content_comments(
+        workspace.workspace_id, content_id, limit=limit
+    )
+
+
+@router.post("/contents/{content_id}/comments/collect", status_code=202)
+async def collect_content_comments(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: CsrfProtectedAuth,
+    __: ContentWriteAccess,
+) -> dict[str, str]:
+    """Trigger a best-effort comment collection for a content item.
+
+    Dispatched to the worker so the HTTP request returns immediately; the
+    result is visible via ``GET /contents/{content_id}/comments`` once fetched.
+    """
+    require_workspace_role(workspace, {"owner", "admin", "editor", "analyst"})
+    from app.tasks.monitoring import collect_content_comments as collect_task
+
+    monitoring = MonitoringService(db)
+    accepted = await monitoring.queue_content_comments(workspace.workspace_id, content_id)
+    if not accepted:
+        return {"status": "unsupported", "detail": "当前作品适配器未提供评论采集能力"}
+    collect_task.delay(str(content_id))
+    return {"status": "accepted", "detail": "评论采集中，稍后刷新查看"}
+
+
+# -- Comment history -------------------------------------------------------
+
+
+@router.get(
+    "/contents/{content_id}/comments/snapshots",
+    response_model=list[CommentSnapshotRead],
+)
+async def list_content_comment_snapshots(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    _: ContentAccess,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[CommentSnapshotRead]:
+    """Return append-only ranked comment observations for trend analysis."""
+    return await MonitoringService(db).list_content_comment_snapshots(
+        workspace.workspace_id, content_id, limit=limit
+    )
+
+
+# -- Content CRUD (manual) -------------------------------------------------
+
+
+@router.post("/contents", response_model=ContentRead, status_code=201)
+async def create_content(
+    payload: ContentCreate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+) -> ContentRead:
+    """Manually create a content item under an existing account."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    await require_account_access(
+        db,
+        workspace.workspace_id,
+        auth.user.id,
+        workspace.role,
+        payload.account_id,
+        require_editor=True,
+    )
+    return await MonitoringService(db).create_content(workspace.workspace_id, auth.user.id, payload)
+
+
+@router.patch("/contents/{content_id}", response_model=ContentRead)
+async def update_content(
+    content_id: UUID,
+    payload: ContentUpdate,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    _: ContentWriteAccess,
+) -> ContentRead:
+    """Update fields on an existing content item."""
+    require_workspace_role(workspace, {"owner", "admin", "editor"})
+    return await MonitoringService(db).update_content(
+        workspace.workspace_id, auth.user.id, content_id, payload
+    )
+
+
+@router.delete("/contents/{content_id}", status_code=204)
+async def delete_content(
+    content_id: UUID,
+    workspace: CurrentWorkspace,
+    auth: CsrfProtectedAuth,
+    db: DatabaseSession,
+    _: ContentWriteAccess,
+) -> Response:
+    """Delete a content item."""
+    require_workspace_role(workspace, {"owner", "admin"})
+    await MonitoringService(db).delete_content(workspace.workspace_id, auth.user.id, content_id)
+    return Response(status_code=204)

@@ -45,6 +45,7 @@ class EventFilters:
     language: str | None = None
     country: str | None = None
     query: str | None = None
+    status: str | None = None
     is_bookmarked: bool | None = None
     min_heat: float | None = None
     max_heat: float | None = None
@@ -80,10 +81,14 @@ class NewsRepository:
         page: int,
         page_size: int,
         enabled: bool | None,
+        include_quarantined: bool = False,
     ) -> tuple[list[Source], int]:
         conditions = [Source.workspace_id == workspace_id]
         if enabled is not None:
             conditions.append(Source.enabled.is_(enabled))
+        if not include_quarantined:
+            quarantine_value = Source.config_json["quarantined"].as_boolean()
+            conditions.append(or_(quarantine_value.is_(None), quarantine_value.is_(False)))
         items = list(
             (
                 await self.session.scalars(
@@ -173,6 +178,10 @@ class NewsRepository:
         page_size: int,
     ) -> tuple[list[ArticleRow], int]:
         conditions = [Article.workspace_id == workspace_id]
+        # Disabled sources remain available through an explicit source filter
+        # for history/audit, but must not pollute the default news feed.
+        if filters.source is None:
+            conditions.append(Source.enabled.is_(True))
         if filters.published_from is not None:
             conditions.append(Article.published_at >= filters.published_from)
         if filters.published_to is not None:
@@ -291,6 +300,14 @@ class NewsRepository:
             TopicEvent.workspace_id == workspace_id,
             TopicEvent.status != "closed",
             TopicEvent.last_update_time >= updated_after,
+            select(Article.id)
+            .join(EventArticle, EventArticle.article_id == Article.id)
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                EventArticle.event_id == TopicEvent.id,
+                Source.enabled.is_(True),
+            )
+            .exists(),
         ]
         if sport:
             conditions.append(
@@ -320,7 +337,17 @@ class NewsRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[TopicEvent], int]:
-        conditions = [TopicEvent.workspace_id == workspace_id]
+        conditions = [
+            TopicEvent.workspace_id == workspace_id,
+            select(Article.id)
+            .join(EventArticle, EventArticle.article_id == Article.id)
+            .join(Source, Source.id == Article.source_id)
+            .where(
+                EventArticle.event_id == TopicEvent.id,
+                Source.enabled.is_(True),
+            )
+            .exists(),
+        ]
         if filters.updated_from:
             conditions.append(TopicEvent.last_update_time >= filters.updated_from)
         if filters.updated_to:
@@ -337,6 +364,8 @@ class NewsRepository:
                     func.lower(TopicEvent.summary).like(pattern),
                 )
             )
+        if filters.status:
+            conditions.append(TopicEvent.status == filters.status)
         if filters.is_bookmarked is not None:
             conditions.append(TopicEvent.is_bookmarked.is_(filters.is_bookmarked))
         if filters.min_heat is not None:
@@ -365,11 +394,38 @@ class NewsRepository:
         }
         sort_column = sort_columns[sort]
         ordering = sort_column.asc() if order == "asc" else sort_column.desc()
+        # A topic event is a read-model entity, while the underlying article
+        # links are append-only evidence.  Older sync runs can leave multiple
+        # active rows with the same normalized title (for example when the
+        # same RSS item reappears after the clustering lookback).  Keep the
+        # newest/best row visible without deleting historical rows or their
+        # audit links.  The requested sort determines which duplicate wins.
+        entity_key = func.concat_ws(
+            "|",
+            TopicEvent.normalized_title,
+            func.coalesce(func.lower(TopicEvent.sport), ""),
+            func.coalesce(func.lower(TopicEvent.league), ""),
+        )
+        ranked_events = (
+            select(
+                TopicEvent.id.label("event_id"),
+                func.row_number()
+                .over(
+                    partition_by=(TopicEvent.workspace_id, entity_key),
+                    order_by=(ordering, TopicEvent.last_update_time.desc(), TopicEvent.id.asc()),
+                )
+                .label("entity_rank"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        unique_event_ids = ranked_events.c.entity_rank == 1
         items = list(
             (
                 await self.session.scalars(
                     select(TopicEvent)
-                    .where(*conditions)
+                    .join(ranked_events, TopicEvent.id == ranked_events.c.event_id)
+                    .where(unique_event_ids)
                     .order_by(ordering, TopicEvent.id.asc())
                     .offset((page - 1) * page_size)
                     .limit(page_size)
@@ -379,7 +435,7 @@ class NewsRepository:
         total = int(
             (
                 await self.session.scalar(
-                    select(func.count()).select_from(TopicEvent).where(*conditions)
+                    select(func.count()).select_from(ranked_events).where(unique_event_ids)
                 )
             )
             or 0

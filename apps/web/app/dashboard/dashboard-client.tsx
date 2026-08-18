@@ -3,11 +3,8 @@ import type {
   AccountRecordPage,
   AccountSnapshotPage,
   ArticleRecordPage,
-  AutomationEvaluationPage,
   ContentRecordPage,
-  NotificationDeliveryPage,
   OperationTaskPage,
-  TopicEventPage,
 } from "@sio/shared-types";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
@@ -31,18 +28,69 @@ import {
 } from "@/components/ui";
 import { apiRequest } from "@/lib/browser-api";
 import { formatDate, formatNumber, sourceKindLabel } from "@/lib/format";
+import { buildChartSeries } from "@/lib/time-series";
+import {
+  OPERATION_STATUS_LABELS,
+  operationTaskLabel,
+} from "@/lib/operation-labels";
+
+type DashboardStats = {
+  stats: {
+    account_counts?: {
+      total: number;
+      active: number;
+      synced_24h: number;
+      by_platform: Record<string, number>;
+    };
+    content_counts?: {
+      total: number;
+      new_24h: number;
+      by_platform: Record<string, number>;
+    };
+    sync_stats?: {
+      successful_24h: number;
+      failed_24h: number;
+      next_scheduled_at: string | null;
+    };
+    news_stats?: {
+      total_articles: number;
+      new_articles_24h: number;
+      total_events: number;
+      hot_events: number;
+    };
+    automation_stats?: {
+      enabled_rules: number;
+      evaluations_24h: number;
+      matched_24h: number;
+    };
+    notification_stats?: {
+      total_24h: number;
+      delivered_24h: number;
+      failed_24h: number;
+    };
+  };
+};
 export function DashboardClient() {
-  const { workspaceId, currentUser } = useWorkspace();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const prefix = today.toISOString();
+  const {
+    workspaceId,
+    currentUser,
+    loading: workspaceLoading,
+  } = useWorkspace();
   const results = useQueries({
     queries: [
+      {
+        queryKey: ["dashboard-stats", workspaceId],
+        queryFn: () =>
+          apiRequest<DashboardStats>("/dashboard/stats", {
+            workspaceId: workspaceId!,
+          }),
+        enabled: Boolean(workspaceId),
+      },
       {
         queryKey: ["dash-accounts", workspaceId],
         queryFn: () =>
           apiRequest<AccountRecordPage>(
-            "/accounts?page=1&page_size=100&sort=follower_growth_24h&order=desc",
+            "/accounts?page=1&page_size=100&sort=follower_growth_24h&order=desc&is_active=true",
             { workspaceId: workspaceId! },
           ),
         enabled: Boolean(workspaceId),
@@ -57,46 +105,10 @@ export function DashboardClient() {
         enabled: Boolean(workspaceId),
       },
       {
-        queryKey: ["dash-new-contents", workspaceId],
-        queryFn: () =>
-          apiRequest<ContentRecordPage>(
-            `/contents?page=1&page_size=1&published_from=${encodeURIComponent(prefix)}`,
-            { workspaceId: workspaceId! },
-          ),
-        enabled: Boolean(workspaceId),
-      },
-      {
         queryKey: ["dash-news", workspaceId],
         queryFn: () =>
           apiRequest<ArticleRecordPage>(
-            `/news/articles?page=1&page_size=10&published_from=${encodeURIComponent(prefix)}&sort=heat_score&order=desc`,
-            { workspaceId: workspaceId! },
-          ),
-        enabled: Boolean(workspaceId),
-      },
-      {
-        queryKey: ["dash-events", workspaceId],
-        queryFn: () =>
-          apiRequest<TopicEventPage>(
-            `/news/events?page=1&page_size=10&sort=heat_score&order=desc&updated_from=${encodeURIComponent(prefix)}`,
-            { workspaceId: workspaceId! },
-          ),
-        enabled: Boolean(workspaceId),
-      },
-      {
-        queryKey: ["dash-evals", workspaceId],
-        queryFn: () =>
-          apiRequest<AutomationEvaluationPage>(
-            `/automation-evaluations?page=1&page_size=100&matched=true&evaluated_from=${encodeURIComponent(prefix)}`,
-            { workspaceId: workspaceId! },
-          ),
-        enabled: Boolean(workspaceId),
-      },
-      {
-        queryKey: ["dash-deliveries", workspaceId],
-        queryFn: () =>
-          apiRequest<NotificationDeliveryPage>(
-            "/notification-deliveries?page=1&page_size=100",
+            "/news/articles?page=1&page_size=10&sort=heat_score&order=desc",
             { workspaceId: workspaceId! },
           ),
         enabled: Boolean(workspaceId),
@@ -112,16 +124,7 @@ export function DashboardClient() {
       },
     ],
   });
-  const [
-    accounts,
-    contents,
-    newContents,
-    news,
-    events,
-    evals,
-    deliveries,
-    tasks,
-  ] = results;
+  const [stats, accounts, contents, news, tasks] = results;
   const firstAccount = accounts.data?.items[0]?.id;
   const snapshots = useQuery({
     queryKey: ["dash-trend", firstAccount],
@@ -132,7 +135,11 @@ export function DashboardClient() {
       ),
     enabled: Boolean(workspaceId && firstAccount),
   });
-  if (results.some((result) => result.isLoading))
+  if (
+    workspaceLoading ||
+    !workspaceId ||
+    results.some((result) => result.isLoading)
+  )
     return (
       <main className="p-8">
         <SkeletonRows count={8} />
@@ -149,14 +156,10 @@ export function DashboardClient() {
         />
       </main>
     );
-  const trend = [...(snapshots.data?.items ?? [])].reverse().map((item) => ({
-    name: new Date(item.captured_at).toLocaleDateString("zh-CN", {
-      month: "numeric",
-      day: "numeric",
-    }),
-    value: item.follower_count ?? 0,
-  }));
-  const deliveryItems = deliveries.data?.items ?? [];
+  const trend = buildChartSeries(
+    snapshots.data?.items ?? [],
+    (item) => item.follower_count,
+  );
   const platformCounts = Object.entries(
     (accounts.data?.items ?? []).reduce<Record<string, number>>(
       (result, item) => {
@@ -180,41 +183,40 @@ export function DashboardClient() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
         <MetricCard
           label="监控账号"
-          value={accounts.data?.total ?? 0}
+          value={stats.data?.stats.account_counts?.active ?? 0}
           icon={<UsersRound size={18} />}
         />
         <MetricCard
           label="监控作品"
-          value={contents.data?.total ?? 0}
+          value={stats.data?.stats.content_counts?.total ?? 0}
           icon={<Video size={18} />}
         />
-        <MetricCard label="今日新增作品" value={newContents.data?.total ?? 0} />
         <MetricCard
-          label="今日新闻"
-          value={news.data?.total ?? 0}
+          label="近 24 小时新增作品"
+          value={stats.data?.stats.content_counts?.new_24h ?? 0}
+        />
+        <MetricCard
+          label="近 24 小时新闻"
+          value={stats.data?.stats.news_stats?.new_articles_24h ?? 0}
           icon={<Newspaper size={18} />}
         />
         <MetricCard
-          label="今日热点事件"
-          value={events.data?.total ?? 0}
+          label="近 24 小时热点事件"
+          value={stats.data?.stats.news_stats?.hot_events ?? 0}
           icon={<Radio size={18} />}
         />
         <MetricCard
-          label="正在增长"
-          value={
-            contents.data?.items.filter(
-              (item) => (item.view_growth_24h ?? 0) > 0,
-            ).length ?? 0
-          }
+          label="同步成功/失败"
+          value={`${stats.data?.stats.sync_stats?.successful_24h ?? 0}/${stats.data?.stats.sync_stats?.failed_24h ?? 0}`}
         />
         <MetricCard
-          label="今日规则触发"
-          value={evals.data?.total ?? 0}
+          label="近 24 小时规则触发"
+          value={stats.data?.stats.automation_stats?.matched_24h ?? 0}
           icon={<Activity size={18} />}
         />
         <MetricCard
           label="通知成功/失败"
-          value={`${deliveryItems.filter((item) => item.status === "delivered").length}/${deliveryItems.filter((item) => item.status === "failed").length}`}
+          value={`${stats.data?.stats.notification_stats?.delivered_24h ?? 0}/${stats.data?.stats.notification_stats?.failed_24h ?? 0}`}
           icon={<BellRing size={18} />}
         />
       </div>
@@ -240,7 +242,9 @@ export function DashboardClient() {
                 key={task.id}
               >
                 <div>
-                  <p className="text-slate-200">{task.task_type}</p>
+                  <p className="text-slate-200">
+                    {operationTaskLabel(task.task_type)}
+                  </p>
                   <p className="mt-1 text-xs text-slate-500">
                     {formatDate(task.started_at)}
                   </p>
@@ -254,7 +258,7 @@ export function DashboardClient() {
                         : "info"
                   }
                 >
-                  {task.status}
+                  {OPERATION_STATUS_LABELS[task.status] ?? task.status}
                 </Badge>
               </Link>
             ))}
@@ -264,8 +268,8 @@ export function DashboardClient() {
           )}
         </Panel>
       </div>
-      <div className="grid gap-5 xl:grid-cols-3">
-        <Panel className="p-5">
+      <div className="grid min-w-0 gap-5 xl:grid-cols-3">
+        <Panel className="min-w-0 p-5">
           <h2 className="font-medium text-white">平台分布</h2>
           <div className="mt-5 space-y-4">
             {platformCounts.map(([name, count]) => (
@@ -292,7 +296,7 @@ export function DashboardClient() {
             </p>
           )}
         </Panel>
-        <Panel>
+        <Panel className="min-w-0">
           <div className="border-b border-slate-800 p-5">
             <h2 className="font-medium text-white">热门作品排行</h2>
           </div>
@@ -319,7 +323,7 @@ export function DashboardClient() {
             ))}
           </div>
         </Panel>
-        <Panel>
+        <Panel className="min-w-0">
           <div className="border-b border-slate-800 p-5">
             <h2 className="font-medium text-white">热门新闻排行</h2>
           </div>
