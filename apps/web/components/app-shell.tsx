@@ -62,6 +62,7 @@ import { fetchReadyHealth, queueHealthPresentation } from "@/lib/health";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { LanguageSwitcher } from "@/components/language-switcher";
 import { Tooltip } from "@/components/ui";
+import { useUiLanguage } from "@/lib/ui-i18n";
 
 type WorkspaceValue = {
   currentUser: CurrentUserResponse | null;
@@ -122,55 +123,52 @@ const navigationGroups: ReadonlyArray<{
   items: ReadonlyArray<NavigationItem>;
 }> = [
   {
-    label: "洞察",
+    label: "navigation.insights",
     items: [
-      ["仪表盘", "/dashboard", Gauge],
-      ["热点情报中心", "/trends", TrendingUp],
-      ["视频内容搜索", "/video-search", ScanSearch],
-      ["账号监控", "/accounts", UsersRound],
-      ["作品数据", "/contents", Video],
-      ["新闻热点", "/news", Newspaper],
-      ["事件中心", "/events", Activity],
+      ["navigation.dashboard", "/dashboard", Gauge],
+      ["navigation.trends", "/trends", TrendingUp],
+      ["navigation.videoSearch", "/video-search", ScanSearch],
+      ["navigation.accounts", "/accounts", UsersRound],
+      ["navigation.contents", "/contents", Video],
+      ["navigation.news", "/news", Newspaper],
+      ["navigation.events", "/events", Activity],
     ],
   },
   {
-    label: "创作",
+    label: "navigation.creation",
     items: [
-      ["选题库", "/topics", BookMarked],
-      ["内容创作", "/generate", Sparkles],
-      ["审核队列", "/editorial", ClipboardCheck],
-      ["发布记录", "/publications", Send],
-      ["素材权利", "/operations/rights", ShieldCheck],
-      ["观察性实验", "/operations/experiments", FlaskConical],
-      ["视频下载", "/download", Download],
-      ["规则中心", "/rules", GitBranch],
+      ["navigation.topics", "/topics", BookMarked],
+      ["navigation.generate", "/generate", Sparkles],
+      ["navigation.editorial", "/editorial", ClipboardCheck],
+      ["navigation.publications", "/publications", Send],
+      ["navigation.rights", "/operations/rights", ShieldCheck],
+      ["navigation.experiments", "/operations/experiments", FlaskConical],
+      ["navigation.download", "/download", Download],
+      ["navigation.rules", "/rules", GitBranch],
     ],
   },
   {
-    label: "自动化",
+    label: "navigation.automation",
     items: [
-      ["自动化规则", "/automations", Bot],
-      ["通知模板", "/notification-templates", FileText],
-      ["通知渠道", "/notification-channels", Webhook],
+      ["navigation.automations", "/automations", Bot],
+      ["navigation.notificationTemplates", "/notification-templates", FileText],
+      ["navigation.notificationChannels", "/notification-channels", Webhook],
     ],
   },
   {
-    label: "运维",
+    label: "navigation.operations",
     items: [
-      ["任务记录", "/tasks", ListChecks],
-      ["调用记录", "/operations/external-calls", ScrollText],
-      ["死信管理", "/operations/dead-letters", AlertTriangle],
-      ["可靠性 SLO", "/operations/slo", Gauge],
-      ["系统日志", "/logs", Activity],
-      ["设置", "/settings", Settings],
+      ["navigation.tasks", "/tasks", ListChecks],
+      ["navigation.externalCalls", "/operations/external-calls", ScrollText],
+      ["navigation.deadLetters", "/operations/dead-letters", AlertTriangle],
+      ["navigation.slo", "/operations/slo", Gauge],
+      ["navigation.logs", "/logs", Activity],
+      ["navigation.settings", "/settings", Settings],
     ],
   },
 ];
-const navigation: NavigationItem[] = navigationGroups.flatMap(
-  (group) => group.items,
-);
-
 export function AppShell({ children }: { children: ReactNode }) {
+  const { t } = useUiLanguage();
   const pathname = usePathname();
   const router = useRouter();
   const authPage = pathname === "/login";
@@ -483,8 +481,18 @@ export function AppShell({ children }: { children: ReactNode }) {
     isPending: healthQuery.isPending,
     isError: healthQuery.isError,
   });
+  const localizedNavigationGroups = navigationGroups.map((group) => ({
+    ...group,
+    label: t(group.label as Parameters<typeof t>[0]),
+    items: group.items.map(([label, href, icon]) => [
+      t(label as Parameters<typeof t>[0]),
+      href,
+      icon,
+    ] as const),
+  }));
+  const localizedNavigation = localizedNavigationGroups.flatMap((group) => group.items);
   const filteredNavigation = search.trim()
-    ? navigation.filter(([label]) =>
+    ? localizedNavigation.filter(([label]) =>
         label.toLowerCase().includes(search.trim().toLowerCase()),
       )
     : [];
@@ -499,7 +507,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     ...filteredNavigation.map(([label, url, icon]) => ({
       id: `navigation:${url}`,
       title: label,
-      subtitle: "页面功能",
+      subtitle: t("shell.pageFeature"),
       url,
       icon,
     })),
@@ -524,19 +532,19 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="truncate text-sm font-semibold text-white">
               Content Intelligence OS
             </p>
-            <p className="text-[11px] text-slate-500">内容智能生产平台</p>
+            <p className="text-[11px] text-slate-500">{t("shell.productSubtitle")}</p>
           </div>
         )}
         <button
-          aria-label="关闭导航"
+          aria-label={t("shell.closeNavigation")}
           className="ml-auto lg:hidden"
           onClick={() => setMobileOpen(false)}
         >
           <X size={20} />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto p-2" aria-label="主导航">
-        {navigationGroups.map((group) => (
+      <nav className="flex-1 overflow-y-auto p-2" aria-label={t("shell.mainNavigation")}>
+        {localizedNavigationGroups.map((group) => (
           <div className="mb-3" key={group.label}>
             {!collapsed && (
               <p className="px-3 py-2 text-[10px] font-semibold tracking-[.18em] text-slate-600 uppercase">
@@ -565,9 +573,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         ))}
       </nav>
       <div className="border-t border-slate-800 p-3">
-        <Tooltip label={collapsed ? "展开导航" : "收起导航"}>
+          <Tooltip label={collapsed ? t("shell.expandNavigation") : t("shell.collapseNavigation")}>
           <button
-            aria-label={collapsed ? "展开导航" : "收起导航"}
+            aria-label={collapsed ? t("shell.expandNavigation") : t("shell.collapseNavigation")}
             className="hidden w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-sm text-slate-400 hover:bg-slate-900 lg:flex"
             onClick={() => setCollapsed((value) => !value)}
             type="button"
@@ -576,7 +584,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               size={17}
               className={collapsed ? "rotate-180" : ""}
             />
-            {!collapsed && "收起导航"}
+            {!collapsed && t("shell.collapseNavigation")}
           </button>
         </Tooltip>
       </div>

@@ -177,6 +177,45 @@ interface CategorySummary {
   total_count: number;
 }
 
+interface SportCoverageItem {
+  key: string;
+  name_zh: string;
+  name_en: string;
+  query: string;
+  tier: "mainstream" | "general";
+  target_items: number;
+  topic_count: number;
+  video_count: number;
+  coverage_status: "met" | "limited_by_source" | "not_collected";
+}
+
+interface SportsCatalogResponse {
+  catalog_version: string;
+  mainstream_count: number;
+  general_count: number;
+  mainstream_target_items: number;
+  general_target_items: number;
+  items: SportCoverageItem[];
+}
+
+function CoverageMetric({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 text-lg font-semibold tabular-nums text-white">{value}</p>
+      <p className="mt-1 text-[11px] text-slate-600">{hint}</p>
+    </div>
+  );
+}
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const PLATFORM_TABS: { key: Platform; label: string }[] = [
@@ -1079,6 +1118,17 @@ export function TrendsClient() {
     enabled: Boolean(workspaceId),
   });
 
+  const sportsCatalog = useQuery({
+    queryKey: ["trends-sports-catalog", workspaceId, windowHours],
+    queryFn: () =>
+      apiRequest<SportsCatalogResponse>(
+        `/trends/sports-catalog?window_hours=${windowHours}`,
+        { workspaceId: workspaceId! },
+      ),
+    enabled: Boolean(workspaceId),
+    refetchInterval: 60_000,
+  });
+
   const keywords = useQuery({
     queryKey: ["trends-keywords", workspaceId, platformParam, windowHours],
     queryFn: () =>
@@ -1300,9 +1350,9 @@ export function TrendsClient() {
     dashboard.isLoading ||
     topics.isLoading ||
     videos.isLoading ||
-    keywords.isLoading;
+    keywords.isLoading || sportsCatalog.isLoading;
   const hasError =
-    dashboard.isError || topics.isError || videos.isError || keywords.isError;
+    dashboard.isError || topics.isError || videos.isError || keywords.isError || sportsCatalog.isError;
 
   const sortOptions = PLATFORM_SORT_OPTIONS[platform] ?? PLATFORM_SORT_OPTIONS.all ?? [];
 
@@ -1388,6 +1438,54 @@ export function TrendsClient() {
             ))}
           </div>
         </div>
+      </Panel>
+
+      <Panel className="border-slate-800 bg-slate-950/45 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <BarChart3 size={18} className="text-violet-300" />
+              <h2 className="font-semibold text-white">体育项目采集覆盖</h2>
+              <Badge tone="info">真实来源目标</Badge>
+            </div>
+            <p className="mt-2 max-w-4xl text-xs leading-5 text-slate-500">
+              主流项目固定覆盖 50 个项目、每项目目标 50 条当下热点；一般项目覆盖 30 个项目、每项目目标 10 条。数据不足时只显示 Provider 实际返回的上限，不补造记录。
+            </p>
+          </div>
+          {sportsCatalog.data && (
+            <span className="text-xs text-slate-600">{sportsCatalog.data.catalog_version}</span>
+          )}
+        </div>
+        {sportsCatalog.isError ? (
+          <p className="mt-4 text-xs text-rose-300">项目覆盖计划读取失败：{sportsCatalog.error.message}</p>
+        ) : sportsCatalog.data ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-4">
+              <CoverageMetric label="主流项目" value={`${sportsCatalog.data.mainstream_count} 个`} hint={`每个目标 ${sportsCatalog.data.mainstream_target_items} 条`} />
+              <CoverageMetric label="一般项目" value={`${sportsCatalog.data.general_count} 个`} hint={`每个目标 ${sportsCatalog.data.general_target_items} 条`} />
+              <CoverageMetric label="主流达标" value={`${sportsCatalog.data.items.filter((item) => item.tier === "mainstream" && item.coverage_status === "met").length} / ${sportsCatalog.data.mainstream_count}`} hint="当前时间窗 live 视频样本" />
+              <CoverageMetric label="一般达标" value={`${sportsCatalog.data.items.filter((item) => item.tier === "general" && item.coverage_status === "met").length} / ${sportsCatalog.data.general_count}`} hint="当前时间窗 live 视频样本" />
+            </div>
+            <details className="mt-4 rounded-xl border border-slate-800 bg-slate-900/30 p-3">
+              <summary className="cursor-pointer text-xs text-cyan-300">展开查看 50 个主流项目与 30 个一般项目的逐项覆盖</summary>
+              <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                {sportsCatalog.data.items.map((item) => (
+                  <div key={item.key} className="rounded-lg border border-slate-800/80 bg-slate-950/50 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-slate-200" title={item.name_en}>{item.name_zh}</span>
+                      <Badge tone={item.coverage_status === "met" ? "success" : item.coverage_status === "limited_by_source" ? "warning" : "neutral"}>
+                        {item.coverage_status === "met" ? "达标" : item.coverage_status === "limited_by_source" ? "不足" : "未采集"}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-slate-500">{item.tier === "mainstream" ? "主流" : "一般"} · {item.video_count} / {item.target_items} 条</p>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </>
+        ) : (
+          <p className="mt-4 text-xs text-slate-500">正在读取项目覆盖计划与当前 live 样本。</p>
+        )}
       </Panel>
 
       {toolPanel ? (

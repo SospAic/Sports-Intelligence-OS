@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from app.services.entity_extraction import EntityType, extract_entities
+from app.services.sports_catalog import sport_profile_keywords
 
 _HASHTAG_PATTERN = re.compile(r"#([\w\u4e00-\u9fff]{2,40})", re.UNICODE)
 _CAMEL_CASE_PATTERN = re.compile(r"^[A-Z][a-z]+(?:[A-Z][a-z]+)+$")
@@ -232,6 +233,11 @@ SPORTS_KEYWORDS: tuple[str, ...] = tuple(
             for keyword in keywords
         ]
         + ["体育", "sports", "ESPN", "滑冰", "滑雪"]
+        + [
+            alias
+            for _key, aliases in sport_profile_keywords()
+            for alias in aliases
+        ]
     )
 )
 SPORTS_KEYWORD_KEYS: frozenset[str] = frozenset(
@@ -455,6 +461,9 @@ def trend_terms(text: str) -> set[str]:
 def infer_sports_category(text: str) -> str:
     lowered = text.casefold()
     for category, keywords in _CATEGORY_KEYWORDS:
+        if any(keyword.casefold() in lowered for keyword in keywords):
+            return category
+    for category, keywords in sport_profile_keywords():
         if any(keyword.casefold() in lowered for keyword in keywords):
             return category
     return "sports"

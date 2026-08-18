@@ -38,6 +38,7 @@ from app.schemas.trends import (
     TrendCategorySummary,
     TrendDashboard,
     TrendKeywordSnapshotRead,
+    TrendSportCatalogRead,
     TrendTopicEvidence,
     TrendTopicPage,
     TrendVideoPage,
@@ -164,6 +165,24 @@ async def list_categories(
         workspace.workspace_id,
         platform=platform,
         window_hours=window_hours,
+    )
+
+
+@router.get("/sports-catalog", response_model=TrendSportCatalogRead)
+async def get_sports_catalog(
+    request: Request,
+    workspace: CurrentWorkspace,
+    db: DatabaseSession,
+    window_hours: WindowHours = 24,
+) -> TrendSportCatalogRead:
+    """Return the 50 + 30 sport lanes and their real live coverage status."""
+
+    settings = request.app.state.settings
+    return await TrendService(db).sports_catalog(
+        workspace.workspace_id,
+        window_hours=window_hours,
+        mainstream_target_items=settings.hotspot_mainstream_target_items,
+        general_target_items=settings.hotspot_general_target_items,
     )
 
 

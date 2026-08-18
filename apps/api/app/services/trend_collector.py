@@ -37,6 +37,7 @@ from app.services.metric_calculations import (
     weighted_available_score,
 )
 from app.services.platform_credentials import PlatformCredentialService
+from app.services.sports_catalog import SPORTS_CATALOG, SportProfile
 from app.services.trend_categories import canonical_trend_category
 from app.services.trend_categories import infer_sports_category as _infer_sports_category
 from app.services.trend_categories import is_sports_related as _is_sports_related
@@ -779,9 +780,22 @@ class TrendCollectorService:
     # YouTube 采集（需要 API Key，无 Key 时跳过）
     # ------------------------------------------------------------------
 
-    async def collect_youtube_trends(self, workspace_id: UUID) -> dict[str, int]:
-        """采集 YouTube 趋势视频（需要配置 youtube_api_key）"""
-        counts = {"topics": 0, "videos": 0, "keywords": 0}
+    async def collect_youtube_trends(self, workspace_id: UUID) -> dict[str, Any]:
+        """Collect current YouTube hotspots across the versioned sport catalog.
+
+        YouTube ``search.list`` is used because it can be scoped to one sport
+        and ordered by view count.  The response is then enriched with the
+        official ``videos.list`` statistics endpoint.  Every lane reports its
+        target and actual count; a shortfall is a source limitation, never a
+        synthetic fill.
+        """
+
+        counts: dict[str, Any] = {
+            "topics": 0,
+            "videos": 0,
+            "keywords": 0,
+            "sports_coverage": {},
+        }
 
         # 检查 API Key 是否可用
         mode, credential = await PlatformCredentialService(self.session, self._settings).resolve(
@@ -790,6 +804,18 @@ class TrendCollectorService:
         api_key = credential.get("api_key") if mode == "api" else None
         if not isinstance(api_key, str) or not api_key:
             logger.info("youtube_api_key_not_configured, skipping youtube collection")
+            counts["sports_coverage"] = {
+                profile.key: {
+                    "name_zh": profile.name_zh,
+                    "name_en": profile.name_en,
+                    "tier": profile.tier,
+                    "target_items": self._sport_target(profile),
+                    "actual_items": 0,
+                    "status": "not_configured",
+                    "reason": "youtube_api_key_not_configured",
+                }
+                for profile in SPORTS_CATALOG
+            }
             return counts
         key = api_key
 
@@ -815,6 +841,8 @@ class TrendCollectorService:
             async with httpx.AsyncClient(
                 timeout=15, follow_redirects=False, headers=_DEFAULT_HEADERS
             ) as client:
+                seen_video_ids: set[str] = set()
+
                 # 1. 热门趋势视频
                 try:
                     resp = await client.get(
@@ -831,103 +859,208 @@ class TrendCollectorService:
                     data = resp.json()
                     items = data.get("items", [])
                     if items:
-                        self._save_youtube_videos(workspace_id, items, category_map, "trending")
-                        counts["videos"] += len(items)
+                        counts["videos"] += self._save_youtube_videos(
+                            workspace_id,
+                            items,
+                            category_map,
+                            "trending",
+                            seen_external_ids=seen_video_ids,
+                        )
                 except Exception as exc:
                     logger.warning("youtube_trending_failed: %s", exc)
 
-                # 2. 体育类搜索趋势
-                try:
-                    resp = await client.get(
-                        "https://www.googleapis.com/youtube/v3/search",
-                        params={
-                            "part": "snippet",
-                            "q": "sports",
-                            "type": "video",
-                            "order": "viewCount",
-                            "maxResults": 10,
-                            "key": key,
-                        },
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    items = data.get("items", [])
-                    if items:
-                        now = datetime.now(UTC)
-                        aggregates: dict[str, dict[str, Any]] = {}
-                        for idx, item in enumerate(items, start=1):
-                            snippet = item.get("snippet", {})
-                            title = str(snippet.get("title", ""))
-                            video_id = item.get("id", {}).get("videoId", "")
-                            for term in _trend_terms(title):
-                                aggregate = aggregates.setdefault(
-                                    term.casefold(),
-                                    {
-                                        "title": term,
-                                        "count": 0,
-                                        "rank_weight": 0.0,
-                                        "video_ids": [],
-                                    },
-                                )
-                                aggregate["count"] += 1
-                                aggregate["rank_weight"] += 1 / idx
-                                if video_id and len(aggregate["video_ids"]) < 5:
-                                    aggregate["video_ids"].append(video_id)
-                        ranked_terms = sorted(
-                            aggregates.values(),
-                            key=lambda value: (value["count"], value["rank_weight"]),
-                            reverse=True,
-                        )
-                        count_population = [value["count"] for value in ranked_terms]
-                        rank_population = [value["rank_weight"] for value in ranked_terms]
-                        for idx, aggregate in enumerate(ranked_terms, start=1):
-                            raw_heat, weights = weighted_available_score(
-                                {
-                                    "result_frequency": (
-                                        percentile_rank(aggregate["count"], count_population),
-                                        0.6,
-                                    ),
-                                    "search_rank_weight": (
-                                        percentile_rank(aggregate["rank_weight"], rank_population),
-                                        0.4,
-                                    ),
+                # 2. One bounded, real query per catalog lane.  A semaphore
+                # keeps the 80-lane expansion below provider and worker limits.
+                semaphore = asyncio.Semaphore(self._settings.hotspot_sport_query_concurrency)
+
+                async def fetch_sport_lane(
+                    profile: SportProfile,
+                ) -> tuple[SportProfile, list[dict[str, Any]], str | None]:
+                    target = self._sport_target(profile)
+                    try:
+                        async with semaphore:
+                            search_response = await client.get(
+                                "https://www.googleapis.com/youtube/v3/search",
+                                params={
+                                    "part": "snippet",
+                                    "q": profile.query,
+                                    "type": "video",
+                                    "order": "viewCount",
+                                    "publishedAfter": (
+                                        datetime.now(UTC) - timedelta(days=30)
+                                    ).isoformat().replace("+00:00", "Z"),
+                                    "regionCode": "US",
+                                    "relevanceLanguage": "en",
+                                    "maxResults": target,
+                                    "key": key,
                                 },
-                                minimum_components=2,
                             )
-                            confidence = sample_confidence(aggregate["count"], target_size=5)
-                            heat_score = _confidence_adjusted(raw_heat, confidence) or 50.0
-                            self.session.add(
-                                TrendTopic(
-                                    workspace_id=workspace_id,
-                                    platform="youtube",
-                                    title=aggregate["title"],
-                                    category=_infer_sports_category(aggregate["title"]),
-                                    heat_score=heat_score,
-                                    rank=idx,
-                                    sample_size=aggregate["count"],
-                                    metadata_json={
-                                        **_live_metadata("youtube_data_api_v3"),
-                                        "metric_kind": "derived",
-                                        "formula_version": "youtube-search-topic-v2",
-                                        "heat_score_method": (
-                                            "controlled_term_frequency_and_search_rank"
-                                        ),
-                                        "applied_weights": weights,
-                                        "confidence_score": confidence,
-                                        "source_video_ids": aggregate["video_ids"],
-                                        "is_sports": True,
-                                    },
-                                    observed_at=now,
-                                )
+                            search_response.raise_for_status()
+                            search_items = search_response.json().get("items", [])
+                            video_ids = [
+                                str(item.get("id", {}).get("videoId"))
+                                for item in search_items
+                                if isinstance(item.get("id"), dict)
+                                and item.get("id", {}).get("videoId")
+                            ][:target]
+                            if not video_ids:
+                                return profile, [], None
+
+                            # Statistics are fetched in one batch per lane,
+                            # which is the maximum legal videos.list batch.
+                            detail_response = await client.get(
+                                "https://www.googleapis.com/youtube/v3/videos",
+                                params={
+                                    "part": "snippet,statistics",
+                                    "id": ",".join(video_ids[:50]),
+                                    "key": key,
+                                },
                             )
-                            counts["topics"] += 1
-                except Exception as exc:
-                    logger.warning("youtube_sports_search_failed: %s", exc)
+                            detail_response.raise_for_status()
+                            detail_items = detail_response.json().get("items", [])
+                            if detail_items:
+                                return profile, detail_items[:target], None
+
+                            # A real search result is still useful when the
+                            # optional statistics enrichment is unavailable.
+                            return profile, [
+                                {
+                                    "id": video_id,
+                                    "snippet": item.get("snippet", {}),
+                                    "statistics": {},
+                                }
+                                for video_id, item in zip(video_ids, search_items, strict=False)
+                            ], None
+                    except Exception as exc:  # noqa: BLE001 - isolate one sport lane
+                        return profile, [], f"{type(exc).__name__}: {str(exc)[:240]}"
+
+                lane_results = await asyncio.gather(
+                    *(fetch_sport_lane(profile) for profile in SPORTS_CATALOG)
+                )
+                for profile, items, error in lane_results:
+                    target = self._sport_target(profile)
+                    if error:
+                        counts["sports_coverage"][profile.key] = {
+                            "name_zh": profile.name_zh,
+                            "name_en": profile.name_en,
+                            "tier": profile.tier,
+                            "target_items": target,
+                            "actual_items": 0,
+                            "status": "failed",
+                            "reason": error,
+                        }
+                        continue
+                    saved = self._save_youtube_videos(
+                        workspace_id,
+                        items,
+                        category_map,
+                        f"sport_catalog:{profile.key}",
+                        category_override=profile.key,
+                        seen_external_ids=seen_video_ids,
+                        collection_target=target,
+                        collection_tier=profile.tier,
+                    )
+                    counts["videos"] += saved
+                    topic_count = self._save_youtube_sport_topics(
+                        workspace_id, profile, items, target
+                    )
+                    counts["topics"] += topic_count
+                    status = "met" if saved >= target else "limited_by_source"
+                    counts["sports_coverage"][profile.key] = {
+                        "name_zh": profile.name_zh,
+                        "name_en": profile.name_en,
+                        "tier": profile.tier,
+                        "target_items": target,
+                        "actual_items": saved,
+                        "status": status,
+                        "source": "youtube_data_api_v3",
+                    }
 
         except Exception as exc:
             logger.error("youtube_collection_failed: %s", exc, exc_info=True)
 
         return counts
+
+    def _sport_target(self, profile: SportProfile) -> int:
+        return (
+            self._settings.hotspot_mainstream_target_items
+            if profile.tier == "mainstream"
+            else self._settings.hotspot_general_target_items
+        )
+
+    def _save_youtube_sport_topics(
+        self,
+        workspace_id: UUID,
+        profile: SportProfile,
+        items: list[dict[str, Any]],
+        target: int,
+    ) -> int:
+        """Persist useful title terms for one sport lane, without filler."""
+
+        now = datetime.now(UTC)
+        aggregates: dict[str, dict[str, Any]] = {}
+        for rank, item in enumerate(items, start=1):
+            title = str(item.get("snippet", {}).get("title") or "").strip()
+            video_id = str(item.get("id") or "").strip()
+            for term in _trend_terms(title):
+                aggregate = aggregates.setdefault(
+                    term.casefold(),
+                    {"title": term, "count": 0, "rank_weight": 0.0, "video_ids": []},
+                )
+                aggregate["count"] += 1
+                aggregate["rank_weight"] += 1 / rank
+                if video_id and len(aggregate["video_ids"]) < 5:
+                    aggregate["video_ids"].append(video_id)
+        ranked_terms = sorted(
+            aggregates.values(),
+            key=lambda value: (value["count"], value["rank_weight"]),
+            reverse=True,
+        )[:target]
+        if not ranked_terms:
+            return 0
+        count_population = [value["count"] for value in ranked_terms]
+        rank_population = [value["rank_weight"] for value in ranked_terms]
+        for index, aggregate in enumerate(ranked_terms, start=1):
+            raw_heat, weights = weighted_available_score(
+                {
+                    "result_frequency": (
+                        percentile_rank(aggregate["count"], count_population),
+                        0.6,
+                    ),
+                    "search_rank_weight": (
+                        percentile_rank(aggregate["rank_weight"], rank_population),
+                        0.4,
+                    ),
+                },
+                minimum_components=2,
+            )
+            confidence = sample_confidence(aggregate["count"], target_size=target)
+            self.session.add(
+                TrendTopic(
+                    workspace_id=workspace_id,
+                    platform="youtube",
+                    title=aggregate["title"],
+                    category=profile.key,
+                    heat_score=_confidence_adjusted(raw_heat, confidence) or 50.0,
+                    rank=index,
+                    sample_size=aggregate["count"],
+                    metadata_json={
+                        **_live_metadata("youtube_data_api_v3"),
+                        "metric_kind": "derived",
+                        "formula_version": "youtube-sport-catalog-topic-v1",
+                        "heat_score_method": "sport_lane_frequency_and_search_rank",
+                        "applied_weights": weights,
+                        "confidence_score": confidence,
+                        "source_video_ids": aggregate["video_ids"],
+                        "sport_key": profile.key,
+                        "collection_target": target,
+                        "collection_tier": profile.tier,
+                        "is_sports": True,
+                    },
+                    observed_at=now,
+                )
+            )
+        return len(ranked_terms)
 
     def _save_youtube_videos(
         self,
@@ -935,7 +1068,12 @@ class TrendCollectorService:
         items: list[dict[str, Any]],
         category_map: dict[str, str],
         source: str,
-    ) -> None:
+        *,
+        category_override: str | None = None,
+        seen_external_ids: set[str] | None = None,
+        collection_target: int | None = None,
+        collection_tier: str | None = None,
+    ) -> int:
         """将 YouTube 视频数据映射为 TrendVideo 并写入会话"""
         now = datetime.now(UTC)
         view_counts = [
@@ -947,15 +1085,25 @@ class TrendCollectorService:
             _engagement_from_statistics(item.get("statistics", {})) for item in items
         ]
 
+        saved = 0
         for rank, item in enumerate(items, start=1):
-            video_id = item.get("id", "")
+            raw_video_id = item.get("id", "")
+            if isinstance(raw_video_id, dict):
+                raw_video_id = raw_video_id.get("videoId", "")
+            video_id = str(raw_video_id or "")
             if not video_id:
                 continue
+            if seen_external_ids is not None and video_id in seen_external_ids:
+                continue
+            if seen_external_ids is not None:
+                seen_external_ids.add(video_id)
             snippet = item.get("snippet", {})
             statistics = item.get("statistics", {})
             title = snippet.get("title", "")
             category_id = snippet.get("categoryId", "")
-            category = canonical_trend_category(category_map.get(category_id, "general"))
+            category = canonical_trend_category(
+                category_override or category_map.get(category_id, "general")
+            )
             views = _optional_int(statistics.get("viewCount"))
             engagement = _engagement_from_statistics(statistics)
             published_at = snippet.get("publishedAt")
@@ -1020,6 +1168,8 @@ class TrendCollectorService:
                     "confidence_score": round(confidence, 4),
                     "sample_size": len(items),
                     "source": source,
+                    "collection_target": collection_target,
+                    "collection_tier": collection_tier,
                     "published_at": snippet.get("publishedAt"),
                     "source_url": f"https://www.youtube.com/watch?v={video_id}",
                     "is_sports": _is_sports_related(f"{title} {category}"),
@@ -1027,5 +1177,7 @@ class TrendCollectorService:
                 observed_at=now,
             )
             self.session.add(video)
+            saved += 1
+        return saved
 
     # ------------------------------------------------------------------

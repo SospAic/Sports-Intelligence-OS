@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -126,6 +126,29 @@ class TrendCategorySummary(BaseModel):
     topic_count: int = 0
     video_count: int = 0
     total_count: int = 0
+
+
+class TrendSportCatalogItem(BaseModel):
+    """One configured sports discovery lane plus its live coverage evidence."""
+
+    key: str
+    name_zh: str
+    name_en: str
+    query: str
+    tier: Literal["mainstream", "general"]
+    target_items: int
+    topic_count: int = 0
+    video_count: int = 0
+    coverage_status: Literal["met", "limited_by_source", "not_collected"] = "not_collected"
+
+
+class TrendSportCatalogRead(BaseModel):
+    catalog_version: str
+    mainstream_count: int
+    general_count: int
+    mainstream_target_items: int
+    general_target_items: int
+    items: list[TrendSportCatalogItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

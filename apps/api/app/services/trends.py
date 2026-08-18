@@ -23,6 +23,8 @@ from app.schemas.trends import (
     TrendEvidenceNews,
     TrendEvidenceVideo,
     TrendKeywordSnapshotRead,
+    TrendSportCatalogItem,
+    TrendSportCatalogRead,
     TrendTopicEvidence,
     TrendTopicPage,
     TrendTopicRead,
@@ -33,6 +35,12 @@ from app.services.entity_extraction import (
     ExtractedEntity,
     compute_entity_similarity,
     extract_entities,
+)
+from app.services.sports_catalog import (
+    GENERAL_SPORTS,
+    MAINSTREAM_SPORTS,
+    SPORTS_CATALOG,
+    SPORTS_CATALOG_VERSION,
 )
 from app.services.trend_categories import (
     canonical_trend_category,
@@ -633,6 +641,61 @@ class TrendService:
                 key=lambda item: (-item[1]["topic_count"] - item[1]["video_count"], item[0]),
             )
         ]
+
+    async def sports_catalog(
+        self,
+        workspace_id: UUID,
+        *,
+        window_hours: int = 24,
+        mainstream_target_items: int = 50,
+        general_target_items: int = 10,
+    ) -> TrendSportCatalogRead:
+        """Merge the versioned taxonomy with live, de-duplicated coverage.
+
+        Zero counts are intentional: the endpoint describes the configured
+        discovery lanes and reports missing live evidence instead of creating
+        placeholder hotspot records.
+        """
+
+        summaries = await self.list_categories(workspace_id, window_hours=window_hours)
+        by_category = {canonical_trend_category(item.category): item for item in summaries}
+        items: list[TrendSportCatalogItem] = []
+        for profile in SPORTS_CATALOG:
+            summary = by_category.get(profile.key)
+            target = (
+                mainstream_target_items
+                if profile.tier == "mainstream"
+                else general_target_items
+            )
+            video_count = summary.video_count if summary else 0
+            topic_count = summary.topic_count if summary else 0
+            items.append(
+                TrendSportCatalogItem(
+                    key=profile.key,
+                    name_zh=profile.name_zh,
+                    name_en=profile.name_en,
+                    query=profile.query,
+                    tier=profile.tier,
+                    target_items=target,
+                    topic_count=topic_count,
+                    video_count=video_count,
+                    coverage_status=(
+                        "met"
+                        if video_count >= target
+                        else "limited_by_source"
+                        if video_count > 0
+                        else "not_collected"
+                    ),
+                )
+            )
+        return TrendSportCatalogRead(
+            catalog_version=SPORTS_CATALOG_VERSION,
+            mainstream_count=len(MAINSTREAM_SPORTS),
+            general_count=len(GENERAL_SPORTS),
+            mainstream_target_items=mainstream_target_items,
+            general_target_items=general_target_items,
+            items=items,
+        )
 
     async def list_keywords(
         self,

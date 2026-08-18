@@ -2,6 +2,15 @@
 
 更新时间：2026-08-18（衍生角度结果展示修复与全功能审计）
 
+## 2026-08-18：可扩展性基线、体育项目覆盖与界面语言切换
+
+- 新增 `apps/api/app/services/sports_catalog.py`，建立 50 个主流体育项目与 30 个一般体育项目的版本化目录；每个项目带稳定 key、英文查询词、层级和采集目标。
+- YouTube 官方热点采集按项目执行真实 `search.list` + `videos.list`，主流项目每项目标 50 条、一般项目每项目标 10 条；不足显示真实上限，采集轮次按视频 external id 去重，并输出逐项目覆盖状态。
+- 新增 `GET /api/v1/trends/sports-catalog` 与热点页面逐项目覆盖面板，区分目录计划和当前 live 样本，不用占位数据冒充达标。
+- 修复语言切换只修改 HTML `lang` 而界面文案不变化的问题：新增统一 UI 语言上下文，核心导航、搜索、同步状态、未读信息中心、用户菜单和语言选择器实时切换；支持中/英/日/韩/西/法/德/葡核心工作台文案，未迁移业务文案安全回退中文。
+- 详细评估、优先级、限制和下一步见 `docs/EXTENSIBILITY_OPTIMIZATION_REPORT_2026-08-18.md`。
+- 本轮验证完成：API、Worker、Beat 镜像重建与 Compose 更新成功；Alembic `check` 无新增迁移；后端目标回归 `16 passed, 1 warning`；Ruff、Mypy 通过；Web 全量 Vitest `29 files / 90 tests passed`；API `/health/live=200`、`/health/ready=200`、代理 `/login=200`，API、Worker、Beat、Web、PostgreSQL、Redis 均正常运行。真实 YouTube 80 项项目覆盖仍取决于有效官方 API 凭证与配额，不能用无凭证测试结果代替。
+
 ## 2026-08-18：衍生角度结果不可见修复与全功能审计
 
 - 根因：`GET /trends/derivatives/runs/{run_id}` 的响应组装将 ORM 列 `process_log_json` 映射后的 `process_log` 重复传入 `DerivativeRunDetail`，运行时抛出 `got multiple values for keyword argument 'process_log'`，前端生成后再读取详情时收到 HTTP 500，因此结果区保持空白。

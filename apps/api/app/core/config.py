@@ -204,6 +204,24 @@ class Settings(BaseSettings):
         le=16,
         description="Bounded concurrency for independent public feed reads.",
     )
+    hotspot_sport_query_concurrency: int = Field(
+        default=3,
+        ge=1,
+        le=8,
+        description="Bounded concurrency for the 50 + 30 live sport discovery queries.",
+    )
+    hotspot_mainstream_target_items: int = Field(
+        default=50,
+        ge=1,
+        le=50,
+        description="Target live hot items per mainstream sport in one collection run.",
+    )
+    hotspot_general_target_items: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="Target live hot items per general sport in one collection run.",
+    )
     sync_task_max_retries: int = Field(default=3, ge=0, le=10)
     sync_global_concurrency: int = Field(
         default=2,
